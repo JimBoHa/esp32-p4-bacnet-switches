@@ -1,0 +1,102 @@
+menu "BACnet toggle input configuration"
+
+    config BACNET_DEVICE_INSTANCE
+        int "BACnet Device object instance"
+        range 0 4194302
+        default 599152
+        help
+            Must be unique across the BACnet internetwork. Device instance
+            599152 was unused on 192.168.75.0/24 when this project was made.
+
+    config BACNET_VENDOR_IDENTIFIER
+        int "BACnet vendor identifier"
+        range 0 65535
+        default 999
+        help
+            999 is a lab-only placeholder. Replace it with the organization's
+            ASHRAE-assigned BACnet Vendor ID before product deployment.
+
+    config BACNET_VENDOR_NAME
+        string "BACnet vendor name"
+        default "Lab placeholder"
+        help
+            Change this together with the lab-only Vendor ID before product
+            deployment.
+
+    config BACNET_DEVICE_NAME
+        string "BACnet Device object name"
+        default "ESP32-P4 Toggle Inputs"
+
+    config BACNET_HOSTNAME
+        string "DHCP hostname"
+        default "esp32-p4-bacnet"
+
+    config BACNET_UDP_PORT
+        int "BACnet/IP UDP port"
+        range 1 65535
+        default 47808
+
+    config TOGGLE_INPUT_1_GPIO
+        int "Toggle input 1 GPIO"
+        range 0 54
+        default 20
+
+    config TOGGLE_INPUT_2_GPIO
+        int "Toggle input 2 GPIO"
+        range 0 54
+        default 21
+
+    config TOGGLE_INPUT_1_OBJECT_INSTANCE
+        int "Toggle input 1 Binary Input instance"
+        range 0 4194302
+        default 20
+
+    config TOGGLE_INPUT_2_OBJECT_INSTANCE
+        int "Toggle input 2 Binary Input instance"
+        range 0 4194302
+        default 21
+
+    config TOGGLE_INPUT_1_NAME
+        string "Toggle input 1 BACnet object name"
+        default "GPIO20 Toggle"
+
+    config TOGGLE_INPUT_2_NAME
+        string "Toggle input 2 BACnet object name"
+        default "GPIO21 Toggle"
+
+    config TOGGLE_DEBOUNCE_MS
+        int "Toggle switch debounce time (ms)"
+        range 10 500
+        default 50
+
+endmenu
+
+menu "Authenticated HTTPS OTA configuration"
+
+    config OTA_HTTPS_ENABLED
+        bool "Enable HTTPS firmware uploads"
+        default y
+        select BOOTLOADER_APP_ROLLBACK_ENABLE
+        help
+            Starts a TLS-only HTTP server after Ethernet obtains an address.
+            POST /ota accepts an ESP-IDF application image after bearer-token
+            authentication. GET /ota/status reports the running version.
+
+    if OTA_HTTPS_ENABLED
+
+        config OTA_HTTPS_PORT
+            int "HTTPS OTA port"
+            range 1 65535
+            default 443
+
+        config OTA_BEARER_TOKEN
+            string "HTTPS OTA bearer token"
+            default ""
+            help
+                Required secret containing 32-128 characters. A unique initial
+                value is provisioned by sdkconfig.defaults. Rotate it before
+                deployment and keep the source package private.
+
+    endif
+
+endmenu
