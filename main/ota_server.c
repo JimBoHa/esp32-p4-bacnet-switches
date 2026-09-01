@@ -1,5 +1,6 @@
 #include "ota_server.h"
 
+#include <stdarg.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -19,6 +20,7 @@
 #include "freertos/task.h"
 #include "ota_auth.h"
 #include "sdkconfig.h"
+#include "switch_inputs.h"
 
 #define OTA_RECEIVE_BUFFER_BYTES 4096U
 #define OTA_MAX_CONSECUTIVE_TIMEOUTS 5U
@@ -40,6 +42,66 @@ extern const unsigned char ota_server_key_pem_end[]
 
 static httpd_handle_t server_handle;
 static atomic_bool upload_in_progress;
+
+static const char *json_bool(bool value)
+{
+    return value ? "true" : "false";
+}
+
+static bool response_append(
+    char *response,
+    size_t capacity,
+    size_t *length,
+    const char *format,
+    ...)
+{
+    if (*length >= capacity) {
+        return false;
+    }
+
+    va_list arguments;
+    va_start(arguments, format);
+    const int written = vsnprintf(
+        response + *length,
+        capacity - *length,
+        format,
+        arguments);
+    va_end(arguments);
+    if (written < 0 || (size_t)written >= capacity - *length) {
+        return false;
+    }
+    *length += (size_t)written;
+    return true;
+}
+
+static bool append_pad_config(
+    char *response,
+    size_t capacity,
+    size_t *length,
+    const switch_input_pad_config_t *config)
+{
+    return response_append(
+        response,
+        capacity,
+        length,
+        "{\"valid\":%s,\"function_select\":%u,\"output_signal\":%u,"
+        "\"drive_capability\":%u,\"pull_up\":%s,\"pull_down\":%s,"
+        "\"input_enable\":%s,\"output_enable\":%s,"
+        "\"oe_controlled_by_peripheral\":%s,\"oe_inverted\":%s,"
+        "\"open_drain\":%s,\"sleep_select\":%s}",
+        json_bool(config->valid),
+        (unsigned)config->function_select,
+        (unsigned)config->output_signal,
+        (unsigned)config->drive_capability,
+        json_bool(config->pull_up_enabled),
+        json_bool(config->pull_down_enabled),
+        json_bool(config->input_enabled),
+        json_bool(config->output_enabled),
+        json_bool(config->output_enable_controlled_by_peripheral),
+        json_bool(config->output_enable_inverted),
+        json_bool(config->open_drain_enabled),
+        json_bool(config->sleep_select_enabled));
+}
 
 static size_t bounded_string_length(const char *value, size_t maximum)
 {
@@ -130,18 +192,81 @@ static esp_err_t status_get_handler(httpd_req_t *request)
         (void)esp_ota_get_state_partition(running, &image_state);
     }
 
-    char response[384];
-    const int response_length = snprintf(
-        response,
-        sizeof(response),
-        "{\"ota\":true,\"project\":\"%.31s\",\"version\":\"%.31s\","
-        "\"partition\":\"%.15s\",\"state\":\"%s\",\"port\":%u}",
-        app != NULL ? app->project_name : "unknown",
-        app != NULL ? app->version : "unknown",
-        running != NULL ? running->label : "unknown",
-        ota_state_name(image_state),
-        (unsigned)CONFIG_OTA_HTTPS_PORT);
-    if (response_length < 0 || (size_t)response_length >= sizeof(response)) {
+    char response[3072];
+    size_t response_length = 0;
+    if (!response_append(
+            response,
+            sizeof(response),
+            &response_length,
+            "{\"ota\":true,\"project\":\"%.31s\",\"version\":\"%.31s\","
+            "\"idf_version\":\"%.31s\",\"partition\":\"%.15s\","
+            "\"state\":\"%s\",\"port\":%u,\"gpio_diagnostics\":[",
+            app != NULL ? app->project_name : "unknown",
+            app != NULL ? app->version : "unknown",
+            esp_get_idf_version(),
+            running != NULL ? running->label : "unknown",
+            ota_state_name(image_state),
+            (unsigned)CONFIG_OTA_HTTPS_PORT)) {
+        return httpd_resp_send_err(
+            request, HTTPD_500_INTERNAL_SERVER_ERROR, "status encoding failed");
+    }
+
+    for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
+        switch_input_diagnostics_t diagnostics;
+        if (!switch_input_diagnostics_get(index, &diagnostics) ||
+            !response_append(
+                response,
+                sizeof(response),
+                &response_length,
+                "%s{\"gpio\":%d,\"startup\":{"
+                "\"raw_after_input_enable\":%s,\"config\":",
+                index == 0 ? "" : ",",
+                diagnostics.gpio,
+                json_bool(diagnostics.startup_raw_after_input_enable)) ||
+            !append_pad_config(
+                response,
+                sizeof(response),
+                &response_length,
+                &diagnostics.startup_config) ||
+            !response_append(
+                response,
+                sizeof(response),
+                &response_length,
+                "},\"configured\":{\"raw\":%s,\"config\":",
+                json_bool(diagnostics.configured_raw)) ||
+            !append_pad_config(
+                response,
+                sizeof(response),
+                &response_length,
+                &diagnostics.configured_config) ||
+            !response_append(
+                response,
+                sizeof(response),
+                &response_length,
+                "},\"current\":{\"raw\":%s,\"stable\":%s,\"config\":",
+                json_bool(diagnostics.current_raw),
+                json_bool(diagnostics.stable)) ||
+            !append_pad_config(
+                response,
+                sizeof(response),
+                &response_length,
+                &diagnostics.current_config) ||
+            !response_append(
+                response,
+                sizeof(response),
+                &response_length,
+                "}}")) {
+            return httpd_resp_send_err(
+                request,
+                HTTPD_500_INTERNAL_SERVER_ERROR,
+                "GPIO diagnostics encoding failed");
+        }
+    }
+    if (!response_append(
+            response,
+            sizeof(response),
+            &response_length,
+            "]}")) {
         return httpd_resp_send_err(
             request, HTTPD_500_INTERNAL_SERVER_ERROR, "status encoding failed");
     }
