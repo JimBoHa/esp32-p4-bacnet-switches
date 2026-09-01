@@ -20,6 +20,33 @@ static const gpio_num_t INPUT_GPIOS[SWITCH_INPUT_COUNT] = {
 };
 
 static atomic_uint_fast32_t stable_input_bits;
+static switch_input_pad_config_t startup_pad_configs[SWITCH_INPUT_COUNT];
+static bool startup_raw_levels[SWITCH_INPUT_COUNT];
+static switch_input_pad_config_t configured_pad_configs[SWITCH_INPUT_COUNT];
+static bool configured_raw_levels[SWITCH_INPUT_COUNT];
+
+static switch_input_pad_config_t read_pad_config(gpio_num_t gpio)
+{
+    switch_input_pad_config_t snapshot = {0};
+    gpio_io_config_t config = {0};
+
+    if (gpio_get_io_config(gpio, &config) != ESP_OK) {
+        return snapshot;
+    }
+    snapshot.valid = true;
+    snapshot.function_select = config.fun_sel;
+    snapshot.output_signal = config.sig_out;
+    snapshot.drive_capability = (uint32_t)config.drv;
+    snapshot.pull_up_enabled = config.pu;
+    snapshot.pull_down_enabled = config.pd;
+    snapshot.input_enabled = config.ie;
+    snapshot.output_enabled = config.oe;
+    snapshot.output_enable_controlled_by_peripheral = config.oe_ctrl_by_periph;
+    snapshot.output_enable_inverted = config.oe_inv;
+    snapshot.open_drain_enabled = config.od;
+    snapshot.sleep_select_enabled = config.slp_sel;
+    return snapshot;
+}
 
 static bool gpio_reserved_for_board_ethernet(int gpio)
 {
@@ -141,6 +168,13 @@ void switch_inputs_init(void)
         abort();
     }
 
+    for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
+        startup_pad_configs[index] = read_pad_config(INPUT_GPIOS[index]);
+        ESP_ERROR_CHECK(gpio_input_enable(INPUT_GPIOS[index]));
+        startup_raw_levels[index] =
+            gpio_get_level(INPUT_GPIOS[index]) != 0;
+    }
+
     const gpio_config_t config = {
         .pin_bit_mask =
             (1ULL << CONFIG_TOGGLE_INPUT_1_GPIO) |
@@ -151,6 +185,24 @@ void switch_inputs_init(void)
         .intr_type = GPIO_INTR_DISABLE,
     };
     ESP_ERROR_CHECK(gpio_config(&config));
+
+    /* Repeat the safety-critical settings through public APIs. ESP-IDF 5.5
+       fixed the output-disable path used by gpio_set_direction() so
+       GPIO_ENABLE_REG, rather than a peripheral, controls output enable when
+       the pad function is GPIO. */
+    for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
+        ESP_ERROR_CHECK(
+            gpio_set_direction(INPUT_GPIOS[index], GPIO_MODE_INPUT));
+        ESP_ERROR_CHECK(
+            gpio_set_pull_mode(INPUT_GPIOS[index], GPIO_PULLDOWN_ONLY));
+    }
+    vTaskDelay(pdMS_TO_TICKS(1));
+
+    for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
+        configured_pad_configs[index] = read_pad_config(INPUT_GPIOS[index]);
+        configured_raw_levels[index] =
+            gpio_get_level(INPUT_GPIOS[index]) != 0;
+    }
 
     atomic_init(&stable_input_bits, read_input_bits());
     const BaseType_t task_result = xTaskCreate(
@@ -174,4 +226,25 @@ bool switch_input_get(size_t index)
     const uint_fast32_t bits =
         atomic_load_explicit(&stable_input_bits, memory_order_acquire);
     return (bits & ((uint_fast32_t)1U << index)) != 0;
+}
+
+bool switch_input_diagnostics_get(
+    size_t index,
+    switch_input_diagnostics_t *diagnostics)
+{
+    if (index >= SWITCH_INPUT_COUNT || diagnostics == NULL) {
+        return false;
+    }
+
+    *diagnostics = (switch_input_diagnostics_t){
+        .gpio = (int)INPUT_GPIOS[index],
+        .startup_config = startup_pad_configs[index],
+        .startup_raw_after_input_enable = startup_raw_levels[index],
+        .configured_config = configured_pad_configs[index],
+        .configured_raw = configured_raw_levels[index],
+        .current_config = read_pad_config(INPUT_GPIOS[index]),
+        .current_raw = gpio_get_level(INPUT_GPIOS[index]) != 0,
+        .stable = switch_input_get(index),
+    };
+    return true;
 }

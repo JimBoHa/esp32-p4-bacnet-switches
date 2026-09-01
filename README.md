@@ -73,9 +73,13 @@ subnet unless a BACnet/IP router forwards it.
 
 ## Build and flash
 
-ESP-IDF 5.4 is the closest match to Waveshare's current board examples. IDF 6.x
+Use ESP-IDF **5.5.4**. This release includes corrected GPIO output-disable
+routing needed to guarantee that GPIO20 and GPIO21 remain input-only. IDF 6.x
 is also accounted for through the conditional IP101 managed-component
-dependency.
+dependency. The supplied defaults select ESP32-P4 revision 0.x/1.x support,
+matching this Waveshare board. Do not reuse the resulting binary on an
+ESP32-P4 revision 3.x board; ESP-IDF documents those silicon families as
+mutually incompatible.
 
 From an ESP-IDF terminal on the flashing computer, perform the first
 OTA-capable installation over USB. This firmware introduces a dual-slot
@@ -114,7 +118,11 @@ configuration**.
 After the first USB flash, future **application** images can be installed over
 Ethernet. The device exposes only these authenticated HTTPS endpoints:
 
-- `GET /ota/status` — running project, version, partition, and rollback state.
+- `GET /ota/status` — running project, version, partition, rollback state, and
+  read-only GPIO20/GPIO21 pad diagnostics. Diagnostics include raw and
+  debounced values plus pull, input/output-enable, function-selection, and
+  output-enable-control state captured at startup, after configuration, and at
+  request time.
 - `POST /ota` — raw ESP-IDF application image upload.
 
 The server uses a project-specific ECDSA certificate, a 64-character bearer
