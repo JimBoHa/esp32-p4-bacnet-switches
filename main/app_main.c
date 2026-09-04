@@ -135,14 +135,6 @@ static void got_ip_event_handler(
             DIAGNOSTICS_EVENT_BACNET_SOCKET_FAILED, bacnet_result);
     }
     ESP_ERROR_CHECK_WITHOUT_ABORT(bacnet_result);
-#if CONFIG_OTA_HTTPS_ENABLED
-    const esp_err_t ota_result = ota_server_start();
-    if (ota_result != ESP_OK) {
-        diagnostics_record_event(
-            DIAGNOSTICS_EVENT_OTA_SERVER_FAILED, ota_result);
-    }
-    ESP_ERROR_CHECK_WITHOUT_ABORT(ota_result);
-#endif
 }
 
 static void lost_ip_event_handler(
@@ -207,6 +199,14 @@ void app_main(void)
         "starting BACnet Device %d with DHCP hostname %s",
         CONFIG_BACNET_DEVICE_INSTANCE,
         CONFIG_BACNET_HOSTNAME);
+#if CONFIG_OTA_HTTPS_ENABLED
+    const esp_err_t ota_result = ota_server_start();
+    if (ota_result != ESP_OK) {
+        diagnostics_record_event(
+            DIAGNOSTICS_EVENT_OTA_SERVER_FAILED, ota_result);
+    }
+    ESP_ERROR_CHECK_WITHOUT_ABORT(ota_result);
+#endif
     ESP_ERROR_CHECK(esp_eth_start(eth_handle));
     ESP_ERROR_CHECK(ota_start_rollback_validation());
 }

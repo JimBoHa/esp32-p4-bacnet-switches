@@ -7,11 +7,13 @@ set(private_dependencies
     esp_event
     esp_http_server
     esp_https_server
+    esp_hw_support
     esp_netif
     esp_partition
     esp_system
     esp_timer
     lwip
+    mbedtls
     nvs_flash
 )
 
@@ -35,6 +37,20 @@ if(CONFIG_OTA_HTTPS_ENABLED)
                 "or set ESP32_P4_OTA_SECRETS_DIR.")
         endif()
     endforeach()
+    add_custom_target(validate_ota_credentials ALL
+        COMMAND "${PYTHON}"
+            "${project_root}/tools/validate_ota_credentials.py"
+            --certificate "${CMAKE_CURRENT_LIST_DIR}/ota_server_cert.pem"
+            --private-key "${ota_private_key}"
+            --token-file "${ota_token_file}"
+        DEPENDS
+            "${project_root}/tools/validate_ota_credentials.py"
+            "${CMAKE_CURRENT_LIST_DIR}/ota_server_cert.pem"
+            "${ota_private_key}"
+            "${ota_token_file}"
+        COMMENT "Validating HTTPS OTA credentials"
+        VERBATIM
+    )
     list(APPEND ota_embed_files
         "ota_server_cert.pem"
         "${ota_private_key}"
@@ -49,12 +65,17 @@ idf_component_register(
         "bacnet_server.c"
         "diagnostics.c"
         "ota_auth.c"
+        "ota_health.c"
         "ota_server.c"
         "switch_inputs.c"
     INCLUDE_DIRS "."
     PRIV_REQUIRES ${private_dependencies}
     EMBED_TXTFILES ${ota_embed_files}
 )
+
+if(CONFIG_OTA_HTTPS_ENABLED)
+    add_dependencies(${COMPONENT_LIB} validate_ota_credentials)
+endif()
 
 execute_process(
     COMMAND git rev-parse --short=12 HEAD

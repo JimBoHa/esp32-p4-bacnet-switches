@@ -17,20 +17,27 @@
 #include "esp_log.h"
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
+#include "esp_random.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "ota_auth.h"
+#include "ota_health.h"
 #include "sdkconfig.h"
 #include "switch_inputs.h"
+#include "mbedtls/pk.h"
+#include "mbedtls/x509_crt.h"
 
 #define OTA_RECEIVE_BUFFER_BYTES 4096U
 #define OTA_MAX_CONSECUTIVE_TIMEOUTS 5U
 #define OTA_ROLLBACK_VALIDATION_INITIAL_DELAY_MS 10000U
 #define OTA_ROLLBACK_VALIDATION_POLL_MS 1000U
 #define OTA_ROLLBACK_VALIDATION_TIMEOUT_MS 60000U
+#define OTA_ROLLBACK_HEALTHY_SAMPLES 5U
 #define OTA_PROJECT_HEADER "X-Firmware-Project"
 #define OTA_STATUS_RESPONSE_BYTES 12288U
+#define OTA_SHA256_BYTES 32U
+#define OTA_SHA256_HEX_BYTES (OTA_SHA256_BYTES * 2U)
 
 static const char *TAG = "https_ota";
 
@@ -53,6 +60,7 @@ static httpd_handle_t server_handle;
 static atomic_bool upload_in_progress;
 static atomic_bool server_ready;
 static char bearer_token[OTA_TOKEN_MAX_LENGTH + 1U];
+static char running_image_sha256[OTA_SHA256_HEX_BYTES + 1U];
 
 static bool load_embedded_token(void)
 {
@@ -61,6 +69,88 @@ static bool load_embedded_token(void)
         (size_t)(ota_token_txt_end - ota_token_txt_start),
         bearer_token,
         sizeof(bearer_token));
+}
+
+static void sha256_to_hex(
+    const uint8_t digest[OTA_SHA256_BYTES],
+    char hexadecimal[OTA_SHA256_HEX_BYTES + 1U])
+{
+    static const char DIGITS[] = "0123456789abcdef";
+    for (size_t index = 0; index < OTA_SHA256_BYTES; ++index) {
+        hexadecimal[index * 2U] = DIGITS[digest[index] >> 4U];
+        hexadecimal[index * 2U + 1U] = DIGITS[digest[index] & 0x0FU];
+    }
+    hexadecimal[OTA_SHA256_HEX_BYTES] = '\0';
+}
+
+static int mbedtls_hardware_random(
+    void *context,
+    unsigned char *output,
+    size_t output_length)
+{
+    (void)context;
+    esp_fill_random(output, output_length);
+    return 0;
+}
+
+static esp_err_t validate_embedded_tls_credentials(void)
+{
+    mbedtls_x509_crt certificate;
+    mbedtls_pk_context private_key;
+    mbedtls_x509_crt_init(&certificate);
+    mbedtls_pk_init(&private_key);
+
+    int result = mbedtls_x509_crt_parse(
+        &certificate,
+        ota_server_cert_pem_start,
+        (size_t)(ota_server_cert_pem_end - ota_server_cert_pem_start));
+    if (result == 0) {
+        result = mbedtls_pk_parse_key(
+            &private_key,
+            ota_server_key_pem_start,
+            (size_t)(ota_server_key_pem_end - ota_server_key_pem_start),
+            NULL,
+            0U,
+            mbedtls_hardware_random,
+            NULL);
+    }
+    if (result == 0) {
+        result = mbedtls_pk_check_pair(
+            &certificate.pk,
+            &private_key,
+            mbedtls_hardware_random,
+            NULL);
+    }
+
+    mbedtls_pk_free(&private_key);
+    mbedtls_x509_crt_free(&certificate);
+    if (result != 0) {
+        const unsigned error_code =
+            result < 0 ? (unsigned)(-result) : (unsigned)result;
+        ESP_LOGE(
+            TAG,
+            "embedded TLS certificate/key preflight failed: -0x%04X",
+            error_code);
+        return ESP_ERR_INVALID_ARG;
+    }
+    return ESP_OK;
+}
+
+static esp_err_t cache_running_image_sha256(void)
+{
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    uint8_t digest[OTA_SHA256_BYTES];
+    ESP_RETURN_ON_FALSE(
+        running != NULL,
+        ESP_ERR_NOT_FOUND,
+        TAG,
+        "running OTA partition not found");
+    ESP_RETURN_ON_ERROR(
+        esp_partition_get_sha256(running, digest),
+        TAG,
+        "running firmware image hash validation failed");
+    sha256_to_hex(digest, running_image_sha256);
+    return ESP_OK;
 }
 
 static const char *json_bool(bool value)
@@ -180,6 +270,47 @@ static bool project_header_matches(httpd_req_t *request)
         memcmp(project, running->project_name, length) == 0;
 }
 
+static bool running_image_allows_update(
+    httpd_req_t *request,
+    esp_err_t *response_result)
+{
+    *response_result = ESP_OK;
+#if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+    if (running == NULL) {
+        *response_result = httpd_resp_send_err(
+            request,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "running OTA partition unavailable");
+        return false;
+    }
+    const esp_err_t state_result =
+        esp_ota_get_state_partition(running, &state);
+    if (state_result == ESP_ERR_NOT_FOUND) {
+        return true;
+    }
+    if (state_result != ESP_OK) {
+        *response_result = httpd_resp_send_err(
+            request,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "running OTA state unavailable");
+        return false;
+    }
+    if (state == ESP_OTA_IMG_NEW ||
+        state == ESP_OTA_IMG_PENDING_VERIFY) {
+        httpd_resp_set_status(request, "409 Conflict");
+        *response_result = httpd_resp_sendstr(
+            request,
+            "running firmware is not validated; retry after status is valid");
+        return false;
+    }
+#else
+    (void)request;
+#endif
+    return true;
+}
+
 static const char *ota_state_name(esp_ota_img_states_t state)
 {
     switch (state) {
@@ -245,6 +376,7 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             "{\"ota\":true,\"project\":\"%.31s\",\"version\":\"%.31s\","
             "\"idf_version\":\"%.31s\",\"partition\":\"%.15s\","
             "\"state\":\"%s\",\"port\":%u,\"git_revision\":\"%.31s\","
+            "\"image_sha256\":\"%s\","
             "\"system\":{\"uptime_ms\":%u,\"chip_temperature_c\":",
             app != NULL ? app->project_name : "unknown",
             app != NULL ? app->version : "unknown",
@@ -253,6 +385,7 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             ota_state_name(image_state),
             (unsigned)CONFIG_OTA_HTTPS_PORT,
             diagnostics_git_revision(),
+            running_image_sha256,
             (unsigned)snapshot.uptime_ms)) {
         goto encoding_failed;
     }
@@ -531,6 +664,10 @@ static esp_err_t ota_post_handler(httpd_req_t *request)
     if (!request_authenticated(request)) {
         return send_unauthorized(request);
     }
+    esp_err_t rejection_result = ESP_OK;
+    if (!running_image_allows_update(request, &rejection_result)) {
+        return rejection_result;
+    }
     if (!project_header_matches(request)) {
         return httpd_resp_send_err(
             request,
@@ -625,6 +762,15 @@ static esp_err_t ota_post_handler(httpd_req_t *request)
         goto fail;
     }
 
+    uint8_t candidate_digest[OTA_SHA256_BYTES];
+    char candidate_sha256[OTA_SHA256_HEX_BYTES + 1U];
+    result = esp_partition_get_sha256(update_partition, candidate_digest);
+    if (result != ESP_OK) {
+        error_message = "firmware image hash validation failed";
+        goto fail;
+    }
+    sha256_to_hex(candidate_digest, candidate_sha256);
+
     esp_app_desc_t candidate;
     result = esp_ota_get_partition_description(update_partition, &candidate);
     if (result != ESP_OK) {
@@ -650,14 +796,16 @@ static esp_err_t ota_post_handler(httpd_req_t *request)
 
     diagnostics_record_ota_result(DIAGNOSTICS_OTA_ACCEPTED, 0);
 
-    char response[192];
+    char response[256];
     const int response_length = snprintf(
         response,
         sizeof(response),
         "{\"accepted\":true,\"version\":\"%.31s\","
-        "\"partition\":\"%.15s\",\"rebooting\":true}",
+        "\"partition\":\"%.15s\",\"image_sha256\":\"%s\","
+        "\"rebooting\":true}",
         candidate.version,
-        update_partition->label);
+        update_partition->label,
+        candidate_sha256);
     httpd_resp_set_status(request, "202 Accepted");
     httpd_resp_set_type(request, "application/json");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
@@ -702,6 +850,14 @@ esp_err_t ota_server_start(void)
         ESP_ERR_INVALID_ARG,
         TAG,
         "embedded OTA token must contain 32-128 printable characters");
+    ESP_RETURN_ON_ERROR(
+        validate_embedded_tls_credentials(),
+        TAG,
+        "embedded HTTPS credentials are unusable");
+    ESP_RETURN_ON_ERROR(
+        cache_running_image_sha256(),
+        TAG,
+        "running firmware failed integrity preflight");
 
     httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
     config.port_secure = CONFIG_OTA_HTTPS_PORT;
@@ -783,7 +939,11 @@ bool ota_server_ready(void)
 static bool rollback_runtime_healthy(void)
 {
     diagnostics_snapshot_t snapshot;
-    return ota_server_ready() && bacnet_server_ready() &&
+    bool ota_healthy = true;
+#if CONFIG_OTA_HTTPS_ENABLED
+    ota_healthy = ota_server_ready();
+#endif
+    return ota_healthy && bacnet_server_ready() &&
         diagnostics_snapshot_get(&snapshot) && snapshot.network.link_up &&
         snapshot.network.ipv4_address != 0U &&
         snapshot.task_watchdog_subscribed[DIAGNOSTICS_TASK_SWITCH_INPUTS] &&
@@ -797,22 +957,44 @@ static void rollback_validation_task(void *argument)
     (void)argument;
     vTaskDelay(pdMS_TO_TICKS(OTA_ROLLBACK_VALIDATION_INITIAL_DELAY_MS));
 
+    ota_health_gate_t health_gate = {0};
     uint32_t elapsed_ms = OTA_ROLLBACK_VALIDATION_INITIAL_DELAY_MS;
-    while (elapsed_ms <= OTA_ROLLBACK_VALIDATION_TIMEOUT_MS) {
+    while (elapsed_ms < OTA_ROLLBACK_VALIDATION_TIMEOUT_MS) {
         const esp_partition_t *running = esp_ota_get_running_partition();
         esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
-        if (running == NULL ||
-            esp_ota_get_state_partition(running, &state) != ESP_OK ||
-            state != ESP_OTA_IMG_PENDING_VERIFY) {
+        if (running == NULL) {
+            diagnostics_record_ota_result(
+                DIAGNOSTICS_OTA_FAILED, ESP_ERR_NOT_FOUND);
+            ESP_LOGE(TAG, "running partition disappeared during validation");
+            esp_restart();
+        }
+        const esp_err_t state_result =
+            esp_ota_get_state_partition(running, &state);
+        if (state_result != ESP_OK) {
+            diagnostics_record_ota_result(
+                DIAGNOSTICS_OTA_FAILED, state_result);
+            ESP_LOGE(
+                TAG,
+                "could not read OTA state during validation: %s",
+                esp_err_to_name(state_result));
+            esp_restart();
+        }
+        if (state != ESP_OTA_IMG_PENDING_VERIFY) {
             vTaskDelete(NULL);
             return;
         }
-        if (rollback_runtime_healthy()) {
+        if (ota_health_gate_sample(
+                &health_gate,
+                rollback_runtime_healthy(),
+                OTA_ROLLBACK_HEALTHY_SAMPLES)) {
             const esp_err_t result = esp_ota_mark_app_valid_cancel_rollback();
             if (result == ESP_OK) {
                 diagnostics_record_ota_result(
                     DIAGNOSTICS_OTA_VALIDATED, 0);
-                ESP_LOGI(TAG, "healthy firmware marked valid");
+                ESP_LOGI(
+                    TAG,
+                    "firmware marked valid after %u consecutive healthy samples",
+                    OTA_ROLLBACK_HEALTHY_SAMPLES);
             } else {
                 diagnostics_record_ota_result(
                     DIAGNOSTICS_OTA_FAILED, result);
@@ -820,6 +1002,7 @@ static void rollback_validation_task(void *argument)
                     TAG,
                     "failed to confirm running firmware: %s",
                     esp_err_to_name(result));
+                esp_restart();
             }
             vTaskDelete(NULL);
             return;
@@ -832,7 +1015,7 @@ static void rollback_validation_task(void *argument)
     ESP_LOGE(TAG, "runtime health check failed; rolling back firmware");
     const esp_err_t result = esp_ota_mark_app_invalid_rollback_and_reboot();
     ESP_LOGE(TAG, "firmware rollback failed: %s", esp_err_to_name(result));
-    vTaskDelete(NULL);
+    esp_restart();
 }
 #endif
 
@@ -840,10 +1023,20 @@ esp_err_t ota_start_rollback_validation(void)
 {
 #if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
     const esp_partition_t *running = esp_ota_get_running_partition();
+    ESP_RETURN_ON_FALSE(
+        running != NULL,
+        ESP_ERR_NOT_FOUND,
+        TAG,
+        "running partition not found for OTA validation");
     esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
-    if (running == NULL ||
-        esp_ota_get_state_partition(running, &state) != ESP_OK ||
-        state != ESP_OTA_IMG_PENDING_VERIFY) {
+    const esp_err_t state_result =
+        esp_ota_get_state_partition(running, &state);
+    if (state_result == ESP_ERR_NOT_FOUND) {
+        return ESP_OK;
+    }
+    ESP_RETURN_ON_ERROR(
+        state_result, TAG, "could not read running OTA image state");
+    if (state != ESP_OTA_IMG_PENDING_VERIFY) {
         return ESP_OK;
     }
 
