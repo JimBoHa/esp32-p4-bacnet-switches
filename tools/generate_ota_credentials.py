@@ -63,11 +63,11 @@ def main() -> int:
     subprocess.run(
         [
             openssl,
-            "ecparam",
-            "-name",
-            "prime256v1",
-            "-genkey",
-            "-noout",
+            "genpkey",
+            "-algorithm",
+            "EC",
+            "-pkeyopt",
+            "ec_paramgen_curve:P-256",
             "-out",
             str(private_key),
         ],

@@ -52,6 +52,11 @@ class OtaToolTests(unittest.TestCase):
             self.assertEqual(stat.S_IMODE(secrets_directory.stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(private_key.stat().st_mode), 0o600)
             self.assertEqual(stat.S_IMODE(token_file.stat().st_mode), 0o600)
+            self.assertTrue(
+                private_key.read_text(encoding="ascii").startswith(
+                    "-----BEGIN PRIVATE KEY-----"
+                )
+            )
             self.assertTrue(32 <= len(token) <= 128)
             self.assertTrue(all(0x21 <= ord(character) <= 0x7E for character in token))
             self.assertNotIn(token, first.stdout)

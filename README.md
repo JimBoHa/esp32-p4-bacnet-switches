@@ -180,8 +180,10 @@ The client validates the TLS chain and pins the exact certificate in
 `main/ota_server_cert.pem`. Hostname checking is replaced by exact pinning
 because the board uses DHCP. The server additionally requires a 32–128
 character bearer token, verifies the ESP image and project name, writes only an
-inactive OTA slot, and uses bootloader rollback. New firmware is marked valid
-after ten seconds of stable execution.
+inactive OTA slot, and uses bootloader rollback. Health validation begins after
+ten seconds; the image must establish Ethernet, DHCP, HTTPS OTA, BACnet, and
+healthy monitored tasks within 60 seconds or it is marked invalid and rolled
+back automatically.
 
 ### Credential rotation and security boundary
 
@@ -203,8 +205,9 @@ are provisioned separately.
 The NVS-backed 16-entry fault log survives reboot and records boot/reset,
 abnormal reset (panic, brownout, watchdog, power glitch, or CPU lockup), link/IP
 loss, OTA accepted/failed/validated, input-test failures, temperature setup
-failure, BACnet socket failure, and task-watchdog registration failure. Entries
-include sequence, boot count, boot-relative time, type, and error code.
+failure, BACnet socket failure, HTTPS server startup failure, and task-watchdog
+registration failure. Entries include sequence, boot count, boot-relative time,
+type, and error code.
 
 The switch-input and BACnet tasks are registered with ESP-IDF's task watchdog.
 The status endpoint reports their registration, most recent heartbeat, and

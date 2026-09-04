@@ -44,6 +44,7 @@ static uint32_t last_acquired_ipv4_address;
 static esp_eth_handle_t ethernet_handle;
 static esp_reset_reason_t startup_reset_reason;
 static temperature_sensor_handle_t temperature_sensor;
+static atomic_bool temperature_read_failure_recorded;
 static atomic_uint_fast32_t bacnet_counters[DIAGNOSTICS_BACNET_COUNTER_COUNT];
 static atomic_uint_fast32_t active_cov_subscriptions;
 static atomic_uint_fast32_t task_last_heartbeat[DIAGNOSTICS_TASK_COUNT];
@@ -165,6 +166,7 @@ esp_err_t diagnostics_init(void)
         atomic_init(&bacnet_counters[index], 0U);
     }
     atomic_init(&active_cov_subscriptions, 0U);
+    atomic_init(&temperature_read_failure_recorded, false);
     for (size_t index = 0; index < DIAGNOSTICS_TASK_COUNT; ++index) {
         atomic_init(&task_last_heartbeat[index], 0U);
         atomic_init(&task_watchdog_subscribed[index], false);
@@ -250,6 +252,8 @@ const char *diagnostics_event_name(diagnostics_event_type_t event)
         return "temperature-sensor-failed";
     case DIAGNOSTICS_EVENT_BACNET_SOCKET_FAILED:
         return "bacnet-socket-failed";
+    case DIAGNOSTICS_EVENT_OTA_SERVER_FAILED:
+        return "ota-server-failed";
     case DIAGNOSTICS_EVENT_TASK_WATCHDOG_FAILED:
         return "task-watchdog-failed";
     default:
@@ -445,10 +449,19 @@ bool diagnostics_snapshot_get(diagnostics_snapshot_t *snapshot)
     snapshot->free_heap_bytes = esp_get_free_heap_size();
     snapshot->minimum_free_heap_bytes = esp_get_minimum_free_heap_size();
     snapshot->reset_reason = startup_reset_reason;
-    if (temperature_sensor != NULL &&
-        temperature_sensor_get_celsius(
-            temperature_sensor, &snapshot->chip_temperature_c) == ESP_OK) {
-        snapshot->chip_temperature_valid = true;
+    if (temperature_sensor != NULL) {
+        const esp_err_t temperature_result = temperature_sensor_get_celsius(
+            temperature_sensor, &snapshot->chip_temperature_c);
+        if (temperature_result == ESP_OK) {
+            snapshot->chip_temperature_valid = true;
+        } else if (!atomic_exchange_explicit(
+                       &temperature_read_failure_recorded,
+                       true,
+                       memory_order_acq_rel)) {
+            diagnostics_record_event(
+                DIAGNOSTICS_EVENT_TEMPERATURE_SENSOR_FAILED,
+                temperature_result);
+        }
     }
 
     if (xSemaphoreTake(state_mutex, portMAX_DELAY) != pdTRUE) {

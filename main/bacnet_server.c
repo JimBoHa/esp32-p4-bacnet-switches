@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <limits.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -103,6 +104,7 @@ typedef struct {
 } cov_subscription_t;
 
 static TaskHandle_t server_task_handle;
+static atomic_bool server_ready;
 static portMUX_TYPE server_lock = portMUX_INITIALIZER_UNLOCKED;
 static cov_subscription_t cov_subscriptions[BACNET_MAX_COV_SUBSCRIPTIONS];
 static uint8_t next_cov_invoke_id = 1U;
@@ -664,6 +666,7 @@ static void bacnet_server_task(void *argument)
         diagnostics_task_heartbeat(DIAGNOSTICS_TASK_BACNET);
         const int socket_fd = open_bacnet_socket();
         if (socket_fd < 0) {
+            atomic_store_explicit(&server_ready, false, memory_order_release);
             if (!socket_failure_recorded) {
                 diagnostics_record_event(
                     DIAGNOSTICS_EVENT_BACNET_SOCKET_FAILED, errno);
@@ -673,6 +676,7 @@ static void bacnet_server_task(void *argument)
             continue;
         }
         socket_failure_recorded = false;
+        atomic_store_explicit(&server_ready, true, memory_order_release);
 
         int64_t window_started_us = esp_timer_get_time();
         uint32_t responses_in_window = 0;
@@ -797,9 +801,15 @@ static void bacnet_server_task(void *argument)
                 apply_cov_subscription(&packet, &source, &state);
             }
         }
+        atomic_store_explicit(&server_ready, false, memory_order_release);
         close(socket_fd);
         vTaskDelay(pdMS_TO_TICKS(BACNET_SOCKET_RETRY_MS));
     }
+}
+
+bool bacnet_server_ready(void)
+{
+    return atomic_load_explicit(&server_ready, memory_order_acquire);
 }
 
 esp_err_t bacnet_server_start(esp_netif_t *netif)
@@ -838,6 +848,7 @@ esp_err_t bacnet_server_start(esp_netif_t *netif)
         return ESP_OK;
     }
 
+    atomic_store_explicit(&server_ready, false, memory_order_release);
     TaskHandle_t created_task = NULL;
     const BaseType_t created = xTaskCreate(
         bacnet_server_task,
