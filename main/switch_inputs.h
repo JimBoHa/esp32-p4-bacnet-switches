@@ -4,7 +4,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SWITCH_INPUT_COUNT 2U
+#define SWITCH_INPUT_COUNT 3U
 
 typedef struct {
     bool valid;

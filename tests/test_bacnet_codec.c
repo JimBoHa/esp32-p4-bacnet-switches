@@ -33,12 +33,16 @@ static const bacnet_device_state_t STATE = {
     .vendor_name = "Lab placeholder",
     .model_name = "Waveshare ESP32-P4-POE-ETH",
     .firmware_revision = "1.0.0",
-    .description = "Two toggle inputs",
-    .database_revision = 1,
-    .binary_input_instances = {20, 21},
-    .binary_input_names = {"GPIO20 Toggle", "GPIO21 Toggle"},
-    .binary_input_descriptions = {"GPIO20 input", "GPIO21 input"},
-    .binary_input_values = {false, true},
+    .description = "Three toggle inputs",
+    .database_revision = 2,
+    .binary_input_instances = {20, 21, 22},
+    .binary_input_names = {"GPIO20 Toggle", "GPIO21 Toggle", "GPIO22 Toggle"},
+    .binary_input_descriptions = {
+        "GPIO20 input",
+        "GPIO21 input",
+        "GPIO22 input",
+    },
+    .binary_input_values = {false, true, false},
 };
 
 static bool bytes_equal(
@@ -285,12 +289,27 @@ static void test_device_and_binary_input_properties(void)
         &STATE,
         response,
         sizeof(response));
-    static const uint8_t object_count_tail[] = {0x21, 0x03, 0x3F};
+    static const uint8_t object_count_tail[] = {0x21, 0x04, 0x3F};
     CHECK(result.response_length >= sizeof(object_count_tail));
     CHECK(memcmp(
         response + result.response_length - sizeof(object_count_tail),
         object_count_tail,
         sizeof(object_count_tail)) == 0);
+
+    request_length = read_property_request(
+        request, 8, STATE.device_instance, 155, false, 0);
+    result = bacnet_handle_packet(
+        request,
+        request_length,
+        &STATE,
+        response,
+        sizeof(response));
+    static const uint8_t database_revision_tail[] = {0x21, 0x02, 0x3F};
+    CHECK(result.response_length >= sizeof(database_revision_tail));
+    CHECK(memcmp(
+        response + result.response_length - sizeof(database_revision_tail),
+        database_revision_tail,
+        sizeof(database_revision_tail)) == 0);
 
     request_length = read_property_request(request, 3, 20, 85, false, 0);
     result = bacnet_handle_packet(
@@ -319,6 +338,36 @@ static void test_device_and_binary_input_properties(void)
         response + result.response_length - sizeof(active_tail),
         active_tail,
         sizeof(active_tail)) == 0);
+
+    request_length = read_property_request(request, 3, 22, 85, false, 0);
+    result = bacnet_handle_packet(
+        request,
+        request_length,
+        &STATE,
+        response,
+        sizeof(response));
+    CHECK(result.response_length >= sizeof(inactive_tail));
+    CHECK(memcmp(
+        response + result.response_length - sizeof(inactive_tail),
+        inactive_tail,
+        sizeof(inactive_tail)) == 0);
+
+    request_length = read_property_request(
+        request, 8, STATE.device_instance, 76, true, 4);
+    result = bacnet_handle_packet(
+        request,
+        request_length,
+        &STATE,
+        response,
+        sizeof(response));
+    static const uint8_t gpio22_object_tail[] = {
+        0xC4, 0x00, 0xC0, 0x00, 0x16, 0x3F,
+    };
+    CHECK(result.response_length >= sizeof(gpio22_object_tail));
+    CHECK(memcmp(
+        response + result.response_length - sizeof(gpio22_object_tail),
+        gpio22_object_tail,
+        sizeof(gpio22_object_tail)) == 0);
 
     request_length = read_property_request(request, 3, 20, 111, false, 0);
     result = bacnet_handle_packet(
@@ -469,7 +518,8 @@ static void test_errors_and_malformed_input(void)
         unknown_property_tail,
         sizeof(unknown_property_tail)) == 0);
 
-    request_length = read_property_request(request, 8, STATE.device_instance, 76, true, 4);
+    request_length = read_property_request(
+        request, 8, STATE.device_instance, 76, true, 5);
     result = bacnet_handle_packet(
         request,
         request_length,

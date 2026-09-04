@@ -192,7 +192,7 @@ static esp_err_t status_get_handler(httpd_req_t *request)
         (void)esp_ota_get_state_partition(running, &image_state);
     }
 
-    char response[3072];
+    char response[4096];
     size_t response_length = 0;
     if (!response_append(
             response,

@@ -46,6 +46,11 @@ menu "BACnet toggle input configuration"
         range 0 54
         default 21
 
+    config TOGGLE_INPUT_3_GPIO
+        int "Toggle input 3 GPIO"
+        range 0 54
+        default 22
+
     config TOGGLE_INPUT_1_OBJECT_INSTANCE
         int "Toggle input 1 Binary Input instance"
         range 0 4194302
@@ -56,6 +61,11 @@ menu "BACnet toggle input configuration"
         range 0 4194302
         default 21
 
+    config TOGGLE_INPUT_3_OBJECT_INSTANCE
+        int "Toggle input 3 Binary Input instance"
+        range 0 4194302
+        default 22
+
     config TOGGLE_INPUT_1_NAME
         string "Toggle input 1 BACnet object name"
         default "GPIO20 Toggle"
@@ -63,6 +73,10 @@ menu "BACnet toggle input configuration"
     config TOGGLE_INPUT_2_NAME
         string "Toggle input 2 BACnet object name"
         default "GPIO21 Toggle"
+
+    config TOGGLE_INPUT_3_NAME
+        string "Toggle input 3 BACnet object name"
+        default "GPIO22 Toggle"
 
     config TOGGLE_DEBOUNCE_MS
         int "Toggle switch debounce time (ms)"

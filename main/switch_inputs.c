@@ -17,6 +17,7 @@ static const char *TAG = "switch_inputs";
 static const gpio_num_t INPUT_GPIOS[SWITCH_INPUT_COUNT] = {
     (gpio_num_t)CONFIG_TOGGLE_INPUT_1_GPIO,
     (gpio_num_t)CONFIG_TOGGLE_INPUT_2_GPIO,
+    (gpio_num_t)CONFIG_TOGGLE_INPUT_3_GPIO,
 };
 
 static atomic_uint_fast32_t stable_input_bits;
@@ -158,14 +159,26 @@ static void switch_poll_task(void *argument)
 
 void switch_inputs_init(void)
 {
-    if (CONFIG_TOGGLE_INPUT_1_GPIO == CONFIG_TOGGLE_INPUT_2_GPIO) {
-        ESP_LOGE(TAG, "toggle inputs must use different GPIOs");
-        abort();
-    }
-    if (gpio_reserved_for_board_ethernet(CONFIG_TOGGLE_INPUT_1_GPIO) ||
-        gpio_reserved_for_board_ethernet(CONFIG_TOGGLE_INPUT_2_GPIO)) {
-        ESP_LOGE(TAG, "toggle input conflicts with board Ethernet wiring");
-        abort();
+    uint64_t pin_bit_mask = 0;
+
+    for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
+        if (gpio_reserved_for_board_ethernet((int)INPUT_GPIOS[index])) {
+            ESP_LOGE(
+                TAG,
+                "GPIO%d conflicts with board Ethernet wiring",
+                (int)INPUT_GPIOS[index]);
+            abort();
+        }
+        for (size_t prior = 0; prior < index; ++prior) {
+            if (INPUT_GPIOS[index] == INPUT_GPIOS[prior]) {
+                ESP_LOGE(
+                    TAG,
+                    "toggle inputs must use different GPIOs (GPIO%d repeats)",
+                    (int)INPUT_GPIOS[index]);
+                abort();
+            }
+        }
+        pin_bit_mask |= 1ULL << (unsigned)INPUT_GPIOS[index];
     }
 
     for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
@@ -176,9 +189,7 @@ void switch_inputs_init(void)
     }
 
     const gpio_config_t config = {
-        .pin_bit_mask =
-            (1ULL << CONFIG_TOGGLE_INPUT_1_GPIO) |
-            (1ULL << CONFIG_TOGGLE_INPUT_2_GPIO),
+        .pin_bit_mask = pin_bit_mask,
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_ENABLE,
