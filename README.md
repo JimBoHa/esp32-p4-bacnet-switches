@@ -61,15 +61,16 @@ and [official ESP-IDF Ethernet example](https://github.com/waveshareteam/ESP32-P
 | Binary Input | 20 | GPIO20 Toggle | `Inactive` / `Active` |
 | Binary Input | 21 | GPIO21 Toggle | `Inactive` / `Active` |
 
-Supported network services are Who-Is/I-Am and confirmed ReadProperty. An I-Am
-is broadcast after DHCP succeeds and is also returned for matching Who-Is
-requests. The switch values are debounced for 50 ms. BACnet clients poll the
-Binary Input `Present_Value` property.
+Supported network services are Who-Is/I-Am and confirmed ReadProperty. A global
+I-Am is broadcast after DHCP succeeds and in response to matching Who-Is
+requests. Discovery accepts local NPDUs and routed global-broadcast NPDUs such
+as the DNET 65535 form used by Metasys. The switch values are debounced for
+50 ms. BACnet clients poll the Binary Input `Present_Value` property.
 
 The BACnet implementation is intentionally read-only. It rejects WriteProperty
 and does not implement outputs, COV, ReadPropertyMultiple, BBMD/foreign-device
-registration, routing, or BACnet/SC. Discovery therefore stays on the local IP
-subnet unless a BACnet/IP router forwards it.
+registration, operation as a BACnet router, or BACnet/SC. Discovery therefore
+stays on the local IP subnet unless a BACnet/IP router forwards it.
 
 ## Build and flash
 

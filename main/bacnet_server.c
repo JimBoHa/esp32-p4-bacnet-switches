@@ -87,11 +87,29 @@ static bool response_allowed(int64_t *window_started_us, uint32_t *responses)
     return true;
 }
 
-static void send_i_am_broadcast(int socket_fd, esp_netif_t *netif)
+static bool broadcast_destination(
+    esp_netif_t *netif,
+    struct sockaddr_in *destination)
 {
     esp_netif_ip_info_t ip_info;
     if (esp_netif_get_ip_info(netif, &ip_info) != ESP_OK ||
         ip_info.ip.addr == 0U || ip_info.netmask.addr == 0U) {
+        return false;
+    }
+
+    *destination = (struct sockaddr_in){
+        .sin_family = AF_INET,
+        .sin_port = htons(CONFIG_BACNET_UDP_PORT),
+        .sin_addr.s_addr =
+            (ip_info.ip.addr & ip_info.netmask.addr) | ~ip_info.netmask.addr,
+    };
+    return true;
+}
+
+static void send_i_am_broadcast(int socket_fd, esp_netif_t *netif)
+{
+    struct sockaddr_in destination;
+    if (!broadcast_destination(netif, &destination)) {
         ESP_LOGW(TAG, "cannot announce I-Am before IPv4 configuration");
         return;
     }
@@ -106,12 +124,6 @@ static void send_i_am_broadcast(int socket_fd, esp_netif_t *netif)
         return;
     }
 
-    const struct sockaddr_in destination = {
-        .sin_family = AF_INET,
-        .sin_port = htons(CONFIG_BACNET_UDP_PORT),
-        .sin_addr.s_addr =
-            (ip_info.ip.addr & ip_info.netmask.addr) | ~ip_info.netmask.addr,
-    };
     if (sendto(
             socket_fd,
             response,
@@ -228,13 +240,22 @@ static void bacnet_server_task(void *argument)
                     &window_started_us, &responses_in_window)) {
                 continue;
             }
+            struct sockaddr_in destination = source;
+            socklen_t destination_length = source_length;
+            if (packet.broadcast_response) {
+                if (!broadcast_destination(netif, &destination)) {
+                    ESP_LOGW(TAG, "cannot send I-Am without IPv4 configuration");
+                    continue;
+                }
+                destination_length = sizeof(destination);
+            }
             if (sendto(
                     socket_fd,
                     response,
                     packet.response_length,
                     0,
-                    (const struct sockaddr *)&source,
-                    source_length) < 0) {
+                    (const struct sockaddr *)&destination,
+                    destination_length) < 0) {
                 ESP_LOGW(TAG, "UDP response failed: errno %d", errno);
             }
         }
