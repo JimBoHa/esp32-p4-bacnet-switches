@@ -1,12 +1,15 @@
 #include "bacnet_server.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "bacnet_codec.h"
+#include "diagnostics.h"
 #include "esp_app_desc.h"
 #include "esp_check.h"
 #include "esp_log.h"
@@ -21,6 +24,19 @@
 #define BACNET_RESPONSE_CAPACITY (BACNET_MAX_APDU + 6U)
 #define BACNET_MAX_RESPONSES_PER_SECOND 50U
 #define BACNET_SOCKET_RETRY_MS 1000U
+#define BACNET_RECEIVE_TIMEOUT_US 100000U
+#define BACNET_MAX_COV_SUBSCRIPTIONS 8U
+#define BACNET_COV_RETRY_MS 3000U
+#define BACNET_COV_MAX_RETRIES 3U
+#define BACNET_COV_MAX_LIFETIME_SECONDS 604800U
+
+enum {
+    BACNET_RELIABILITY_NO_FAULT = 0,
+    BACNET_RELIABILITY_UNRELIABLE_OTHER = 7,
+    BACNET_UNITS_DEGREES_CELSIUS = 62,
+    BACNET_UNITS_SECONDS = 73,
+    BACNET_UNITS_NO_UNITS = 95,
+};
 
 static const char *TAG = "bacnet_ip";
 _Static_assert(
@@ -31,13 +47,78 @@ static const char *const INPUT_DESCRIPTIONS[BACNET_BINARY_INPUT_COUNT] = {
     "Debounced read-only physical toggle input 2",
     "Debounced read-only physical toggle input 3",
 };
+static const uint32_t ANALOG_VALUE_INSTANCES[BACNET_ANALOG_VALUE_COUNT] = {
+    1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009,
+};
+static const char *const ANALOG_VALUE_NAMES[BACNET_ANALOG_VALUE_COUNT] = {
+    "Chip Temperature",
+    "System Uptime",
+    "Free Heap",
+    "Minimum Free Heap",
+    "Ethernet Link Losses",
+    "Ethernet Reconnects",
+    "BACnet RX Packets",
+    "BACnet Protocol Errors",
+    "Last Reset Reason",
+    "Active COV Subscriptions",
+};
+static const char *const ANALOG_VALUE_DESCRIPTIONS[
+    BACNET_ANALOG_VALUE_COUNT] = {
+    "ESP32-P4 internal die temperature; not ambient temperature",
+    "Seconds elapsed since the current boot",
+    "Currently available heap memory in bytes",
+    "Lowest available heap memory observed since boot in bytes",
+    "Ethernet link-down events observed since boot",
+    "Ethernet link reconnections after the initial link-up",
+    "BACnet/IP datagrams accepted since boot",
+    "Malformed, rejected, aborted, or error BACnet transactions",
+    "Numeric ESP-IDF reset reason for the current boot",
+    "Currently active BACnet COV subscriptions",
+};
+static const uint32_t ANALOG_VALUE_UNITS[BACNET_ANALOG_VALUE_COUNT] = {
+    BACNET_UNITS_DEGREES_CELSIUS,
+    BACNET_UNITS_SECONDS,
+    BACNET_UNITS_NO_UNITS,
+    BACNET_UNITS_NO_UNITS,
+    BACNET_UNITS_NO_UNITS,
+    BACNET_UNITS_NO_UNITS,
+    BACNET_UNITS_NO_UNITS,
+    BACNET_UNITS_NO_UNITS,
+    BACNET_UNITS_NO_UNITS,
+    BACNET_UNITS_NO_UNITS,
+};
+
+typedef struct {
+    bool active;
+    struct sockaddr_in recipient;
+    uint32_t process_id;
+    size_t input_index;
+    bool confirmed;
+    int64_t expires_at_us;
+    bool dirty;
+    bool awaiting_ack;
+    uint8_t invoke_id;
+    unsigned retry_count;
+    int64_t next_retry_us;
+} cov_subscription_t;
 
 static TaskHandle_t server_task_handle;
 static portMUX_TYPE server_lock = portMUX_INITIALIZER_UNLOCKED;
+static cov_subscription_t cov_subscriptions[BACNET_MAX_COV_SUBSCRIPTIONS];
+static uint8_t next_cov_invoke_id = 1U;
+static char application_software_version[64];
 
 static void snapshot_device_state(bacnet_device_state_t *state)
 {
     const esp_app_desc_t *app = esp_app_get_description();
+    diagnostics_snapshot_t diagnostics;
+    const bool diagnostics_valid = diagnostics_snapshot_get(&diagnostics);
+    (void)snprintf(
+        application_software_version,
+        sizeof(application_software_version),
+        "%.15s (%.31s)",
+        app != NULL ? app->version : "unknown",
+        diagnostics_git_revision());
     *state = (bacnet_device_state_t){
         .device_instance = CONFIG_BACNET_DEVICE_INSTANCE,
         .vendor_identifier = CONFIG_BACNET_VENDOR_IDENTIFIER,
@@ -45,9 +126,10 @@ static void snapshot_device_state(bacnet_device_state_t *state)
         .vendor_name = CONFIG_BACNET_VENDOR_NAME,
         .model_name = "Waveshare ESP32-P4-POE-ETH",
         .firmware_revision = app != NULL ? app->version : "unknown",
+        .application_software_version = application_software_version,
         .description =
             "Read-only BACnet/IP Device exposing three physical toggle inputs",
-        .database_revision = 2,
+        .database_revision = 3,
         .binary_input_instances = {
             CONFIG_TOGGLE_INPUT_1_OBJECT_INSTANCE,
             CONFIG_TOGGLE_INPUT_2_OBJECT_INSTANCE,
@@ -67,6 +149,127 @@ static void snapshot_device_state(bacnet_device_state_t *state)
             switch_input_get(0),
             switch_input_get(1),
             switch_input_get(2),
+        },
+        .binary_input_reliability = {
+            switch_input_faulted(0)
+                ? BACNET_RELIABILITY_UNRELIABLE_OTHER
+                : BACNET_RELIABILITY_NO_FAULT,
+            switch_input_faulted(1)
+                ? BACNET_RELIABILITY_UNRELIABLE_OTHER
+                : BACNET_RELIABILITY_NO_FAULT,
+            switch_input_faulted(2)
+                ? BACNET_RELIABILITY_UNRELIABLE_OTHER
+                : BACNET_RELIABILITY_NO_FAULT,
+        },
+        .binary_input_active_low = {
+            switch_input_active_low(0),
+            switch_input_active_low(1),
+            switch_input_active_low(2),
+        },
+        .analog_value_instances = {
+            ANALOG_VALUE_INSTANCES[0],
+            ANALOG_VALUE_INSTANCES[1],
+            ANALOG_VALUE_INSTANCES[2],
+            ANALOG_VALUE_INSTANCES[3],
+            ANALOG_VALUE_INSTANCES[4],
+            ANALOG_VALUE_INSTANCES[5],
+            ANALOG_VALUE_INSTANCES[6],
+            ANALOG_VALUE_INSTANCES[7],
+            ANALOG_VALUE_INSTANCES[8],
+            ANALOG_VALUE_INSTANCES[9],
+        },
+        .analog_value_names = {
+            ANALOG_VALUE_NAMES[0],
+            ANALOG_VALUE_NAMES[1],
+            ANALOG_VALUE_NAMES[2],
+            ANALOG_VALUE_NAMES[3],
+            ANALOG_VALUE_NAMES[4],
+            ANALOG_VALUE_NAMES[5],
+            ANALOG_VALUE_NAMES[6],
+            ANALOG_VALUE_NAMES[7],
+            ANALOG_VALUE_NAMES[8],
+            ANALOG_VALUE_NAMES[9],
+        },
+        .analog_value_descriptions = {
+            ANALOG_VALUE_DESCRIPTIONS[0],
+            ANALOG_VALUE_DESCRIPTIONS[1],
+            ANALOG_VALUE_DESCRIPTIONS[2],
+            ANALOG_VALUE_DESCRIPTIONS[3],
+            ANALOG_VALUE_DESCRIPTIONS[4],
+            ANALOG_VALUE_DESCRIPTIONS[5],
+            ANALOG_VALUE_DESCRIPTIONS[6],
+            ANALOG_VALUE_DESCRIPTIONS[7],
+            ANALOG_VALUE_DESCRIPTIONS[8],
+            ANALOG_VALUE_DESCRIPTIONS[9],
+        },
+        .analog_value_values = {
+            diagnostics_valid ? diagnostics.chip_temperature_c : 0.0F,
+            diagnostics_valid ? diagnostics.uptime_ms / 1000.0F : 0.0F,
+            diagnostics_valid ? (float)diagnostics.free_heap_bytes : 0.0F,
+            diagnostics_valid
+                ? (float)diagnostics.minimum_free_heap_bytes
+                : 0.0F,
+            diagnostics_valid
+                ? (float)diagnostics.network.link_down_count
+                : 0.0F,
+            diagnostics_valid
+                ? (float)diagnostics.network.reconnect_count
+                : 0.0F,
+            diagnostics_valid
+                ? (float)diagnostics.bacnet[DIAGNOSTICS_BACNET_RX]
+                : 0.0F,
+            diagnostics_valid
+                ? (float)(diagnostics.bacnet[DIAGNOSTICS_BACNET_ERRORS] +
+                    diagnostics.bacnet[DIAGNOSTICS_BACNET_MALFORMED])
+                : 0.0F,
+            diagnostics_valid ? (float)diagnostics.reset_reason : 0.0F,
+            diagnostics_valid
+                ? (float)diagnostics.active_cov_subscriptions
+                : 0.0F,
+        },
+        .analog_value_units = {
+            ANALOG_VALUE_UNITS[0],
+            ANALOG_VALUE_UNITS[1],
+            ANALOG_VALUE_UNITS[2],
+            ANALOG_VALUE_UNITS[3],
+            ANALOG_VALUE_UNITS[4],
+            ANALOG_VALUE_UNITS[5],
+            ANALOG_VALUE_UNITS[6],
+            ANALOG_VALUE_UNITS[7],
+            ANALOG_VALUE_UNITS[8],
+            ANALOG_VALUE_UNITS[9],
+        },
+        .analog_value_reliability = {
+            diagnostics_valid && diagnostics.chip_temperature_valid
+                ? BACNET_RELIABILITY_NO_FAULT
+                : BACNET_RELIABILITY_UNRELIABLE_OTHER,
+            diagnostics_valid
+                ? BACNET_RELIABILITY_NO_FAULT
+                : BACNET_RELIABILITY_UNRELIABLE_OTHER,
+            diagnostics_valid
+                ? BACNET_RELIABILITY_NO_FAULT
+                : BACNET_RELIABILITY_UNRELIABLE_OTHER,
+            diagnostics_valid
+                ? BACNET_RELIABILITY_NO_FAULT
+                : BACNET_RELIABILITY_UNRELIABLE_OTHER,
+            diagnostics_valid
+                ? BACNET_RELIABILITY_NO_FAULT
+                : BACNET_RELIABILITY_UNRELIABLE_OTHER,
+            diagnostics_valid
+                ? BACNET_RELIABILITY_NO_FAULT
+                : BACNET_RELIABILITY_UNRELIABLE_OTHER,
+            diagnostics_valid
+                ? BACNET_RELIABILITY_NO_FAULT
+                : BACNET_RELIABILITY_UNRELIABLE_OTHER,
+            diagnostics_valid
+                ? BACNET_RELIABILITY_NO_FAULT
+                : BACNET_RELIABILITY_UNRELIABLE_OTHER,
+            diagnostics_valid
+                ? BACNET_RELIABILITY_NO_FAULT
+                : BACNET_RELIABILITY_UNRELIABLE_OTHER,
+            diagnostics_valid
+                ? BACNET_RELIABILITY_NO_FAULT
+                : BACNET_RELIABILITY_UNRELIABLE_OTHER,
         },
     };
 }
@@ -93,6 +296,259 @@ static bool response_allowed(int64_t *window_started_us, uint32_t *responses)
     }
     (*responses)++;
     return true;
+}
+
+static bool same_recipient(
+    const struct sockaddr_in *left,
+    const struct sockaddr_in *right)
+{
+    return left->sin_family == right->sin_family &&
+        left->sin_port == right->sin_port &&
+        left->sin_addr.s_addr == right->sin_addr.s_addr;
+}
+
+static uint32_t active_subscription_count(void)
+{
+    uint32_t count = 0U;
+    for (size_t index = 0; index < BACNET_MAX_COV_SUBSCRIPTIONS; ++index) {
+        if (cov_subscriptions[index].active) {
+            count++;
+        }
+    }
+    return count;
+}
+
+static void update_active_subscription_diagnostic(void)
+{
+    diagnostics_bacnet_set_active_subscriptions(
+        active_subscription_count());
+}
+
+static bool input_index_for_instance(
+    const bacnet_device_state_t *state,
+    uint32_t instance,
+    size_t *input_index)
+{
+    for (size_t index = 0; index < BACNET_BINARY_INPUT_COUNT; ++index) {
+        if (state->binary_input_instances[index] == instance) {
+            *input_index = index;
+            return true;
+        }
+    }
+    return false;
+}
+
+static void apply_cov_subscription(
+    const bacnet_packet_result_t *packet,
+    const struct sockaddr_in *source,
+    const bacnet_device_state_t *state)
+{
+    size_t input_index = 0U;
+    if (!input_index_for_instance(
+            state, packet->cov_object_instance, &input_index)) {
+        return;
+    }
+
+    for (size_t index = 0; index < BACNET_MAX_COV_SUBSCRIPTIONS; ++index) {
+        cov_subscription_t *subscription = &cov_subscriptions[index];
+        if (subscription->active &&
+            same_recipient(&subscription->recipient, source) &&
+            subscription->process_id == packet->cov_process_id &&
+            subscription->input_index == input_index) {
+            if (packet->cov_cancel) {
+                memset(subscription, 0, sizeof(*subscription));
+                update_active_subscription_diagnostic();
+                return;
+            }
+            subscription->confirmed = packet->cov_confirmed;
+            const uint32_t lifetime =
+                packet->cov_lifetime_seconds >
+                    BACNET_COV_MAX_LIFETIME_SECONDS
+                ? BACNET_COV_MAX_LIFETIME_SECONDS
+                : packet->cov_lifetime_seconds;
+            subscription->expires_at_us = lifetime == 0U
+                ? 0LL
+                : esp_timer_get_time() + (int64_t)lifetime * 1000000LL;
+            subscription->dirty = true;
+            subscription->awaiting_ack = false;
+            subscription->retry_count = 0U;
+            return;
+        }
+    }
+    if (packet->cov_cancel) {
+        return;
+    }
+
+    size_t selected = BACNET_MAX_COV_SUBSCRIPTIONS;
+    int64_t earliest_expiry = INT64_MAX;
+    for (size_t index = 0; index < BACNET_MAX_COV_SUBSCRIPTIONS; ++index) {
+        if (!cov_subscriptions[index].active) {
+            selected = index;
+            break;
+        }
+        const int64_t expiry = cov_subscriptions[index].expires_at_us == 0LL
+            ? INT64_MAX
+            : cov_subscriptions[index].expires_at_us;
+        if (expiry < earliest_expiry) {
+            earliest_expiry = expiry;
+            selected = index;
+        }
+    }
+    if (selected >= BACNET_MAX_COV_SUBSCRIPTIONS) {
+        selected = 0U;
+    }
+
+    const uint32_t lifetime =
+        packet->cov_lifetime_seconds > BACNET_COV_MAX_LIFETIME_SECONDS
+        ? BACNET_COV_MAX_LIFETIME_SECONDS
+        : packet->cov_lifetime_seconds;
+    cov_subscriptions[selected] = (cov_subscription_t){
+        .active = true,
+        .recipient = *source,
+        .process_id = packet->cov_process_id,
+        .input_index = input_index,
+        .confirmed = packet->cov_confirmed,
+        .expires_at_us = lifetime == 0U
+            ? 0LL
+            : esp_timer_get_time() + (int64_t)lifetime * 1000000LL,
+        .dirty = true,
+    };
+    update_active_subscription_diagnostic();
+}
+
+static void handle_cov_ack(
+    const bacnet_packet_result_t *packet,
+    const struct sockaddr_in *source)
+{
+    for (size_t index = 0; index < BACNET_MAX_COV_SUBSCRIPTIONS; ++index) {
+        cov_subscription_t *subscription = &cov_subscriptions[index];
+        if (!subscription->active || !subscription->awaiting_ack ||
+            subscription->invoke_id != packet->invoke_id ||
+            !same_recipient(&subscription->recipient, source)) {
+            continue;
+        }
+        subscription->awaiting_ack = false;
+        subscription->retry_count = 0U;
+        if (packet->cov_ack_error) {
+            diagnostics_bacnet_increment(DIAGNOSTICS_BACNET_ERRORS);
+            memset(subscription, 0, sizeof(*subscription));
+            update_active_subscription_diagnostic();
+        } else {
+            diagnostics_bacnet_increment(DIAGNOSTICS_BACNET_COV_ACKED);
+        }
+        return;
+    }
+}
+
+static uint32_t cov_time_remaining_seconds(
+    const cov_subscription_t *subscription,
+    int64_t now_us)
+{
+    if (subscription->expires_at_us == 0LL) {
+        return 0U;
+    }
+    if (subscription->expires_at_us <= now_us) {
+        return 0U;
+    }
+    const int64_t remaining = subscription->expires_at_us - now_us;
+    return (uint32_t)((remaining + 999999LL) / 1000000LL);
+}
+
+static void service_cov_subscriptions(
+    int socket_fd,
+    const bacnet_device_state_t *state,
+    bool last_values[BACNET_BINARY_INPUT_COUNT],
+    uint32_t last_reliability[BACNET_BINARY_INPUT_COUNT])
+{
+    const int64_t now_us = esp_timer_get_time();
+    for (size_t input = 0; input < BACNET_BINARY_INPUT_COUNT; ++input) {
+        if (last_values[input] == state->binary_input_values[input] &&
+            last_reliability[input] ==
+                state->binary_input_reliability[input]) {
+            continue;
+        }
+        last_values[input] = state->binary_input_values[input];
+        last_reliability[input] = state->binary_input_reliability[input];
+        for (size_t index = 0;
+             index < BACNET_MAX_COV_SUBSCRIPTIONS;
+             ++index) {
+            if (cov_subscriptions[index].active &&
+                cov_subscriptions[index].input_index == input) {
+                cov_subscriptions[index].dirty = true;
+            }
+        }
+    }
+
+    uint8_t notification[BACNET_RESPONSE_CAPACITY];
+    for (size_t index = 0; index < BACNET_MAX_COV_SUBSCRIPTIONS; ++index) {
+        cov_subscription_t *subscription = &cov_subscriptions[index];
+        if (!subscription->active) {
+            continue;
+        }
+        if (subscription->expires_at_us != 0LL &&
+            subscription->expires_at_us <= now_us) {
+            memset(subscription, 0, sizeof(*subscription));
+            continue;
+        }
+
+        bool retry = false;
+        if (subscription->awaiting_ack) {
+            if (now_us < subscription->next_retry_us) {
+                continue;
+            }
+            if (subscription->retry_count >= BACNET_COV_MAX_RETRIES) {
+                diagnostics_bacnet_increment(
+                    DIAGNOSTICS_BACNET_COV_TIMEOUTS);
+                diagnostics_bacnet_increment(DIAGNOSTICS_BACNET_ERRORS);
+                memset(subscription, 0, sizeof(*subscription));
+                continue;
+            }
+            retry = true;
+            subscription->retry_count++;
+        } else if (!subscription->dirty) {
+            continue;
+        }
+
+        if (subscription->confirmed && !retry) {
+            subscription->invoke_id = next_cov_invoke_id++;
+            if (next_cov_invoke_id == 0U) {
+                next_cov_invoke_id = 1U;
+            }
+            subscription->retry_count = 0U;
+        }
+        const size_t length = bacnet_encode_cov_notification(
+            state,
+            subscription->input_index,
+            subscription->process_id,
+            cov_time_remaining_seconds(subscription, now_us),
+            subscription->confirmed,
+            subscription->invoke_id,
+            notification,
+            sizeof(notification));
+        if (length == 0U ||
+            sendto(
+                socket_fd,
+                notification,
+                length,
+                0,
+                (const struct sockaddr *)&subscription->recipient,
+                sizeof(subscription->recipient)) < 0) {
+            diagnostics_bacnet_increment(DIAGNOSTICS_BACNET_ERRORS);
+            if (subscription->confirmed && retry) {
+                subscription->next_retry_us =
+                    now_us + (int64_t)BACNET_COV_RETRY_MS * 1000LL;
+            }
+            continue;
+        }
+        diagnostics_bacnet_increment(DIAGNOSTICS_BACNET_COV_SENT);
+        subscription->dirty = false;
+        if (subscription->confirmed) {
+            subscription->awaiting_ack = true;
+            subscription->next_retry_us =
+                now_us + (int64_t)BACNET_COV_RETRY_MS * 1000LL;
+        }
+    }
+    update_active_subscription_diagnostic();
 }
 
 static bool broadcast_destination(
@@ -159,8 +615,8 @@ static int open_bacnet_socket(void)
 
     const int enabled = 1;
     const struct timeval timeout = {
-        .tv_sec = 1,
-        .tv_usec = 0,
+        .tv_sec = 0,
+        .tv_usec = BACNET_RECEIVE_TIMEOUT_US,
     };
     if (setsockopt(
             socket_fd, SOL_SOCKET, SO_REUSEADDR, &enabled, sizeof(enabled)) < 0 ||
@@ -198,22 +654,52 @@ static void bacnet_server_task(void *argument)
     esp_netif_t *netif = argument;
     uint8_t request[BACNET_MAX_REQUEST_BYTES + 1U];
     uint8_t response[BACNET_RESPONSE_CAPACITY];
+    bool socket_failure_recorded = false;
+    memset(cov_subscriptions, 0, sizeof(cov_subscriptions));
+    diagnostics_bacnet_set_active_subscriptions(0U);
+    ESP_ERROR_CHECK_WITHOUT_ABORT(
+        diagnostics_task_watchdog_subscribe(DIAGNOSTICS_TASK_BACNET));
 
     for (;;) {
+        diagnostics_task_heartbeat(DIAGNOSTICS_TASK_BACNET);
         const int socket_fd = open_bacnet_socket();
         if (socket_fd < 0) {
+            if (!socket_failure_recorded) {
+                diagnostics_record_event(
+                    DIAGNOSTICS_EVENT_BACNET_SOCKET_FAILED, errno);
+                socket_failure_recorded = true;
+            }
             vTaskDelay(pdMS_TO_TICKS(BACNET_SOCKET_RETRY_MS));
             continue;
         }
+        socket_failure_recorded = false;
 
         int64_t window_started_us = esp_timer_get_time();
         uint32_t responses_in_window = 0;
         send_i_am_broadcast(socket_fd, netif);
+        bacnet_device_state_t initial_state;
+        snapshot_device_state(&initial_state);
+        bool last_values[BACNET_BINARY_INPUT_COUNT];
+        uint32_t last_reliability[BACNET_BINARY_INPUT_COUNT];
+        memcpy(
+            last_values,
+            initial_state.binary_input_values,
+            sizeof(last_values));
+        memcpy(
+            last_reliability,
+            initial_state.binary_input_reliability,
+            sizeof(last_reliability));
 
         for (;;) {
+            diagnostics_task_heartbeat(DIAGNOSTICS_TASK_BACNET);
             if (ulTaskNotifyTake(pdTRUE, 0) != 0U) {
                 send_i_am_broadcast(socket_fd, netif);
             }
+
+            bacnet_device_state_t cov_state;
+            snapshot_device_state(&cov_state);
+            service_cov_subscriptions(
+                socket_fd, &cov_state, last_values, last_reliability);
 
             struct sockaddr_in source;
             socklen_t source_length = sizeof(source);
@@ -234,6 +720,7 @@ static void bacnet_server_task(void *argument)
             if (!valid_source(&source)) {
                 continue;
             }
+            diagnostics_bacnet_increment(DIAGNOSTICS_BACNET_RX);
 
             bacnet_device_state_t state;
             snapshot_device_state(&state);
@@ -243,9 +730,41 @@ static void bacnet_server_task(void *argument)
                 &state,
                 response,
                 sizeof(response));
-            if (packet.response_length == 0U ||
-                !response_allowed(
+            switch (packet.kind) {
+            case BACNET_PACKET_WHO_IS:
+                diagnostics_bacnet_increment(DIAGNOSTICS_BACNET_WHO_IS);
+                break;
+            case BACNET_PACKET_READ_PROPERTY:
+                diagnostics_bacnet_increment(
+                    DIAGNOSTICS_BACNET_READ_PROPERTY);
+                break;
+            case BACNET_PACKET_READ_PROPERTY_MULTIPLE:
+                diagnostics_bacnet_increment(
+                    DIAGNOSTICS_BACNET_READ_PROPERTY_MULTIPLE);
+                break;
+            case BACNET_PACKET_SUBSCRIBE_COV:
+                diagnostics_bacnet_increment(
+                    DIAGNOSTICS_BACNET_SUBSCRIBE_COV);
+                break;
+            case BACNET_PACKET_COV_ACK:
+                handle_cov_ack(&packet, &source);
+                break;
+            case BACNET_PACKET_MALFORMED:
+                diagnostics_bacnet_increment(
+                    DIAGNOSTICS_BACNET_MALFORMED);
+                break;
+            case BACNET_PACKET_IGNORED:
+            default:
+                diagnostics_bacnet_increment(DIAGNOSTICS_BACNET_IGNORED);
+                break;
+            }
+            if (packet.response_length == 0U) {
+                continue;
+            }
+            if (!response_allowed(
                     &window_started_us, &responses_in_window)) {
+                diagnostics_bacnet_increment(
+                    DIAGNOSTICS_BACNET_RATE_LIMITED);
                 continue;
             }
             struct sockaddr_in destination = source;
@@ -257,14 +776,25 @@ static void bacnet_server_task(void *argument)
                 }
                 destination_length = sizeof(destination);
             }
-            if (sendto(
+            const ssize_t sent = sendto(
                     socket_fd,
                     response,
                     packet.response_length,
                     0,
                     (const struct sockaddr *)&destination,
-                    destination_length) < 0) {
+                    destination_length);
+            if (sent < 0) {
                 ESP_LOGW(TAG, "UDP response failed: errno %d", errno);
+                diagnostics_bacnet_increment(DIAGNOSTICS_BACNET_ERRORS);
+                continue;
+            }
+            diagnostics_bacnet_increment(DIAGNOSTICS_BACNET_RESPONSES);
+            if (response[6] == 0x50U || response[6] == 0x60U ||
+                response[6] == 0x70U || response[6] == 0x71U) {
+                diagnostics_bacnet_increment(DIAGNOSTICS_BACNET_ERRORS);
+            }
+            if (packet.kind == BACNET_PACKET_SUBSCRIBE_COV) {
+                apply_cov_subscription(&packet, &source, &state);
             }
         }
         close(socket_fd);
@@ -312,7 +842,7 @@ esp_err_t bacnet_server_start(esp_netif_t *netif)
     const BaseType_t created = xTaskCreate(
         bacnet_server_task,
         "bacnet_ip",
-        8192,
+        12288,
         netif,
         5,
         &created_task);
