@@ -7,6 +7,7 @@
 
 #include "bacnet_codec.h"
 #include "ota_auth.h"
+#include "ota_health.h"
 
 #define ARRAY_LENGTH(value) (sizeof(value) / sizeof((value)[0]))
 
@@ -32,8 +33,8 @@ static const bacnet_device_state_t STATE = {
     .device_name = "ESP32-P4 Toggle Inputs",
     .vendor_name = "Lab placeholder",
     .model_name = "Waveshare ESP32-P4-POE-ETH",
-    .firmware_revision = "1.3.1",
-    .application_software_version = "1.3.1 (0123456789ab)",
+    .firmware_revision = "1.3.2",
+    .application_software_version = "1.3.2 (0123456789ab)",
     .description = "Three toggle inputs",
     .database_revision = 3,
     .binary_input_instances = {20, 21, 22},
@@ -1356,6 +1357,29 @@ static void test_ota_bearer_authentication(void)
         NULL, 0U, copied_token, sizeof(copied_token)));
 }
 
+static void test_ota_rollback_health_gate(void)
+{
+    ota_health_gate_t gate = {0};
+
+    CHECK(!ota_health_gate_sample(NULL, true, 5U));
+    CHECK(!ota_health_gate_sample(&gate, true, 0U));
+    CHECK(gate.consecutive_healthy_samples == 0U);
+    for (size_t sample = 0; sample < 4U; ++sample) {
+        CHECK(!ota_health_gate_sample(&gate, true, 5U));
+        CHECK(gate.consecutive_healthy_samples == sample + 1U);
+    }
+    CHECK(ota_health_gate_sample(&gate, true, 5U));
+    CHECK(gate.consecutive_healthy_samples == 5U);
+    CHECK(ota_health_gate_sample(&gate, true, 5U));
+    CHECK(gate.consecutive_healthy_samples == 5U);
+    CHECK(!ota_health_gate_sample(&gate, false, 5U));
+    CHECK(gate.consecutive_healthy_samples == 0U);
+    CHECK(!ota_health_gate_sample(&gate, true, 5U));
+    ota_health_gate_reset(&gate);
+    CHECK(gate.consecutive_healthy_samples == 0U);
+    ota_health_gate_reset(NULL);
+}
+
 int main(void)
 {
     test_reference_vectors();
@@ -1365,6 +1389,7 @@ int main(void)
     test_errors_and_malformed_input();
     test_capacity_guards_and_random_frames();
     test_ota_bearer_authentication();
+    test_ota_rollback_health_gate();
     printf("bacnet_codec_tests: %u checks passed\n", tests_run);
     return EXIT_SUCCESS;
 }

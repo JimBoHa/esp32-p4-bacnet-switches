@@ -9,6 +9,7 @@ add_executable(
     test_bacnet_codec.c
     ../main/bacnet_codec.c
     ../main/ota_auth.c
+    ../main/ota_health.c
 )
 target_include_directories(bacnet_codec_tests PRIVATE ../main)
 target_compile_features(bacnet_codec_tests PRIVATE c_std_11)

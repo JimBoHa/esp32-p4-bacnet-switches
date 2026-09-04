@@ -125,7 +125,9 @@ private key and bearer token to ignored, permission-restricted files under
 `secrets/`. Back up `secrets/` in an approved secret store. A later clone cannot
 manage the device without that token and key. To build with a securely supplied
 directory instead, set `ESP32_P4_OTA_SECRETS_DIR`; it must contain
-`ota_server_key.pem` and `ota_token.txt`.
+`ota_server_key.pem` and `ota_token.txt`. Every OTA-enabled build validates the
+token, certificate lifetime and server-auth purpose, P-256 PKCS#8 key format,
+private file permissions, and certificate/key match before compiling.
 
 Perform the first installation over USB. The project uses a dual-slot
 partition table, so erase an older single-image layout once:
@@ -149,9 +151,10 @@ pins against the board schematic.
 The HTTPS server provides three bearer-authenticated endpoints:
 
 - `GET /ota/status` — firmware/partition/rollback state, Git revision, reset
-  reason, uptime, temperature, heap, watchdog health, Ethernet negotiation,
-  DHCP/address state, BACnet counters, input pad/raw/debounced/transition data,
-  self-test results, and the persistent fault log.
+  reason, exact running-image SHA-256, uptime, temperature, heap, watchdog
+  health, Ethernet negotiation, DHCP/address state, BACnet counters, input
+  pad/raw/debounced/transition data, self-test results, and the persistent fault
+  log.
 - `POST /diagnostics/input-self-test` — weak-pull electrical test. Disconnect
   all field wiring first. The test never drives a GPIO as an output.
 - `POST /ota` — validated application-image upload and reboot.
@@ -176,14 +179,24 @@ python3 tools/ota_client.py upload \
   build/esp32_p4_bacnet_switches.bin
 ```
 
-The client validates the TLS chain and pins the exact certificate in
-`main/ota_server_cert.pem`. Hostname checking is replaced by exact pinning
-because the board uses DHCP. The server additionally requires a 32–128
-character bearer token, verifies the ESP image and project name, writes only an
-inactive OTA slot, and uses bootloader rollback. Health validation begins after
-ten seconds; the image must establish Ethernet, DHCP, HTTPS OTA, BACnet, and
-healthy monitored tasks within 60 seconds or it is marked invalid and rolled
-back automatically.
+The client pins the exact certificate in `main/ota_server_cert.pem` before it
+sends any HTTP data. CA and hostname checking are replaced by exact DER
+certificate pinning because the device uses a self-signed leaf certificate and
+DHCP. The server additionally requires a 32–128
+character bearer token, validates its embedded certificate/key pair and running
+image at startup, verifies each uploaded ESP image and project name, writes only
+an inactive OTA slot, and uses bootloader rollback. Uploads are blocked while a
+new image is pending so the known-good rollback slot cannot be overwritten.
+Health validation begins after ten seconds; the image must establish Ethernet,
+DHCP, HTTPS OTA, BACnet, and healthy monitored tasks for five consecutive
+samples within 60 seconds or it is marked invalid and rolled back automatically.
+
+Before uploading, the client rejects a corrupt image, a non-ESP32-P4 image, or a
+wrong-project image. After acceptance it waits through reboot and reports
+success only when the exact uploaded image hash is running in the `valid` state.
+Use `--no-wait` only when another system will perform that verification. For a
+credential rotation, supply `--post-cert` and `--post-token-file` so the same
+command verifies the replacement credentials after reboot.
 
 ### Credential rotation and security boundary
 
