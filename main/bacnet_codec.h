@@ -35,6 +35,7 @@ typedef enum {
 typedef struct {
     bacnet_packet_kind_t kind;
     size_t response_length;
+    bool broadcast_response;
 } bacnet_packet_result_t;
 
 size_t bacnet_encode_i_am(
