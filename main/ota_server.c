@@ -863,6 +863,7 @@ esp_err_t ota_server_start(void)
     config.port_secure = CONFIG_OTA_HTTPS_PORT;
     config.httpd.max_uri_handlers = 3;
     config.httpd.max_open_sockets = 2;
+    config.httpd.lru_purge_enable = true;
     config.httpd.stack_size = 12288;
     config.servercert = ota_server_cert_pem_start;
     config.servercert_len =

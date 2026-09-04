@@ -35,6 +35,37 @@ def _load_client_module():
     return module
 
 
+def _test_firmware_image(
+    *,
+    chip_id: int = 18,
+    flash_size_code: int = 0x50,
+    version: bytes = b"1.3.2",
+    project: bytes = b"esp32_p4_bacnet_switches",
+) -> bytearray:
+    header = bytearray(24)
+    header[0] = 0xE9
+    header[1] = 1
+    header[2] = 2  # DIO
+    header[3] = flash_size_code | 0x0F  # 80 MHz
+    struct.pack_into("<H", header, 12, chip_id)
+    header[23] = 1
+
+    segment = bytearray(256)
+    struct.pack_into("<I", segment, 0, 0xABCD5432)
+    segment[16 : 16 + len(version)] = version
+    segment[48 : 48 + len(project)] = project
+    image = header + struct.pack("<II", 0x48080020, len(segment)) + segment
+
+    checksum = 0xEF
+    for byte in segment:
+        checksum ^= byte
+    while len(image) % 16 != 15:
+        image.append(0)
+    image.append(checksum)
+    image.extend(hashlib.sha256(image).digest())
+    return image
+
+
 class OtaToolTests(unittest.TestCase):
     def test_generated_credentials_are_valid_private_and_replace_safe(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -210,17 +241,7 @@ class OtaToolTests(unittest.TestCase):
 
     def test_client_validates_esp32_p4_image_before_upload(self) -> None:
         client = _load_client_module()
-        descriptor_offset = 32
-        image = bytearray(descriptor_offset + 256)
-        image[0] = 0xE9
-        struct.pack_into("<H", image, 12, 18)
-        image[23] = 1
-        struct.pack_into("<I", image, 28, 256)
-        struct.pack_into("<I", image, descriptor_offset, 0xABCD5432)
-        image[descriptor_offset + 16 : descriptor_offset + 22] = b"1.3.2\0"
-        project = b"esp32_p4_bacnet_switches\0"
-        image[descriptor_offset + 48 : descriptor_offset + 48 + len(project)] = project
-        image.extend(hashlib.sha256(image).digest())
+        image = _test_firmware_image()
 
         with tempfile.TemporaryDirectory() as temporary:
             firmware = Path(temporary) / "firmware.bin"
@@ -231,16 +252,33 @@ class OtaToolTests(unittest.TestCase):
             self.assertEqual(metadata.image_sha256, bytes(image[-32:]).hex())
 
             corrupted = bytearray(image)
-            corrupted[100] ^= 1
+            corrupted[20] ^= 1
             firmware.write_bytes(corrupted)
             with self.assertRaisesRegex(ValueError, "validation hash"):
                 client._inspect_firmware(firmware)
 
-            wrong_chip = bytearray(image[:-32])
-            struct.pack_into("<H", wrong_chip, 12, 9)
-            wrong_chip.extend(hashlib.sha256(wrong_chip).digest())
+            wrong_chip = _test_firmware_image(chip_id=9)
             firmware.write_bytes(wrong_chip)
             with self.assertRaisesRegex(ValueError, "not ESP32-P4"):
+                client._inspect_firmware(firmware)
+
+            wrong_flash_size = _test_firmware_image(flash_size_code=0x40)
+            firmware.write_bytes(wrong_flash_size)
+            with self.assertRaisesRegex(ValueError, "32 MB flash"):
+                client._inspect_firmware(firmware)
+
+            wrong_checksum = bytearray(image[:-32])
+            wrong_checksum[-1] ^= 1
+            wrong_checksum.extend(hashlib.sha256(wrong_checksum).digest())
+            firmware.write_bytes(wrong_checksum)
+            with self.assertRaisesRegex(ValueError, "image checksum"):
+                client._inspect_firmware(firmware)
+
+            malformed_segment = bytearray(image[:-32])
+            struct.pack_into("<I", malformed_segment, 28, len(image))
+            malformed_segment.extend(hashlib.sha256(malformed_segment).digest())
+            firmware.write_bytes(malformed_segment)
+            with self.assertRaisesRegex(ValueError, "segment data is truncated"):
                 client._inspect_firmware(firmware)
 
     def test_client_completes_tls_handshake_and_rejects_wrong_pin(self) -> None:
@@ -309,6 +347,74 @@ class OtaToolTests(unittest.TestCase):
                 server.shutdown()
                 server.server_close()
                 thread.join(timeout=5.0)
+
+    def test_client_uploads_validated_bytes_and_requires_acceptance_hash(self) -> None:
+        client = _load_client_module()
+        image = _test_firmware_image()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            firmware = Path(temporary) / "firmware.bin"
+            firmware.write_bytes(image)
+            metadata = client._inspect_firmware(firmware)
+
+            class Connection:
+                def __init__(self) -> None:
+                    self.sent = bytearray()
+
+                def putrequest(self, *_args: object) -> None:
+                    pass
+
+                def putheader(self, *_args: object) -> None:
+                    pass
+
+                def endheaders(self) -> None:
+                    pass
+
+                def send(self, data: bytes) -> None:
+                    if not self.sent:
+                        firmware.write_bytes(b"changed after validation")
+                    self.sent.extend(data)
+
+                def getresponse(self) -> object:
+                    return object()
+
+                def close(self) -> None:
+                    pass
+
+            arguments = type(
+                "Arguments",
+                (),
+                {
+                    "firmware": firmware,
+                    "project": "esp32_p4_bacnet_switches",
+                    "post_cert": None,
+                    "cert": Path("certificate.pem"),
+                    "no_wait": True,
+                    "post_token_file": None,
+                    "host": "192.0.2.1",
+                    "port": 443,
+                    "timeout": 1.0,
+                },
+            )()
+            connection = Connection()
+            accepted = {
+                "accepted": True,
+                "image_sha256": metadata.image_sha256,
+            }
+            with mock.patch.object(client, "_connection", return_value=connection), \
+                    mock.patch.object(client, "_show_response", return_value=(0, accepted)):
+                self.assertEqual(client._upload(arguments, "x" * 64), 0)
+            self.assertEqual(connection.sent, image)
+
+            firmware.write_bytes(image)
+            with mock.patch.object(client, "_connection", return_value=Connection()), \
+                    mock.patch.object(
+                        client,
+                        "_show_response",
+                        return_value=(0, {"accepted": True}),
+                    ):
+                with self.assertRaisesRegex(ValueError, "accepted image hash"):
+                    client._upload(arguments, "x" * 64)
 
     def test_client_waits_for_reboot_and_rollback_validation(self) -> None:
         client = _load_client_module()

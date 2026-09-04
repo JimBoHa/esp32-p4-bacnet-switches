@@ -5,6 +5,7 @@ maintained-contact switches on GPIO20, GPIO21, and GPIO22; exposes them as
 read-only BACnet/IP Binary Input objects; publishes device-health diagnostics;
 supports ReadPropertyMultiple and COV; and accepts authenticated HTTPS
 application updates over Ethernet after the initial USB installation.
+The target definition matches the board's 32 MB onboard NOR flash.
 
 The firmware uses DHCP. Its BACnet identity does not depend on its IP address:
 Device instance **599152**, UDP port **47808** (`0xBAC0`). The device has most
@@ -191,9 +192,11 @@ Health validation begins after ten seconds; the image must establish Ethernet,
 DHCP, HTTPS OTA, BACnet, and healthy monitored tasks for five consecutive
 samples within 60 seconds or it is marked invalid and rolled back automatically.
 
-Before uploading, the client rejects a corrupt image, a non-ESP32-P4 image, or a
-wrong-project image. After acceptance it waits through reboot and reports
-success only when the exact uploaded image hash is running in the `valid` state.
+Before uploading, the client validates the ESP segment layout, ROM checksum,
+appended SHA-256, 32 MB flash header, chip target, and project name. After
+acceptance it requires the device to echo the exact accepted-image hash, waits
+through reboot, and reports success only when that same image is running in the
+`valid` state.
 Use `--no-wait` only when another system will perform that verification. For a
 credential rotation, supply `--post-cert` and `--post-token-file` so the same
 command verifies the replacement credentials after reboot.
