@@ -28,6 +28,9 @@ ESP_IMAGE_HEADER_BYTES = 24
 ESP_SEGMENT_HEADER_BYTES = 8
 ESP_APP_DESC_BYTES = 256
 MAX_OTA_IMAGE_BYTES = 0x400000
+MAX_ESP_IMAGE_SEGMENTS = 16
+ESP_IMAGE_CHECKSUM_MAGIC = 0xEF
+EXPECTED_FLASH_SIZE_CODE = 0x50  # 32 MB
 
 
 @dataclasses.dataclass(frozen=True)
@@ -61,12 +64,45 @@ def _inspect_firmware(path: Path) -> FirmwareMetadata:
         raise ValueError("firmware image is truncated")
     if image[0] != ESP_IMAGE_MAGIC:
         raise ValueError("file is not an ESP application image")
+    segment_count = image[1]
+    if not 1 <= segment_count <= MAX_ESP_IMAGE_SEGMENTS:
+        raise ValueError(
+            f"firmware segment count {segment_count} is outside the valid 1-16 range"
+        )
     chip_id = struct.unpack_from("<H", image, 12)[0]
     if chip_id != ESP32_P4_CHIP_ID:
         raise ValueError(f"firmware targets chip ID {chip_id}, not ESP32-P4")
+    if image[3] & 0xF0 != EXPECTED_FLASH_SIZE_CODE:
+        raise ValueError("firmware is not configured for this board's 32 MB flash")
     if image[23] != 1:
         raise ValueError("firmware image is missing its appended validation hash")
-    first_segment_size = struct.unpack_from("<I", image, ESP_IMAGE_HEADER_BYTES + 4)[0]
+
+    digest_size = hashlib.sha256().digest_size
+    digest_offset = len(image) - digest_size
+    position = ESP_IMAGE_HEADER_BYTES
+    checksum = ESP_IMAGE_CHECKSUM_MAGIC
+    descriptor_offset = 0
+    first_segment_size = 0
+    for segment_index in range(segment_count):
+        if position + ESP_SEGMENT_HEADER_BYTES > digest_offset:
+            raise ValueError("firmware segment header is truncated")
+        segment_size = struct.unpack_from("<I", image, position + 4)[0]
+        segment_data_offset = position + ESP_SEGMENT_HEADER_BYTES
+        segment_end = segment_data_offset + segment_size
+        if segment_end > digest_offset:
+            raise ValueError("firmware segment data is truncated")
+        if segment_index == 0:
+            descriptor_offset = segment_data_offset
+            first_segment_size = segment_size
+        for byte in image[segment_data_offset:segment_end]:
+            checksum ^= byte
+        position = segment_end
+
+    checksum_offset = position + (15 - (position % 16))
+    if checksum_offset + 1 != digest_offset:
+        raise ValueError("firmware has an invalid checksum or digest position")
+    if image[checksum_offset] != checksum:
+        raise ValueError("firmware ESP image checksum does not match its segments")
     if first_segment_size < ESP_APP_DESC_BYTES:
         raise ValueError("firmware first segment has no complete application descriptor")
     descriptor_magic = struct.unpack_from("<I", image, descriptor_offset)[0]
@@ -127,12 +163,11 @@ def _connection(
         host, port=port, timeout=timeout, context=context
     )
     connection.connect()
-    assert connection.sock is not None
+    if connection.sock is None:
+        connection.close()
+        raise ssl.SSLError("TLS connection did not provide a peer socket")
     peer_der = connection.sock.getpeercert(binary_form=True)
-    if not hmac.compare_digest(
-        hashlib.sha256(peer_der).digest(),
-        hashlib.sha256(expected_der).digest(),
-    ):
+    if peer_der is None or not hmac.compare_digest(peer_der, expected_der):
         connection.close()
         raise ssl.SSLCertVerificationError(
             "device certificate does not match the pinned certificate"
@@ -241,9 +276,10 @@ def _upload(args: argparse.Namespace, token: str) -> int:
 
     if upload_result == 1:
         return 1
-    if isinstance(accepted, dict):
-        accepted_hash = accepted.get("image_sha256")
-        if accepted_hash is not None and accepted_hash != metadata.image_sha256:
+    if upload_result == 0:
+        if not isinstance(accepted, dict) or accepted.get("accepted") is not True:
+            raise ValueError("device returned success without an OTA acceptance record")
+        if accepted.get("image_sha256") != metadata.image_sha256:
             raise ValueError("device accepted image hash does not match uploaded firmware")
     if args.no_wait:
         return upload_result
@@ -289,7 +325,13 @@ def _wait_for_deployment(
                 min(args.timeout, 10.0),
                 token,
             )
-        except (OSError, ValueError, ssl.SSLError, http.client.HTTPException) as error:
+        except (
+            OSError,
+            UnicodeError,
+            ValueError,
+            ssl.SSLError,
+            http.client.HTTPException,
+        ) as error:
             last_error = str(error)
             continue
 
@@ -417,6 +459,10 @@ def main() -> int:
         if not args.cert.is_file():
             raise FileNotFoundError(f"certificate not found: {args.cert}")
         token = _read_token(args.token_file)
+        if not 1 <= args.port <= 65535:
+            raise ValueError("port must be between 1 and 65535")
+        if args.timeout <= 0:
+            raise ValueError("timeout must be positive")
         if args.command == "status":
             return _status(args, token)
         if args.command == "input-self-test":
@@ -429,6 +475,7 @@ def main() -> int:
     except (
         OSError,
         TimeoutError,
+        UnicodeError,
         ValueError,
         ssl.SSLError,
         http.client.HTTPException,
