@@ -14,6 +14,11 @@ enum {
     BACNET_SERVICE_I_AM = 0,
     BACNET_SERVICE_READ_PROPERTY = 12,
     BACNET_SERVICE_WHO_IS = 8,
+    BACNET_NPDU_NETWORK_MESSAGE = 0x80,
+    BACNET_NPDU_DESTINATION_SPECIFIED = 0x20,
+    BACNET_NPDU_SOURCE_SPECIFIED = 0x08,
+    BACNET_NPDU_RESERVED_BITS = 0x50,
+    BACNET_GLOBAL_NETWORK = 0xFFFF,
     BACNET_ERROR_CLASS_OBJECT = 1,
     BACNET_ERROR_CLASS_PROPERTY = 2,
     BACNET_ERROR_UNKNOWN_OBJECT = 31,
@@ -106,6 +111,18 @@ typedef struct {
     size_t length;
     bool failed;
 } writer_t;
+
+typedef enum {
+    NPDU_PARSE_OK,
+    NPDU_PARSE_IGNORED,
+    NPDU_PARSE_MALFORMED,
+} npdu_parse_status_t;
+
+typedef struct {
+    const uint8_t *apdu;
+    size_t apdu_length;
+    bool routed_source;
+} application_npdu_t;
 
 typedef struct {
     uint32_t object_type;
@@ -468,7 +485,14 @@ static bool start_bvlc(writer_t *writer, bool broadcast)
                   : BACNET_BVLC_ORIGINAL_UNICAST_NPDU);
     write_be16(writer, 0);
     write_u8(writer, 1); /* BACnet protocol version */
-    write_u8(writer, 0); /* local network, normal priority */
+    if (broadcast) {
+        write_u8(writer, BACNET_NPDU_DESTINATION_SPECIFIED);
+        write_be16(writer, BACNET_GLOBAL_NETWORK);
+        write_u8(writer, 0); /* broadcast DADR */
+        write_u8(writer, 0xFF); /* hop count */
+    } else {
+        write_u8(writer, 0); /* local network, normal priority */
+    }
     return !writer->failed;
 }
 
@@ -858,6 +882,76 @@ static size_t encode_read_property_response(
     return finish_bvlc(&writer);
 }
 
+static npdu_parse_status_t parse_application_npdu(
+    const uint8_t *frame,
+    size_t frame_length,
+    application_npdu_t *npdu)
+{
+    const uint8_t control = frame[5];
+    size_t offset = 6U;
+    uint16_t destination_network = 0;
+    uint8_t destination_length = 0;
+
+    if ((control & BACNET_NPDU_RESERVED_BITS) != 0U) {
+        return NPDU_PARSE_MALFORMED;
+    }
+    if ((control & BACNET_NPDU_NETWORK_MESSAGE) != 0U) {
+        return NPDU_PARSE_IGNORED;
+    }
+
+    if ((control & BACNET_NPDU_DESTINATION_SPECIFIED) != 0U) {
+        if (frame_length - offset < 3U) {
+            return NPDU_PARSE_MALFORMED;
+        }
+        destination_network =
+            (uint16_t)(((uint16_t)frame[offset] << 8) | frame[offset + 1U]);
+        destination_length = frame[offset + 2U];
+        offset += 3U;
+        if (destination_network == 0U ||
+            (destination_network == BACNET_GLOBAL_NETWORK &&
+             destination_length != 0U) ||
+            (size_t)destination_length > frame_length - offset) {
+            return NPDU_PARSE_MALFORMED;
+        }
+        offset += destination_length;
+    }
+
+    npdu->routed_source =
+        (control & BACNET_NPDU_SOURCE_SPECIFIED) != 0U;
+    if (npdu->routed_source) {
+        if (frame_length - offset < 3U) {
+            return NPDU_PARSE_MALFORMED;
+        }
+        const uint16_t source_network =
+            (uint16_t)(((uint16_t)frame[offset] << 8) | frame[offset + 1U]);
+        const uint8_t source_length = frame[offset + 2U];
+        offset += 3U;
+        if (source_network == 0U || source_network == BACNET_GLOBAL_NETWORK ||
+            source_length == 0U ||
+            (size_t)source_length > frame_length - offset) {
+            return NPDU_PARSE_MALFORMED;
+        }
+        offset += source_length;
+    }
+
+    if ((control & BACNET_NPDU_DESTINATION_SPECIFIED) != 0U) {
+        if (offset >= frame_length) {
+            return NPDU_PARSE_MALFORMED;
+        }
+        offset++; /* hop count */
+        if (destination_network != BACNET_GLOBAL_NETWORK) {
+            return NPDU_PARSE_IGNORED;
+        }
+    }
+    if (offset >= frame_length) {
+        return NPDU_PARSE_MALFORMED;
+    }
+
+    npdu->apdu = frame + offset;
+    npdu->apdu_length = frame_length - offset;
+    return NPDU_PARSE_OK;
+}
+
 bacnet_packet_result_t bacnet_handle_packet(
     const uint8_t *frame,
     size_t frame_length,
@@ -868,19 +962,30 @@ bacnet_packet_result_t bacnet_handle_packet(
     bacnet_packet_result_t result = {
         .kind = BACNET_PACKET_MALFORMED,
         .response_length = 0,
+        .broadcast_response = false,
     };
 
     if (frame == NULL || state == NULL || response == NULL || frame_length < 8U ||
         frame_length > BACNET_MAX_REQUEST_BYTES || frame[0] != BACNET_BVLC_TYPE ||
         (frame[1] != BACNET_BVLC_ORIGINAL_UNICAST_NPDU &&
          frame[1] != BACNET_BVLC_ORIGINAL_BROADCAST_NPDU) ||
-        (((size_t)frame[2] << 8) | frame[3]) != frame_length || frame[4] != 1U ||
-        (frame[5] & 0xF8U) != 0U) {
+        (((size_t)frame[2] << 8) | frame[3]) != frame_length || frame[4] != 1U) {
         return result;
     }
 
-    const uint8_t *apdu = frame + 6;
-    const size_t apdu_length = frame_length - 6U;
+    application_npdu_t npdu;
+    const npdu_parse_status_t npdu_status =
+        parse_application_npdu(frame, frame_length, &npdu);
+    if (npdu_status == NPDU_PARSE_IGNORED) {
+        result.kind = BACNET_PACKET_IGNORED;
+        return result;
+    }
+    if (npdu_status == NPDU_PARSE_MALFORMED) {
+        return result;
+    }
+
+    const uint8_t *apdu = npdu.apdu;
+    const size_t apdu_length = npdu.apdu_length;
     if (apdu_length >= 2U && apdu[0] == 0x10U &&
         apdu[1] == BACNET_SERVICE_WHO_IS) {
         bool has_limits;
@@ -899,13 +1004,18 @@ bacnet_packet_result_t bacnet_handle_packet(
         if (!has_limits ||
             (low_limit <= state->device_instance &&
              state->device_instance <= high_limit)) {
+            result.broadcast_response = true;
             result.response_length = bacnet_encode_i_am(
-                state, false, response, response_capacity);
+                state, true, response, response_capacity);
         }
         return result;
     }
 
     if (apdu_length == 0U || (apdu[0] & 0xF0U) != 0U) {
+        result.kind = BACNET_PACKET_IGNORED;
+        return result;
+    }
+    if (npdu.routed_source) {
         result.kind = BACNET_PACKET_IGNORED;
         return result;
     }
