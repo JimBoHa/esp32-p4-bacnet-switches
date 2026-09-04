@@ -23,9 +23,13 @@
 #define BACNET_SOCKET_RETRY_MS 1000U
 
 static const char *TAG = "bacnet_ip";
+_Static_assert(
+    BACNET_BINARY_INPUT_COUNT == SWITCH_INPUT_COUNT,
+    "BACnet and physical input counts must match");
 static const char *const INPUT_DESCRIPTIONS[BACNET_BINARY_INPUT_COUNT] = {
     "Debounced read-only physical toggle input 1",
     "Debounced read-only physical toggle input 2",
+    "Debounced read-only physical toggle input 3",
 };
 
 static TaskHandle_t server_task_handle;
@@ -42,23 +46,27 @@ static void snapshot_device_state(bacnet_device_state_t *state)
         .model_name = "Waveshare ESP32-P4-POE-ETH",
         .firmware_revision = app != NULL ? app->version : "unknown",
         .description =
-            "Read-only BACnet/IP Device exposing two physical toggle inputs",
-        .database_revision = 1,
+            "Read-only BACnet/IP Device exposing three physical toggle inputs",
+        .database_revision = 2,
         .binary_input_instances = {
             CONFIG_TOGGLE_INPUT_1_OBJECT_INSTANCE,
             CONFIG_TOGGLE_INPUT_2_OBJECT_INSTANCE,
+            CONFIG_TOGGLE_INPUT_3_OBJECT_INSTANCE,
         },
         .binary_input_names = {
             CONFIG_TOGGLE_INPUT_1_NAME,
             CONFIG_TOGGLE_INPUT_2_NAME,
+            CONFIG_TOGGLE_INPUT_3_NAME,
         },
         .binary_input_descriptions = {
             INPUT_DESCRIPTIONS[0],
             INPUT_DESCRIPTIONS[1],
+            INPUT_DESCRIPTIONS[2],
         },
         .binary_input_values = {
             switch_input_get(0),
             switch_input_get(1),
+            switch_input_get(2),
         },
     };
 }
@@ -272,14 +280,25 @@ esp_err_t bacnet_server_start(esp_netif_t *netif)
         ESP_ERR_INVALID_ARG,
         TAG,
         "invalid BACnet Device instance");
-    ESP_RETURN_ON_FALSE(
-        CONFIG_TOGGLE_INPUT_1_OBJECT_INSTANCE < BACNET_MAX_INSTANCE &&
-            CONFIG_TOGGLE_INPUT_2_OBJECT_INSTANCE < BACNET_MAX_INSTANCE &&
-            CONFIG_TOGGLE_INPUT_1_OBJECT_INSTANCE !=
-                CONFIG_TOGGLE_INPUT_2_OBJECT_INSTANCE,
-        ESP_ERR_INVALID_ARG,
-        TAG,
-        "Binary Input instances must be distinct valid BACnet instances");
+    const uint32_t input_instances[BACNET_BINARY_INPUT_COUNT] = {
+        CONFIG_TOGGLE_INPUT_1_OBJECT_INSTANCE,
+        CONFIG_TOGGLE_INPUT_2_OBJECT_INSTANCE,
+        CONFIG_TOGGLE_INPUT_3_OBJECT_INSTANCE,
+    };
+    for (size_t index = 0; index < BACNET_BINARY_INPUT_COUNT; ++index) {
+        ESP_RETURN_ON_FALSE(
+            input_instances[index] < BACNET_MAX_INSTANCE,
+            ESP_ERR_INVALID_ARG,
+            TAG,
+            "invalid Binary Input instance");
+        for (size_t prior = 0; prior < index; ++prior) {
+            ESP_RETURN_ON_FALSE(
+                input_instances[index] != input_instances[prior],
+                ESP_ERR_INVALID_ARG,
+                TAG,
+                "Binary Input instances must be distinct");
+        }
+    }
 
     taskENTER_CRITICAL(&server_lock);
     TaskHandle_t existing_task = server_task_handle;

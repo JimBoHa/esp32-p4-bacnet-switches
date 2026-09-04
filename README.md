@@ -1,9 +1,9 @@
 # ESP32-P4 PoE BACnet toggle inputs
 
 Standalone ESP-IDF firmware for the Waveshare **ESP32-P4-POE-ETH**. It reads
-two maintained-contact toggle switches on GPIO20 and GPIO21, publishes them as
-read-only BACnet/IP Binary Input objects, and accepts authenticated HTTPS
-application updates over Ethernet after the initial USB installation.
+three maintained-contact toggle inputs on GPIO20, GPIO21, and GPIO22, publishes
+them as read-only BACnet/IP Binary Input objects, and accepts authenticated
+HTTPS application updates over Ethernet after the initial USB installation.
 
 The firmware uses DHCP. Its BACnet identity is independent of its changing IP
 address: Device instance **599152**, UDP port **47808** (`0xBAC0`). Device
@@ -31,12 +31,18 @@ ESP 3V3 ---- toggle switch ----+---- GPIO21
                               10 kΩ
                                |
 ESP GND -----------------------+
+
+ESP 3V3 ---- toggle switch ----+---- GPIO22
+                               |
+                              10 kΩ
+                               |
+ESP GND -----------------------+
 ```
 
 Important:
 
-- Use the header labels **GPIO20** and **GPIO21**, not physical connector pin
-  positions 20 and 21.
+- Use the header labels **GPIO20**, **GPIO21**, and **GPIO22**, not physical
+  connector pin positions 20, 21, and 22.
 - Use only the board's **3.3 V** rail. Never apply 5 V, 12 V, or 24 V to these
   GPIOs.
 - Power the board off while wiring.
@@ -46,10 +52,21 @@ Important:
   building-control signals, do not connect directly to the GPIO. Use an
   isolated/conditioned dry-contact input circuit instead.
 
-GPIO20 and GPIO21 are available on this board and do not overlap its Ethernet
-management pins. The firmware follows the board-specific IP101GRI connections:
-MDC GPIO31, MDIO GPIO52, PHY reset GPIO51, PHY address 1, RMII clock input.
-These values come from the
+The schematic maps the relevant P1 header positions as follows. Prefer the
+silkscreen signal labels while working at the board because connector-number
+orientation is easy to reverse.
+
+| Signal | P1 position |
+|---|---:|
+| GPIO22 | 32 |
+| GPIO21 | 34 |
+| GPIO20 | 35 |
+| ESP 3V3 | 36 |
+
+GPIO20, GPIO21, and GPIO22 are available on this board and do not overlap its
+Ethernet management pins. The firmware follows the board-specific IP101GRI
+connections: MDC GPIO31, MDIO GPIO52, PHY reset GPIO51, PHY address 1, RMII
+clock input. These values come from the
 [Waveshare schematic](https://files.waveshare.com/wiki/ESP32-P4-ETH/ESP32-P4-ETH-datasheet.pdf)
 and [official ESP-IDF Ethernet example](https://github.com/waveshareteam/ESP32-P4-Platform/tree/main/examples/esp-idf/11_ethernetbasic).
 
@@ -60,6 +77,7 @@ and [official ESP-IDF Ethernet example](https://github.com/waveshareteam/ESP32-P
 | Device | 599152 | ESP32-P4 Toggle Inputs | n/a |
 | Binary Input | 20 | GPIO20 Toggle | `Inactive` / `Active` |
 | Binary Input | 21 | GPIO21 Toggle | `Inactive` / `Active` |
+| Binary Input | 22 | GPIO22 Toggle | `Inactive` / `Active` |
 
 Supported network services are Who-Is/I-Am and confirmed ReadProperty. A global
 I-Am is broadcast after DHCP succeeds and in response to matching Who-Is
@@ -75,8 +93,8 @@ stays on the local IP subnet unless a BACnet/IP router forwards it.
 ## Build and flash
 
 Use ESP-IDF **5.5.4**. This release includes corrected GPIO output-disable
-routing needed to guarantee that GPIO20 and GPIO21 remain input-only. IDF 6.x
-is also accounted for through the conditional IP101 managed-component
+routing needed to guarantee that GPIO20, GPIO21, and GPIO22 remain input-only.
+IDF 6.x is also accounted for through the conditional IP101 managed-component
 dependency. The supplied defaults select ESP32-P4 revision 0.x/1.x support,
 matching this Waveshare board. Do not reuse the resulting binary on an
 ESP32-P4 revision 3.x board; ESP-IDF documents those silicon families as
@@ -120,7 +138,7 @@ After the first USB flash, future **application** images can be installed over
 Ethernet. The device exposes only these authenticated HTTPS endpoints:
 
 - `GET /ota/status` — running project, version, partition, rollback state, and
-  read-only GPIO20/GPIO21 pad diagnostics. Diagnostics include raw and
+  read-only GPIO20/GPIO21/GPIO22 pad diagnostics. Diagnostics include raw and
   debounced values plus pull, input/output-enable, function-selection, and
   output-enable-control state captured at startup, after configuration, and at
   request time.
@@ -195,6 +213,7 @@ properties while moving each switch:
 ```text
 binary-input,20  Present_Value
 binary-input,21  Present_Value
+binary-input,22  Present_Value
 ```
 
 The project currently uses DHCP rather than hard-coding `192.168.75.152`; that
