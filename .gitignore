@@ -5,5 +5,8 @@
 /dependencies.lock
 /managed_components/
 /.cache/
+/secrets/
+/release/*.bin
+/release/SHA256SUMS
 __pycache__/
 *.py[cod]

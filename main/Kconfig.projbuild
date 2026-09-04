@@ -78,6 +78,18 @@ menu "BACnet toggle input configuration"
         string "Toggle input 3 BACnet object name"
         default "GPIO22 Toggle"
 
+    config TOGGLE_INPUT_1_ACTIVE_LOW
+        bool "Toggle input 1 uses reversed (active-low) polarity"
+        default n
+
+    config TOGGLE_INPUT_2_ACTIVE_LOW
+        bool "Toggle input 2 uses reversed (active-low) polarity"
+        default n
+
+    config TOGGLE_INPUT_3_ACTIVE_LOW
+        bool "Toggle input 3 uses reversed (active-low) polarity"
+        default n
+
     config TOGGLE_DEBOUNCE_MS
         int "Toggle switch debounce time (ms)"
         range 10 500
@@ -102,14 +114,6 @@ menu "Authenticated HTTPS OTA configuration"
             int "HTTPS OTA port"
             range 1 65535
             default 443
-
-        config OTA_BEARER_TOKEN
-            string "HTTPS OTA bearer token"
-            default ""
-            help
-                Required secret containing 32-128 characters. A unique initial
-                value is provisioned by sdkconfig.defaults. Rotate it before
-                deployment and keep the source package private.
 
     endif
 

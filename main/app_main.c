@@ -1,6 +1,7 @@
 #include <stdint.h>
 
 #include "bacnet_server.h"
+#include "diagnostics.h"
 #include "esp_check.h"
 #include "esp_eth.h"
 #include "esp_eth_mac.h"
@@ -80,6 +81,7 @@ static void ethernet_event_handler(
 
     switch (event_id) {
     case ETHERNET_EVENT_CONNECTED: {
+        diagnostics_ethernet_link_changed(true);
         uint8_t mac[6] = {0};
         if (esp_eth_ioctl(handle, ETH_CMD_G_MAC_ADDR, mac) == ESP_OK) {
             ESP_LOGI(
@@ -97,6 +99,7 @@ static void ethernet_event_handler(
         break;
     }
     case ETHERNET_EVENT_DISCONNECTED:
+        diagnostics_ethernet_link_changed(false);
         ESP_LOGW(TAG, "Ethernet link down");
         break;
     case ETHERNET_EVENT_START:
@@ -122,6 +125,7 @@ static void got_ip_event_handler(
     const ip_event_got_ip_t *event = event_data;
     const esp_netif_ip_info_t *ip = &event->ip_info;
 
+    diagnostics_ip_acquired(netif, ip);
     ESP_LOGI(TAG, "IPv4 address: " IPSTR, IP2STR(&ip->ip));
     ESP_LOGI(TAG, "IPv4 netmask: " IPSTR, IP2STR(&ip->netmask));
     ESP_LOGI(TAG, "IPv4 gateway: " IPSTR, IP2STR(&ip->gw));
@@ -131,14 +135,30 @@ static void got_ip_event_handler(
 #endif
 }
 
+static void lost_ip_event_handler(
+    void *argument,
+    esp_event_base_t event_base,
+    int32_t event_id,
+    void *event_data)
+{
+    (void)argument;
+    (void)event_base;
+    (void)event_id;
+    (void)event_data;
+    diagnostics_ip_lost();
+    ESP_LOGW(TAG, "Ethernet IPv4 address lost");
+}
+
 void app_main(void)
 {
+    ESP_ERROR_CHECK(diagnostics_init());
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     switch_inputs_init();
 
     esp_eth_handle_t eth_handle = NULL;
     ESP_ERROR_CHECK(install_waveshare_ethernet(&eth_handle));
+    diagnostics_set_ethernet_handle(eth_handle);
 
     const esp_netif_config_t netif_config = ESP_NETIF_DEFAULT_ETH();
     esp_netif_t *netif = esp_netif_new(&netif_config);
@@ -159,6 +179,11 @@ void app_main(void)
         IP_EVENT_ETH_GOT_IP,
         got_ip_event_handler,
         netif));
+    ESP_ERROR_CHECK(esp_event_handler_register(
+        IP_EVENT,
+        IP_EVENT_ETH_LOST_IP,
+        lost_ip_event_handler,
+        NULL));
 
     ESP_LOGI(
         TAG,

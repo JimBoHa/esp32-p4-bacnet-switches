@@ -16,7 +16,7 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CERTIFICATE = PROJECT_ROOT / "main" / "ota_server_cert.pem"
-DEFAULT_TOKEN_FILE = PROJECT_ROOT / "provisioning" / "ota-token.txt"
+DEFAULT_TOKEN_FILE = PROJECT_ROOT / "secrets" / "ota_token.txt"
 DEFAULT_PROJECT = "esp32_p4_bacnet_switches"
 
 
@@ -30,8 +30,10 @@ def _read_token(path: Path | None) -> str:
         token = ""
     if not token:
         token = getpass.getpass("OTA bearer token: ").strip()
-    if not 32 <= len(token) <= 128 or not token.isascii():
-        raise ValueError("OTA token must contain 32-128 ASCII characters")
+    if not 32 <= len(token) <= 128 or any(
+        not 0x21 <= ord(character) <= 0x7E for character in token
+    ):
+        raise ValueError("OTA token must contain 32-128 printable ASCII characters")
     return token
 
 
@@ -120,6 +122,24 @@ def _upload(args: argparse.Namespace, token: str) -> int:
         connection.close()
 
 
+def _input_self_test(args: argparse.Namespace, token: str) -> int:
+    connection = _connection(args.host, args.port, args.cert, args.timeout)
+    try:
+        connection.request(
+            "POST",
+            "/diagnostics/input-self-test",
+            body=b"",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Length": "0",
+                "Accept": "application/json",
+            },
+        )
+        return _show_response(connection.getresponse())
+    finally:
+        connection.close()
+
+
 def _add_connection_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", required=True, help="device IPv4 address or hostname")
     parser.add_argument("--port", type=int, default=443, help="HTTPS port (default: 443)")
@@ -147,6 +167,12 @@ def _arguments() -> argparse.Namespace:
     status = commands.add_parser("status", help="read authenticated OTA status")
     _add_connection_arguments(status)
 
+    self_test = commands.add_parser(
+        "input-self-test",
+        help="test GPIO weak-pull response with all field wiring disconnected",
+    )
+    _add_connection_arguments(self_test)
+
     upload = commands.add_parser("upload", help="upload an ESP-IDF application image")
     _add_connection_arguments(upload)
     upload.add_argument("firmware", type=Path, help="application .bin from idf.py build")
@@ -166,6 +192,8 @@ def main() -> int:
         token = _read_token(args.token_file)
         if args.command == "status":
             return _status(args, token)
+        if args.command == "input-self-test":
+            return _input_self_test(args, token)
         if not args.firmware.is_file():
             raise FileNotFoundError(f"firmware not found: {args.firmware}")
         return _upload(args, token)

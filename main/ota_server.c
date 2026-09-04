@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "diagnostics.h"
 #include "esp_app_desc.h"
 #include "esp_check.h"
 #include "esp_https_server.h"
@@ -26,6 +27,7 @@
 #define OTA_MAX_CONSECUTIVE_TIMEOUTS 5U
 #define OTA_ROLLBACK_VALIDATION_DELAY_MS 10000U
 #define OTA_PROJECT_HEADER "X-Firmware-Project"
+#define OTA_STATUS_RESPONSE_BYTES 12288U
 
 static const char *TAG = "https_ota";
 
@@ -39,9 +41,38 @@ extern const unsigned char ota_server_key_pem_start[]
     asm("_binary_ota_server_key_pem_start");
 extern const unsigned char ota_server_key_pem_end[]
     asm("_binary_ota_server_key_pem_end");
+extern const unsigned char ota_token_txt_start[]
+    asm("_binary_ota_token_txt_start");
+extern const unsigned char ota_token_txt_end[]
+    asm("_binary_ota_token_txt_end");
 
 static httpd_handle_t server_handle;
 static atomic_bool upload_in_progress;
+static char bearer_token[OTA_TOKEN_MAX_LENGTH + 1U];
+
+static bool load_embedded_token(void)
+{
+    size_t length = (size_t)(ota_token_txt_end - ota_token_txt_start);
+    while (length > 0U &&
+           (ota_token_txt_start[length - 1U] == '\n' ||
+            ota_token_txt_start[length - 1U] == '\r' ||
+            ota_token_txt_start[length - 1U] == ' ' ||
+            ota_token_txt_start[length - 1U] == '\t')) {
+        length--;
+    }
+    if (length < OTA_TOKEN_MIN_LENGTH || length > OTA_TOKEN_MAX_LENGTH) {
+        return false;
+    }
+    for (size_t index = 0; index < length; ++index) {
+        const unsigned char character = ota_token_txt_start[index];
+        if (character < 0x21U || character > 0x7EU) {
+            return false;
+        }
+    }
+    memcpy(bearer_token, ota_token_txt_start, length);
+    bearer_token[length] = '\0';
+    return ota_token_configuration_valid(bearer_token);
+}
 
 static const char *json_bool(bool value)
 {
@@ -137,7 +168,7 @@ static bool request_authenticated(httpd_req_t *request)
         return false;
     }
     return ota_authorization_valid(
-        authorization, length, CONFIG_OTA_BEARER_TOKEN);
+        authorization, length, bearer_token);
 }
 
 static bool project_header_matches(httpd_req_t *request)
@@ -179,6 +210,19 @@ static const char *ota_state_name(esp_ota_img_states_t state)
     }
 }
 
+static const char *dhcp_status_name(uint32_t status)
+{
+    switch ((esp_netif_dhcp_status_t)status) {
+    case ESP_NETIF_DHCP_STARTED:
+        return "started";
+    case ESP_NETIF_DHCP_STOPPED:
+        return "stopped";
+    case ESP_NETIF_DHCP_INIT:
+    default:
+        return "initializing";
+    }
+}
+
 static esp_err_t status_get_handler(httpd_req_t *request)
 {
     if (!request_authenticated(request)) {
@@ -191,88 +235,306 @@ static esp_err_t status_get_handler(httpd_req_t *request)
     if (running != NULL) {
         (void)esp_ota_get_state_partition(running, &image_state);
     }
+    diagnostics_snapshot_t snapshot;
+    if (!diagnostics_snapshot_get(&snapshot)) {
+        return httpd_resp_send_err(
+            request,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "diagnostics snapshot failed");
+    }
 
-    char response[4096];
+    char *response = malloc(OTA_STATUS_RESPONSE_BYTES);
+    if (response == NULL) {
+        return httpd_resp_send_err(
+            request, HTTPD_500_INTERNAL_SERVER_ERROR, "not enough memory");
+    }
     size_t response_length = 0;
     if (!response_append(
             response,
-            sizeof(response),
+            OTA_STATUS_RESPONSE_BYTES,
             &response_length,
             "{\"ota\":true,\"project\":\"%.31s\",\"version\":\"%.31s\","
             "\"idf_version\":\"%.31s\",\"partition\":\"%.15s\","
-            "\"state\":\"%s\",\"port\":%u,\"gpio_diagnostics\":[",
+            "\"state\":\"%s\",\"port\":%u,\"git_revision\":\"%.31s\","
+            "\"system\":{\"uptime_ms\":%u,\"chip_temperature_c\":",
             app != NULL ? app->project_name : "unknown",
             app != NULL ? app->version : "unknown",
             esp_get_idf_version(),
             running != NULL ? running->label : "unknown",
             ota_state_name(image_state),
-            (unsigned)CONFIG_OTA_HTTPS_PORT)) {
-        return httpd_resp_send_err(
-            request, HTTPD_500_INTERNAL_SERVER_ERROR, "status encoding failed");
+            (unsigned)CONFIG_OTA_HTTPS_PORT,
+            diagnostics_git_revision(),
+            (unsigned)snapshot.uptime_ms)) {
+        goto encoding_failed;
+    }
+    if (!response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            snapshot.chip_temperature_valid ? "%.2f" : "null",
+            (double)snapshot.chip_temperature_c) ||
+        !response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            ",\"free_heap_bytes\":%u,\"minimum_free_heap_bytes\":%u,"
+            "\"reset_reason\":{\"code\":%u,\"name\":\"%s\"},"
+            "\"boot_count\":%u,\"last_ota_result\":\"%s\","
+            "\"task_watchdog\":{"
+            "\"switch_inputs\":{\"subscribed\":%s,\"healthy\":%s,"
+            "\"last_heartbeat_ms\":%u},"
+            "\"bacnet\":{\"subscribed\":%s,\"healthy\":%s,"
+            "\"last_heartbeat_ms\":%u}}},",
+            (unsigned)snapshot.free_heap_bytes,
+            (unsigned)snapshot.minimum_free_heap_bytes,
+            (unsigned)snapshot.reset_reason,
+            diagnostics_reset_reason_name(snapshot.reset_reason),
+            (unsigned)snapshot.boot_count,
+            diagnostics_ota_result_name(snapshot.last_ota_result),
+            json_bool(snapshot.task_watchdog_subscribed[
+                DIAGNOSTICS_TASK_SWITCH_INPUTS]),
+            json_bool(snapshot.task_healthy[DIAGNOSTICS_TASK_SWITCH_INPUTS]),
+            (unsigned)snapshot.task_last_heartbeat_ms[
+                DIAGNOSTICS_TASK_SWITCH_INPUTS],
+            json_bool(snapshot.task_watchdog_subscribed[
+                DIAGNOSTICS_TASK_BACNET]),
+            json_bool(snapshot.task_healthy[DIAGNOSTICS_TASK_BACNET]),
+            (unsigned)snapshot.task_last_heartbeat_ms[
+                DIAGNOSTICS_TASK_BACNET])) {
+        goto encoding_failed;
+    }
+
+    const esp_ip4_addr_t ipv4 = {.addr = snapshot.network.ipv4_address};
+    const esp_ip4_addr_t netmask = {.addr = snapshot.network.ipv4_netmask};
+    const esp_ip4_addr_t gateway = {.addr = snapshot.network.ipv4_gateway};
+    const uint32_t address_age_ms = snapshot.network.ipv4_address != 0U
+        ? snapshot.uptime_ms - snapshot.network.ip_acquired_uptime_ms
+        : 0U;
+    if (!response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            "\"network\":{\"link_up\":%s,\"speed_mbps\":%u,"
+            "\"full_duplex\":%s,\"autonegotiation\":%s,"
+            "\"mac\":\"%02X:%02X:%02X:%02X:%02X:%02X\","
+            "\"link_up_count\":%u,\"link_down_count\":%u,"
+            "\"reconnect_count\":%u,\"ip_acquisition_count\":%u,"
+            "\"ip_changed_count\":%u,\"ipv4\":\"" IPSTR "\","
+            "\"netmask\":\"" IPSTR "\",\"gateway\":\"" IPSTR "\","
+            "\"dhcp_status\":\"%s\",\"ip_acquired_uptime_ms\":%u,"
+            "\"address_age_ms\":%u},",
+            json_bool(snapshot.network.link_up),
+            (unsigned)snapshot.network.speed_mbps,
+            json_bool(snapshot.network.full_duplex),
+            json_bool(snapshot.network.autonegotiation),
+            snapshot.network.mac[0],
+            snapshot.network.mac[1],
+            snapshot.network.mac[2],
+            snapshot.network.mac[3],
+            snapshot.network.mac[4],
+            snapshot.network.mac[5],
+            (unsigned)snapshot.network.link_up_count,
+            (unsigned)snapshot.network.link_down_count,
+            (unsigned)snapshot.network.reconnect_count,
+            (unsigned)snapshot.network.ip_acquisition_count,
+            (unsigned)snapshot.network.ip_changed_count,
+            IP2STR(&ipv4),
+            IP2STR(&netmask),
+            IP2STR(&gateway),
+            dhcp_status_name(snapshot.network.dhcp_status),
+            (unsigned)snapshot.network.ip_acquired_uptime_ms,
+            (unsigned)address_age_ms) ||
+        !response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            "\"bacnet\":{\"rx\":%u,\"who_is\":%u,"
+            "\"read_property\":%u,\"read_property_multiple\":%u,"
+            "\"subscribe_cov\":%u,\"malformed\":%u,\"ignored\":%u,"
+            "\"responses\":%u,\"errors\":%u,\"rate_limited\":%u,"
+            "\"cov_sent\":%u,\"cov_acked\":%u,\"cov_timeouts\":%u,"
+            "\"active_cov_subscriptions\":%u},\"gpio_diagnostics\":[",
+            (unsigned)snapshot.bacnet[DIAGNOSTICS_BACNET_RX],
+            (unsigned)snapshot.bacnet[DIAGNOSTICS_BACNET_WHO_IS],
+            (unsigned)snapshot.bacnet[DIAGNOSTICS_BACNET_READ_PROPERTY],
+            (unsigned)snapshot.bacnet[
+                DIAGNOSTICS_BACNET_READ_PROPERTY_MULTIPLE],
+            (unsigned)snapshot.bacnet[DIAGNOSTICS_BACNET_SUBSCRIBE_COV],
+            (unsigned)snapshot.bacnet[DIAGNOSTICS_BACNET_MALFORMED],
+            (unsigned)snapshot.bacnet[DIAGNOSTICS_BACNET_IGNORED],
+            (unsigned)snapshot.bacnet[DIAGNOSTICS_BACNET_RESPONSES],
+            (unsigned)snapshot.bacnet[DIAGNOSTICS_BACNET_ERRORS],
+            (unsigned)snapshot.bacnet[DIAGNOSTICS_BACNET_RATE_LIMITED],
+            (unsigned)snapshot.bacnet[DIAGNOSTICS_BACNET_COV_SENT],
+            (unsigned)snapshot.bacnet[DIAGNOSTICS_BACNET_COV_ACKED],
+            (unsigned)snapshot.bacnet[DIAGNOSTICS_BACNET_COV_TIMEOUTS],
+            (unsigned)snapshot.active_cov_subscriptions)) {
+        goto encoding_failed;
     }
 
     for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
-        switch_input_diagnostics_t diagnostics;
-        if (!switch_input_diagnostics_get(index, &diagnostics) ||
+        switch_input_diagnostics_t input;
+        if (!switch_input_diagnostics_get(index, &input) ||
             !response_append(
                 response,
-                sizeof(response),
+                OTA_STATUS_RESPONSE_BYTES,
                 &response_length,
-                "%s{\"gpio\":%d,\"startup\":{"
+                "%s{\"gpio\":%d,\"active_low\":%s,\"debounce_ms\":%u,"
+                "\"transition_count\":%u,\"last_transition_uptime_ms\":%u,"
+                "\"fault\":%s,\"self_test\":{\"run\":%s,"
+                "\"passed\":%s,\"pull_down_level\":%s,"
+                "\"pull_up_level\":%s},\"startup\":{"
                 "\"raw_after_input_enable\":%s,\"config\":",
                 index == 0 ? "" : ",",
-                diagnostics.gpio,
-                json_bool(diagnostics.startup_raw_after_input_enable)) ||
+                input.gpio,
+                json_bool(input.active_low),
+                (unsigned)input.debounce_ms,
+                (unsigned)input.transition_count,
+                (unsigned)input.last_transition_uptime_ms,
+                json_bool(switch_input_faulted(index)),
+                json_bool(input.self_test_run),
+                json_bool(input.self_test_passed),
+                json_bool(input.self_test_pull_down_level),
+                json_bool(input.self_test_pull_up_level),
+                json_bool(input.startup_raw_after_input_enable)) ||
             !append_pad_config(
                 response,
-                sizeof(response),
+                OTA_STATUS_RESPONSE_BYTES,
                 &response_length,
-                &diagnostics.startup_config) ||
+                &input.startup_config) ||
             !response_append(
                 response,
-                sizeof(response),
+                OTA_STATUS_RESPONSE_BYTES,
                 &response_length,
                 "},\"configured\":{\"raw\":%s,\"config\":",
-                json_bool(diagnostics.configured_raw)) ||
+                json_bool(input.configured_raw)) ||
             !append_pad_config(
                 response,
-                sizeof(response),
+                OTA_STATUS_RESPONSE_BYTES,
                 &response_length,
-                &diagnostics.configured_config) ||
+                &input.configured_config) ||
             !response_append(
                 response,
-                sizeof(response),
+                OTA_STATUS_RESPONSE_BYTES,
                 &response_length,
                 "},\"current\":{\"raw\":%s,\"stable\":%s,\"config\":",
-                json_bool(diagnostics.current_raw),
-                json_bool(diagnostics.stable)) ||
+                json_bool(input.current_raw),
+                json_bool(input.stable)) ||
             !append_pad_config(
                 response,
-                sizeof(response),
+                OTA_STATUS_RESPONSE_BYTES,
                 &response_length,
-                &diagnostics.current_config) ||
+                &input.current_config) ||
             !response_append(
                 response,
-                sizeof(response),
+                OTA_STATUS_RESPONSE_BYTES,
                 &response_length,
                 "}}")) {
-            return httpd_resp_send_err(
-                request,
-                HTTPD_500_INTERNAL_SERVER_ERROR,
-                "GPIO diagnostics encoding failed");
+            goto encoding_failed;
+        }
+    }
+    if (!response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            "],\"fault_log\":[")) {
+        goto encoding_failed;
+    }
+    for (size_t index = 0; index < snapshot.fault_log_count; ++index) {
+        const diagnostics_fault_event_t *event = &snapshot.fault_log[index];
+        if (!response_append(
+                response,
+                OTA_STATUS_RESPONSE_BYTES,
+                &response_length,
+                "%s{\"sequence\":%u,\"boot_count\":%u,"
+                "\"uptime_ms\":%u,\"type\":\"%s\",\"code\":%d}",
+                index == 0 ? "" : ",",
+                (unsigned)event->sequence,
+                (unsigned)event->boot_count,
+                (unsigned)event->uptime_ms,
+                diagnostics_event_name(
+                    (diagnostics_event_type_t)event->type),
+                (int)event->code)) {
+            goto encoding_failed;
+        }
+    }
+    if (!response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            "]}")) {
+        goto encoding_failed;
+    }
+    httpd_resp_set_type(request, "application/json");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    const esp_err_t send_result =
+        httpd_resp_send(request, response, response_length);
+    free(response);
+    return send_result;
+
+encoding_failed:
+    free(response);
+    return httpd_resp_send_err(
+        request, HTTPD_500_INTERNAL_SERVER_ERROR, "status encoding failed");
+}
+
+static esp_err_t input_self_test_post_handler(httpd_req_t *request)
+{
+    if (!request_authenticated(request)) {
+        return send_unauthorized(request);
+    }
+    const esp_err_t result = switch_inputs_run_self_test();
+    if (result != ESP_OK) {
+        httpd_resp_set_status(request, "409 Conflict");
+        return httpd_resp_sendstr(request, "input self-test already running");
+    }
+
+    char response[384];
+    size_t length = 0U;
+    unsigned failures = 0U;
+    if (!response_append(
+            response,
+            sizeof(response),
+            &length,
+            "{\"warning\":\"disconnect field wiring before running\","
+            "\"inputs\":[")) {
+        return ESP_FAIL;
+    }
+    for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
+        switch_input_diagnostics_t input;
+        if (!switch_input_diagnostics_get(index, &input)) {
+            return ESP_FAIL;
+        }
+        if (!input.self_test_passed) {
+            failures++;
+            diagnostics_record_event(
+                DIAGNOSTICS_EVENT_INPUT_SELF_TEST_FAILED, input.gpio);
+        }
+        if (!response_append(
+                response,
+                sizeof(response),
+                &length,
+                "%s{\"gpio\":%d,\"passed\":%s,"
+                "\"pull_down_level\":%s,\"pull_up_level\":%s}",
+                index == 0 ? "" : ",",
+                input.gpio,
+                json_bool(input.self_test_passed),
+                json_bool(input.self_test_pull_down_level),
+                json_bool(input.self_test_pull_up_level))) {
+            return ESP_FAIL;
         }
     }
     if (!response_append(
             response,
             sizeof(response),
-            &response_length,
-            "]}")) {
-        return httpd_resp_send_err(
-            request, HTTPD_500_INTERNAL_SERVER_ERROR, "status encoding failed");
+            &length,
+            "],\"failure_count\":%u}",
+            failures)) {
+        return ESP_FAIL;
     }
     httpd_resp_set_type(request, "application/json");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
-    return httpd_resp_send(request, response, response_length);
+    return httpd_resp_send(request, response, length);
 }
 
 static esp_err_t ota_post_handler(httpd_req_t *request)
@@ -397,6 +659,8 @@ static esp_err_t ota_post_handler(httpd_req_t *request)
         goto fail;
     }
 
+    diagnostics_record_ota_result(DIAGNOSTICS_OTA_ACCEPTED, 0);
+
     char response[192];
     const int response_length = snprintf(
         response,
@@ -429,6 +693,7 @@ fail:
     free(buffer);
     atomic_store_explicit(
         &upload_in_progress, false, memory_order_release);
+    diagnostics_record_ota_result(DIAGNOSTICS_OTA_FAILED, result);
     ESP_LOGE(
         TAG,
         "%s: %s",
@@ -443,14 +708,14 @@ esp_err_t ota_server_start(void)
         return ESP_OK;
     }
     ESP_RETURN_ON_FALSE(
-        ota_token_configuration_valid(CONFIG_OTA_BEARER_TOKEN),
+        load_embedded_token(),
         ESP_ERR_INVALID_ARG,
         TAG,
-        "OTA bearer token must contain 32-128 characters");
+        "embedded OTA token must contain 32-128 printable characters");
 
     httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
     config.port_secure = CONFIG_OTA_HTTPS_PORT;
-    config.httpd.max_uri_handlers = 2;
+    config.httpd.max_uri_handlers = 3;
     config.httpd.max_open_sockets = 2;
     config.httpd.stack_size = 12288;
     config.servercert = ota_server_cert_pem_start;
@@ -476,10 +741,19 @@ esp_err_t ota_server_start(void)
         .method = HTTP_POST,
         .handler = ota_post_handler,
     };
+    const httpd_uri_t input_self_test_uri = {
+        .uri = "/diagnostics/input-self-test",
+        .method = HTTP_POST,
+        .handler = input_self_test_post_handler,
+    };
     esp_err_t result =
         httpd_register_uri_handler(created_server, &status_uri);
     if (result == ESP_OK) {
         result = httpd_register_uri_handler(created_server, &update_uri);
+    }
+    if (result == ESP_OK) {
+        result = httpd_register_uri_handler(
+            created_server, &input_self_test_uri);
     }
     if (result != ESP_OK) {
         (void)httpd_ssl_stop(created_server);
@@ -518,8 +792,12 @@ static void rollback_validation_task(void *argument)
         state == ESP_OTA_IMG_PENDING_VERIFY) {
         const esp_err_t result = esp_ota_mark_app_valid_cancel_rollback();
         if (result == ESP_OK) {
+            diagnostics_record_ota_result(
+                DIAGNOSTICS_OTA_VALIDATED, 0);
             ESP_LOGI(TAG, "running firmware marked valid");
         } else {
+            diagnostics_record_ota_result(
+                DIAGNOSTICS_OTA_FAILED, result);
             ESP_LOGE(
                 TAG,
                 "failed to confirm running firmware: %s",
