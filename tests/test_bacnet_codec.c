@@ -140,15 +140,30 @@ static void test_reference_vectors(void)
         0x81, 0x0A, 0x00, 0x10, 0x01, 0x00, 0x10, 0x08,
         0x0B, 0x09, 0x23, 0xD9, 0x1B, 0x09, 0x23, 0xD9,
     };
+    /* Captured from a Metasys server during BACnet/IP discovery. */
+    static const uint8_t metasys_global_who_is[] = {
+        0x81, 0x0B, 0x00, 0x0C, 0x01, 0x20, 0xFF, 0xFF,
+        0x00, 0xFF, 0x10, 0x08,
+    };
+    static const uint8_t metasys_filtered_who_is[] = {
+        0x81, 0x0B, 0x00, 0x14, 0x01, 0x20, 0xFF, 0xFF,
+        0x00, 0xFF, 0x10, 0x08, 0x0B, 0x1E, 0x84, 0xCB,
+        0x1B, 0x1E, 0x84, 0xCB,
+    };
+    static const uint8_t routed_global_who_is[] = {
+        0x81, 0x0B, 0x00, 0x10, 0x01, 0x28, 0xFF, 0xFF,
+        0x00, 0x12, 0x34, 0x01, 0xAA, 0xFF, 0x10, 0x08,
+    };
     static const uint8_t expected_i_am[] = {
         0x81, 0x0A, 0x00, 0x15, 0x01, 0x00, 0x10, 0x00,
         0xC4, 0x02, 0x09, 0x23, 0xD9, 0x22, 0x05, 0xC4,
         0x91, 0x03, 0x22, 0x03, 0xE7,
     };
     static const uint8_t expected_broadcast_i_am[] = {
-        0x81, 0x0B, 0x00, 0x15, 0x01, 0x00, 0x10, 0x00,
-        0xC4, 0x02, 0x09, 0x23, 0xD9, 0x22, 0x05, 0xC4,
-        0x91, 0x03, 0x22, 0x03, 0xE7,
+        0x81, 0x0B, 0x00, 0x19, 0x01, 0x20, 0xFF, 0xFF,
+        0x00, 0xFF, 0x10, 0x00, 0xC4, 0x02, 0x09, 0x23,
+        0xD9, 0x22, 0x05, 0xC4, 0x91, 0x03, 0x22, 0x03,
+        0xE7,
     };
     uint8_t response[1500];
 
@@ -170,11 +185,12 @@ static void test_reference_vectors(void)
         response,
         sizeof(response));
     CHECK(result.kind == BACNET_PACKET_WHO_IS);
+    CHECK(result.broadcast_response);
     CHECK(bytes_equal(
         response,
         result.response_length,
-        expected_i_am,
-        ARRAY_LENGTH(expected_i_am)));
+        expected_broadcast_i_am,
+        ARRAY_LENGTH(expected_broadcast_i_am)));
 
     result = bacnet_handle_packet(
         who_is_exact,
@@ -183,11 +199,50 @@ static void test_reference_vectors(void)
         response,
         sizeof(response));
     CHECK(result.kind == BACNET_PACKET_WHO_IS);
+    CHECK(result.broadcast_response);
     CHECK(bytes_equal(
         response,
         result.response_length,
-        expected_i_am,
-        ARRAY_LENGTH(expected_i_am)));
+        expected_broadcast_i_am,
+        ARRAY_LENGTH(expected_broadcast_i_am)));
+
+    result = bacnet_handle_packet(
+        metasys_global_who_is,
+        sizeof(metasys_global_who_is),
+        &STATE,
+        response,
+        sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_WHO_IS);
+    CHECK(result.broadcast_response);
+    CHECK(bytes_equal(
+        response,
+        result.response_length,
+        expected_broadcast_i_am,
+        ARRAY_LENGTH(expected_broadcast_i_am)));
+
+    result = bacnet_handle_packet(
+        routed_global_who_is,
+        sizeof(routed_global_who_is),
+        &STATE,
+        response,
+        sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_WHO_IS);
+    CHECK(result.broadcast_response);
+    CHECK(bytes_equal(
+        response,
+        result.response_length,
+        expected_broadcast_i_am,
+        ARRAY_LENGTH(expected_broadcast_i_am)));
+
+    result = bacnet_handle_packet(
+        metasys_filtered_who_is,
+        sizeof(metasys_filtered_who_is),
+        &STATE,
+        response,
+        sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_WHO_IS);
+    CHECK(result.response_length == 0);
+    CHECK(!result.broadcast_response);
 
     uint8_t outside[sizeof(who_is_exact)];
     memcpy(outside, who_is_exact, sizeof(outside));
@@ -197,6 +252,7 @@ static void test_reference_vectors(void)
         outside, sizeof(outside), &STATE, response, sizeof(response));
     CHECK(result.kind == BACNET_PACKET_WHO_IS);
     CHECK(result.response_length == 0);
+    CHECK(!result.broadcast_response);
 }
 
 static void test_device_and_binary_input_properties(void)
@@ -285,6 +341,27 @@ static void test_errors_and_malformed_input(void)
         0x81, 0x0A, 0x00, 0x10, 0x01, 0x00, 0x10, 0x08,
         0x0B, 0x09, 0x23, 0xD9, 0x1B, 0x09, 0x23, 0xD9,
     };
+    static const uint8_t missing_destination_hop[] = {
+        0x81, 0x0B, 0x00, 0x09, 0x01, 0x20, 0xFF, 0xFF, 0x00,
+    };
+    static const uint8_t invalid_global_destination_address[] = {
+        0x81, 0x0B, 0x00, 0x0D, 0x01, 0x20, 0xFF, 0xFF,
+        0x01, 0xAA, 0xFF, 0x10, 0x08,
+    };
+    static const uint8_t invalid_source_address[] = {
+        0x81, 0x0B, 0x00, 0x0B, 0x01, 0x08, 0x12, 0x34,
+        0x00, 0x10, 0x08,
+    };
+    static const uint8_t remote_network_who_is[] = {
+        0x81, 0x0B, 0x00, 0x0C, 0x01, 0x20, 0x00, 0x4B,
+        0x00, 0xFF, 0x10, 0x08,
+    };
+    static const uint8_t network_layer_message[] = {
+        0x81, 0x0B, 0x00, 0x08, 0x01, 0x80, 0x00, 0x00,
+    };
+    static const uint8_t reserved_npdu_bits[] = {
+        0x81, 0x0B, 0x00, 0x08, 0x01, 0x50, 0x10, 0x08,
+    };
     uint8_t request[64];
     uint8_t response[1500];
 
@@ -293,6 +370,48 @@ static void test_errors_and_malformed_input(void)
             who_is_exact, length, &STATE, response, sizeof(response));
         CHECK(result.kind == BACNET_PACKET_MALFORMED);
         CHECK(result.response_length == 0);
+    }
+
+    const struct {
+        const uint8_t *frame;
+        size_t length;
+    } malformed_npdus[] = {
+        {missing_destination_hop, sizeof(missing_destination_hop)},
+        {invalid_global_destination_address,
+         sizeof(invalid_global_destination_address)},
+        {invalid_source_address, sizeof(invalid_source_address)},
+        {reserved_npdu_bits, sizeof(reserved_npdu_bits)},
+    };
+    for (size_t index = 0; index < ARRAY_LENGTH(malformed_npdus); ++index) {
+        const bacnet_packet_result_t result = bacnet_handle_packet(
+            malformed_npdus[index].frame,
+            malformed_npdus[index].length,
+            &STATE,
+            response,
+            sizeof(response));
+        CHECK(result.kind == BACNET_PACKET_MALFORMED);
+        CHECK(result.response_length == 0);
+        CHECK(!result.broadcast_response);
+    }
+
+    const uint8_t *ignored_npdus[] = {
+        remote_network_who_is,
+        network_layer_message,
+    };
+    const size_t ignored_lengths[] = {
+        sizeof(remote_network_who_is),
+        sizeof(network_layer_message),
+    };
+    for (size_t index = 0; index < ARRAY_LENGTH(ignored_npdus); ++index) {
+        const bacnet_packet_result_t result = bacnet_handle_packet(
+            ignored_npdus[index],
+            ignored_lengths[index],
+            &STATE,
+            response,
+            sizeof(response));
+        CHECK(result.kind == BACNET_PACKET_IGNORED);
+        CHECK(result.response_length == 0);
+        CHECK(!result.broadcast_response);
     }
 
     size_t request_length = read_property_request(request, 3, 20, 85, false, 0);
@@ -306,6 +425,7 @@ static void test_errors_and_malformed_input(void)
     static const uint8_t reject_apdu[] = {0x60, 0x01, 0x09};
     CHECK(result.kind == BACNET_PACKET_READ_PROPERTY);
     CHECK(result.response_length == 9);
+    CHECK(!result.broadcast_response);
     CHECK(memcmp(response + 6, reject_apdu, sizeof(reject_apdu)) == 0);
 
     request[9] = 12;
@@ -367,11 +487,27 @@ static void test_capacity_guards_and_random_frames(void)
 {
     uint8_t response[1500];
     memset(response, 0xA5, sizeof(response));
-    for (size_t capacity = 0; capacity < 21; ++capacity) {
+    for (size_t capacity = 0; capacity <= 21; ++capacity) {
         const size_t length =
             bacnet_encode_i_am(&STATE, false, response, capacity);
         if (capacity < 21) {
             CHECK(length == 0);
+        } else {
+            CHECK(length == 21);
+        }
+        for (size_t index = capacity; index < sizeof(response); ++index) {
+            CHECK(response[index] == 0xA5);
+        }
+        memset(response, 0xA5, sizeof(response));
+    }
+
+    for (size_t capacity = 0; capacity <= 25; ++capacity) {
+        const size_t length =
+            bacnet_encode_i_am(&STATE, true, response, capacity);
+        if (capacity < 25) {
+            CHECK(length == 0);
+        } else {
+            CHECK(length == 25);
         }
         for (size_t index = capacity; index < sizeof(response); ++index) {
             CHECK(response[index] == 0xA5);
