@@ -32,8 +32,8 @@ static const bacnet_device_state_t STATE = {
     .device_name = "ESP32-P4 Toggle Inputs",
     .vendor_name = "Lab placeholder",
     .model_name = "Waveshare ESP32-P4-POE-ETH",
-    .firmware_revision = "1.3.0",
-    .application_software_version = "1.3.0 (0123456789ab)",
+    .firmware_revision = "1.3.1",
+    .application_software_version = "1.3.1 (0123456789ab)",
     .description = "Three toggle inputs",
     .database_revision = 3,
     .binary_input_instances = {20, 21, 22},
@@ -1290,6 +1290,8 @@ static void test_ota_bearer_authentication(void)
         "Bearer 0123456789abcdef0123456789abcdef"
         "0123456789abcdef0123456789abcdef";
     char changed[sizeof(authorization)];
+    char copied_token[OTA_TOKEN_MAX_LENGTH + 1U];
+    uint8_t embedded_token[sizeof(token) + 2U];
     char short_token[OTA_TOKEN_MIN_LENGTH];
     char long_token[OTA_TOKEN_MAX_LENGTH + 2U];
 
@@ -1319,6 +1321,39 @@ static void test_ota_bearer_authentication(void)
     changed[10] = '\0';
     CHECK(!ota_authorization_valid(
         changed, sizeof(changed) - 1U, token));
+
+    memcpy(embedded_token, token, sizeof(token));
+    CHECK(ota_copy_embedded_token(
+        embedded_token,
+        sizeof(token),
+        copied_token,
+        sizeof(copied_token)));
+    CHECK(strcmp(copied_token, token) == 0);
+
+    memcpy(embedded_token, token, sizeof(token) - 1U);
+    embedded_token[sizeof(token) - 1U] = '\n';
+    embedded_token[sizeof(token)] = '\r';
+    embedded_token[sizeof(token) + 1U] = '\0';
+    CHECK(ota_copy_embedded_token(
+        embedded_token,
+        sizeof(embedded_token),
+        copied_token,
+        sizeof(copied_token)));
+    CHECK(strcmp(copied_token, token) == 0);
+
+    embedded_token[10] = '\0';
+    CHECK(!ota_copy_embedded_token(
+        embedded_token,
+        sizeof(embedded_token),
+        copied_token,
+        sizeof(copied_token)));
+    CHECK(!ota_copy_embedded_token(
+        (const uint8_t *)token,
+        strlen(token),
+        copied_token,
+        strlen(token)));
+    CHECK(!ota_copy_embedded_token(
+        NULL, 0U, copied_token, sizeof(copied_token)));
 }
 
 int main(void)

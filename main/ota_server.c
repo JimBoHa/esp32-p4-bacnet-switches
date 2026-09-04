@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "bacnet_server.h"
 #include "diagnostics.h"
 #include "esp_app_desc.h"
 #include "esp_check.h"
@@ -25,7 +26,9 @@
 
 #define OTA_RECEIVE_BUFFER_BYTES 4096U
 #define OTA_MAX_CONSECUTIVE_TIMEOUTS 5U
-#define OTA_ROLLBACK_VALIDATION_DELAY_MS 10000U
+#define OTA_ROLLBACK_VALIDATION_INITIAL_DELAY_MS 10000U
+#define OTA_ROLLBACK_VALIDATION_POLL_MS 1000U
+#define OTA_ROLLBACK_VALIDATION_TIMEOUT_MS 60000U
 #define OTA_PROJECT_HEADER "X-Firmware-Project"
 #define OTA_STATUS_RESPONSE_BYTES 12288U
 
@@ -48,30 +51,16 @@ extern const unsigned char ota_token_txt_end[]
 
 static httpd_handle_t server_handle;
 static atomic_bool upload_in_progress;
+static atomic_bool server_ready;
 static char bearer_token[OTA_TOKEN_MAX_LENGTH + 1U];
 
 static bool load_embedded_token(void)
 {
-    size_t length = (size_t)(ota_token_txt_end - ota_token_txt_start);
-    while (length > 0U &&
-           (ota_token_txt_start[length - 1U] == '\n' ||
-            ota_token_txt_start[length - 1U] == '\r' ||
-            ota_token_txt_start[length - 1U] == ' ' ||
-            ota_token_txt_start[length - 1U] == '\t')) {
-        length--;
-    }
-    if (length < OTA_TOKEN_MIN_LENGTH || length > OTA_TOKEN_MAX_LENGTH) {
-        return false;
-    }
-    for (size_t index = 0; index < length; ++index) {
-        const unsigned char character = ota_token_txt_start[index];
-        if (character < 0x21U || character > 0x7EU) {
-            return false;
-        }
-    }
-    memcpy(bearer_token, ota_token_txt_start, length);
-    bearer_token[length] = '\0';
-    return ota_token_configuration_valid(bearer_token);
+    return ota_copy_embedded_token(
+        ota_token_txt_start,
+        (size_t)(ota_token_txt_end - ota_token_txt_start),
+        bearer_token,
+        sizeof(bearer_token));
 }
 
 static const char *json_bool(bool value)
@@ -707,6 +696,7 @@ esp_err_t ota_server_start(void)
     if (server_handle != NULL) {
         return ESP_OK;
     }
+    atomic_store_explicit(&server_ready, false, memory_order_release);
     ESP_RETURN_ON_FALSE(
         load_embedded_token(),
         ESP_ERR_INVALID_ARG,
@@ -763,6 +753,7 @@ esp_err_t ota_server_start(void)
     atomic_store_explicit(
         &upload_in_progress, false, memory_order_release);
     server_handle = created_server;
+    atomic_store_explicit(&server_ready, true, memory_order_release);
     ESP_LOGI(
         TAG,
         "authenticated HTTPS OTA ready on port %u",
@@ -779,31 +770,68 @@ esp_err_t ota_server_start(void)
 
 #endif
 
+bool ota_server_ready(void)
+{
+#if CONFIG_OTA_HTTPS_ENABLED
+    return atomic_load_explicit(&server_ready, memory_order_acquire);
+#else
+    return false;
+#endif
+}
+
 #if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
+static bool rollback_runtime_healthy(void)
+{
+    diagnostics_snapshot_t snapshot;
+    return ota_server_ready() && bacnet_server_ready() &&
+        diagnostics_snapshot_get(&snapshot) && snapshot.network.link_up &&
+        snapshot.network.ipv4_address != 0U &&
+        snapshot.task_watchdog_subscribed[DIAGNOSTICS_TASK_SWITCH_INPUTS] &&
+        snapshot.task_healthy[DIAGNOSTICS_TASK_SWITCH_INPUTS] &&
+        snapshot.task_watchdog_subscribed[DIAGNOSTICS_TASK_BACNET] &&
+        snapshot.task_healthy[DIAGNOSTICS_TASK_BACNET];
+}
+
 static void rollback_validation_task(void *argument)
 {
     (void)argument;
-    vTaskDelay(pdMS_TO_TICKS(OTA_ROLLBACK_VALIDATION_DELAY_MS));
+    vTaskDelay(pdMS_TO_TICKS(OTA_ROLLBACK_VALIDATION_INITIAL_DELAY_MS));
 
-    const esp_partition_t *running = esp_ota_get_running_partition();
-    esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
-    if (running != NULL &&
-        esp_ota_get_state_partition(running, &state) == ESP_OK &&
-        state == ESP_OTA_IMG_PENDING_VERIFY) {
-        const esp_err_t result = esp_ota_mark_app_valid_cancel_rollback();
-        if (result == ESP_OK) {
-            diagnostics_record_ota_result(
-                DIAGNOSTICS_OTA_VALIDATED, 0);
-            ESP_LOGI(TAG, "running firmware marked valid");
-        } else {
-            diagnostics_record_ota_result(
-                DIAGNOSTICS_OTA_FAILED, result);
-            ESP_LOGE(
-                TAG,
-                "failed to confirm running firmware: %s",
-                esp_err_to_name(result));
+    uint32_t elapsed_ms = OTA_ROLLBACK_VALIDATION_INITIAL_DELAY_MS;
+    while (elapsed_ms <= OTA_ROLLBACK_VALIDATION_TIMEOUT_MS) {
+        const esp_partition_t *running = esp_ota_get_running_partition();
+        esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+        if (running == NULL ||
+            esp_ota_get_state_partition(running, &state) != ESP_OK ||
+            state != ESP_OTA_IMG_PENDING_VERIFY) {
+            vTaskDelete(NULL);
+            return;
         }
+        if (rollback_runtime_healthy()) {
+            const esp_err_t result = esp_ota_mark_app_valid_cancel_rollback();
+            if (result == ESP_OK) {
+                diagnostics_record_ota_result(
+                    DIAGNOSTICS_OTA_VALIDATED, 0);
+                ESP_LOGI(TAG, "healthy firmware marked valid");
+            } else {
+                diagnostics_record_ota_result(
+                    DIAGNOSTICS_OTA_FAILED, result);
+                ESP_LOGE(
+                    TAG,
+                    "failed to confirm running firmware: %s",
+                    esp_err_to_name(result));
+            }
+            vTaskDelete(NULL);
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(OTA_ROLLBACK_VALIDATION_POLL_MS));
+        elapsed_ms += OTA_ROLLBACK_VALIDATION_POLL_MS;
     }
+
+    diagnostics_record_ota_result(DIAGNOSTICS_OTA_FAILED, ESP_ERR_TIMEOUT);
+    ESP_LOGE(TAG, "runtime health check failed; rolling back firmware");
+    const esp_err_t result = esp_ota_mark_app_invalid_rollback_and_reboot();
+    ESP_LOGE(TAG, "firmware rollback failed: %s", esp_err_to_name(result));
     vTaskDelete(NULL);
 }
 #endif
@@ -833,8 +861,8 @@ esp_err_t ota_start_rollback_validation(void)
         "failed to create OTA validation task");
     ESP_LOGI(
         TAG,
-        "new firmware pending; validation in %u ms",
-        OTA_ROLLBACK_VALIDATION_DELAY_MS);
+        "new firmware pending; health validation begins in %u ms",
+        OTA_ROLLBACK_VALIDATION_INITIAL_DELAY_MS);
 #endif
     return ESP_OK;
 }

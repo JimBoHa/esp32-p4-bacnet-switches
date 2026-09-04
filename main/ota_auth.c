@@ -21,6 +21,38 @@ bool ota_token_configuration_valid(const char *token)
     return length >= OTA_TOKEN_MIN_LENGTH && length <= OTA_TOKEN_MAX_LENGTH;
 }
 
+bool ota_copy_embedded_token(
+    const uint8_t *embedded,
+    size_t embedded_length,
+    char *token,
+    size_t token_capacity)
+{
+    if (embedded == NULL || token == NULL) {
+        return false;
+    }
+    while (embedded_length > 0U &&
+           (embedded[embedded_length - 1U] == '\0' ||
+            embedded[embedded_length - 1U] == '\n' ||
+            embedded[embedded_length - 1U] == '\r' ||
+            embedded[embedded_length - 1U] == ' ' ||
+            embedded[embedded_length - 1U] == '\t')) {
+        embedded_length--;
+    }
+    if (embedded_length < OTA_TOKEN_MIN_LENGTH ||
+        embedded_length > OTA_TOKEN_MAX_LENGTH ||
+        token_capacity <= embedded_length) {
+        return false;
+    }
+    for (size_t index = 0; index < embedded_length; ++index) {
+        if (embedded[index] < 0x21U || embedded[index] > 0x7EU) {
+            return false;
+        }
+    }
+    memcpy(token, embedded, embedded_length);
+    token[embedded_length] = '\0';
+    return ota_token_configuration_valid(token);
+}
+
 bool ota_authorization_valid(
     const char *authorization,
     size_t authorization_length,

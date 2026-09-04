@@ -129,9 +129,19 @@ static void got_ip_event_handler(
     ESP_LOGI(TAG, "IPv4 address: " IPSTR, IP2STR(&ip->ip));
     ESP_LOGI(TAG, "IPv4 netmask: " IPSTR, IP2STR(&ip->netmask));
     ESP_LOGI(TAG, "IPv4 gateway: " IPSTR, IP2STR(&ip->gw));
-    ESP_ERROR_CHECK_WITHOUT_ABORT(bacnet_server_start(netif));
+    const esp_err_t bacnet_result = bacnet_server_start(netif);
+    if (bacnet_result != ESP_OK) {
+        diagnostics_record_event(
+            DIAGNOSTICS_EVENT_BACNET_SOCKET_FAILED, bacnet_result);
+    }
+    ESP_ERROR_CHECK_WITHOUT_ABORT(bacnet_result);
 #if CONFIG_OTA_HTTPS_ENABLED
-    ESP_ERROR_CHECK_WITHOUT_ABORT(ota_server_start());
+    const esp_err_t ota_result = ota_server_start();
+    if (ota_result != ESP_OK) {
+        diagnostics_record_event(
+            DIAGNOSTICS_EVENT_OTA_SERVER_FAILED, ota_result);
+    }
+    ESP_ERROR_CHECK_WITHOUT_ABORT(ota_result);
 #endif
 }
 

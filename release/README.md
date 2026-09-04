@@ -9,8 +9,8 @@ application-only OTA image with:
 ```sh
 idf.py build
 cp build/esp32_p4_bacnet_switches.bin \
-  release/esp32_p4_bacnet_switches-1.3.0-ota.bin
-shasum -a 256 release/esp32_p4_bacnet_switches-1.3.0-ota.bin
+  release/esp32_p4_bacnet_switches-1.3.1-ota.bin
+shasum -a 256 release/esp32_p4_bacnet_switches-1.3.1-ota.bin
 ```
 
 Upload it with:
@@ -18,7 +18,7 @@ Upload it with:
 ```sh
 python3 tools/ota_client.py upload \
   --host DEVICE_IP \
-  release/esp32_p4_bacnet_switches-1.3.0-ota.bin
+  release/esp32_p4_bacnet_switches-1.3.1-ota.bin
 ```
 
 For a private merged image used during the initial USB installation:
@@ -26,7 +26,7 @@ For a private merged image used during the initial USB installation:
 ```sh
 cd build
 esptool.py --chip esp32p4 merge_bin -o \
-  ../release/esp32_p4_bacnet_switches-1.3.0-full.bin \
+  ../release/esp32_p4_bacnet_switches-1.3.1-full.bin \
   @flash_args
 ```
 
