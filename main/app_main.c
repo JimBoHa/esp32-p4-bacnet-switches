@@ -162,9 +162,11 @@ void app_main(void)
 
     ESP_LOGI(
         TAG,
-        "GPIO%d and GPIO%d use internal pull-downs; switch closed = Active",
+        "GPIO%d, GPIO%d, and GPIO%d use internal pull-downs; "
+        "switch closed = Active",
         CONFIG_TOGGLE_INPUT_1_GPIO,
-        CONFIG_TOGGLE_INPUT_2_GPIO);
+        CONFIG_TOGGLE_INPUT_2_GPIO,
+        CONFIG_TOGGLE_INPUT_3_GPIO);
     ESP_LOGI(
         TAG,
         "starting BACnet Device %d with DHCP hostname %s",
