@@ -483,3 +483,19 @@ The full target check is:
 idf.py reconfigure
 idf.py build
 ```
+
+## Operations and release
+
+- [Security policy and threat model](SECURITY.md)
+- [Commissioning and recovery](docs/COMMISSIONING.md)
+- [Development and private release packaging](docs/DEVELOPMENT.md)
+- [Hardware acceptance testing](docs/HARDWARE_TESTING.md)
+- [Soak testing](docs/SOAK_TESTING.md)
+- [BACnet implementation/PICS summary](docs/BACNET_PICS.md)
+- [Third-party notices](THIRD_PARTY_NOTICES.md)
+
+Production firmware and recovery binaries are credential-bearing secrets. The
+least-privilege CI workflow builds only an OTA-disabled target and publishes no
+binary. Create device-specific artifacts locally with
+`python3 tools/package_release.py`; they are permission-restricted below the
+ignored `release/private/` directory.
