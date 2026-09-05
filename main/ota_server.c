@@ -1345,6 +1345,81 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             response,
             OTA_STATUS_RESPONSE_BYTES,
             &response_length,
+            "\"security\":{\"https_management\":true,"
+            "\"bearer_authentication\":true,"
+            "\"tls_private_key_embedded\":true,"
+            "\"secure_boot_enabled\":%s,"
+            "\"flash_encryption_enabled\":%s,"
+            "\"application_anti_rollback_enabled\":%s},"
+            "\"recovery\":{\"ota_rollback_enabled\":%s,"
+            "\"task_watchdog_enabled\":%s,"
+            "\"task_watchdog_timeout_seconds\":%u,"
+            "\"task_watchdog_panics\":%s,"
+            "\"interrupt_watchdog_enabled\":%s,"
+            "\"panic_reboots\":%s,"
+            "\"brownout_detection_enabled\":%s,"
+            "\"core_dump_destination\":\"%s\"},",
+#ifdef CONFIG_SECURE_BOOT
+            "true",
+#else
+            "false",
+#endif
+#ifdef CONFIG_SECURE_FLASH_ENC_ENABLED
+            "true",
+#else
+            "false",
+#endif
+#ifdef CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK
+            "true",
+#else
+            "false",
+#endif
+#ifdef CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
+            "true",
+#else
+            "false",
+#endif
+#ifdef CONFIG_ESP_TASK_WDT_INIT
+            "true",
+#else
+            "false",
+#endif
+            (unsigned)CONFIG_ESP_TASK_WDT_TIMEOUT_S,
+#ifdef CONFIG_ESP_TASK_WDT_PANIC
+            "true",
+#else
+            "false",
+#endif
+#ifdef CONFIG_ESP_INT_WDT
+            "true",
+#else
+            "false",
+#endif
+#if defined(CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT) || \
+    defined(CONFIG_ESP_SYSTEM_PANIC_SILENT_REBOOT)
+            "true",
+#else
+            "false",
+#endif
+#ifdef CONFIG_ESP_BROWNOUT_DET
+            "true",
+#else
+            "false",
+#endif
+#ifdef CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH
+            "flash"
+#elif defined(CONFIG_ESP_COREDUMP_ENABLE_TO_UART)
+            "uart"
+#else
+            "disabled"
+#endif
+            )) {
+        goto encoding_failed;
+    }
+    if (!response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
             "\"configuration\":{\"active_database_revision\":%u,"
             "\"saved_database_revision\":%u,\"restart_required\":%s},",
             (unsigned)active_config.database_revision,
