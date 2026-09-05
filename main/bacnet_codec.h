@@ -20,6 +20,7 @@ typedef struct {
     const char *firmware_revision;
     const char *application_software_version;
     const char *description;
+    const char *location;
     uint32_t database_revision;
     uint32_t binary_input_instances[BACNET_BINARY_INPUT_COUNT];
     const char *binary_input_names[BACNET_BINARY_INPUT_COUNT];

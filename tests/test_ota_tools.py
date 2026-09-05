@@ -6,6 +6,7 @@ from __future__ import annotations
 import importlib.util
 import hashlib
 import http.server
+import json
 import os
 import ssl
 import stat
@@ -415,6 +416,84 @@ class OtaToolTests(unittest.TestCase):
                     ):
                 with self.assertRaisesRegex(ValueError, "accepted image hash"):
                     client._upload(arguments, "x" * 64)
+
+    def test_client_gets_and_puts_persistent_configuration(self) -> None:
+        client = _load_client_module()
+
+        class Response:
+            status = 202
+            reason = "Accepted"
+
+            def read(self) -> bytes:
+                return b'{"accepted":true,"restart_required":true}'
+
+        class Connection:
+            def __init__(self) -> None:
+                self.requests: list[tuple[object, ...]] = []
+                self.closed = False
+
+            def request(self, *args: object, **kwargs: object) -> None:
+                self.requests.append((*args, kwargs))
+
+            def getresponse(self) -> Response:
+                return Response()
+
+            def close(self) -> None:
+                self.closed = True
+
+        with tempfile.TemporaryDirectory() as temporary:
+            configuration = Path(temporary) / "config.json"
+            configuration.write_text(
+                json.dumps({"schema": 1, "device_instance": 599152}),
+                encoding="utf-8",
+            )
+            arguments = type(
+                "Arguments",
+                (),
+                {
+                    "configuration": configuration,
+                    "host": "192.0.2.1",
+                    "port": 443,
+                    "cert": Path("certificate.pem"),
+                    "timeout": 1.0,
+                    "output": Path(temporary) / "exported.json",
+                },
+            )()
+
+            get_connection = Connection()
+            with mock.patch.object(
+                client, "_connection", return_value=get_connection
+            ), mock.patch("builtins.print"):
+                self.assertEqual(client._config_get(arguments, "x" * 64), 0)
+            self.assertTrue(get_connection.closed)
+            self.assertEqual(get_connection.requests[0][0:2], ("GET", "/config"))
+            get_headers = get_connection.requests[0][-1]["headers"]
+            self.assertEqual(get_headers["Authorization"], "Bearer " + "x" * 64)
+            self.assertTrue(arguments.output.is_file())
+            self.assertTrue(json.loads(arguments.output.read_text())["accepted"])
+
+            put_connection = Connection()
+            with mock.patch.object(
+                client, "_connection", return_value=put_connection
+            ), mock.patch("builtins.print"):
+                self.assertEqual(client._config_put(arguments, "y" * 64), 0)
+            self.assertTrue(put_connection.closed)
+            self.assertEqual(put_connection.requests[0][0:2], ("PUT", "/config"))
+            request_arguments = put_connection.requests[0][-1]
+            self.assertEqual(
+                request_arguments["headers"]["Content-Type"], "application/json"
+            )
+            self.assertEqual(
+                json.loads(request_arguments["body"]),
+                {"schema": 1, "device_instance": 599152},
+            )
+
+            configuration.write_text("[]", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "JSON object"):
+                client._config_put(arguments, "x" * 64)
+            configuration.write_text("{", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "not valid JSON"):
+                client._config_put(arguments, "x" * 64)
 
     def test_client_waits_for_reboot_and_rollback_validation(self) -> None:
         client = _load_client_module()

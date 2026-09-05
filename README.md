@@ -146,13 +146,17 @@ Replace `PORT` with the local serial port. Exit the monitor with `Ctrl-]`.
 Bootloader or partition-table changes always require USB; OTA updates only the
 application slot.
 
-Use `idf.py menuconfig` to change BACnet identity, object names/instances,
-GPIOs, input polarity, debounce time, DHCP hostname, or ports. Verify custom
-pins against the board schematic.
+Use `idf.py menuconfig` to change factory defaults. After first boot, BACnet
+identity, object names/instances, input polarity, debounce time, and BACnet UDP
+port are stored in NVS and managed through the authenticated `/config` API.
+GPIO assignments remain fixed at build time so a configuration mistake cannot
+claim an Ethernet or power-related board pin. DHCP hostname and HTTPS port also
+remain build-time settings for now. Verify any source-level pin change against
+the board schematic.
 
 ## Authenticated Ethernet management
 
-The HTTPS server provides three bearer-authenticated endpoints:
+The HTTPS server provides five bearer-authenticated operations:
 
 - `GET /ota/status` — firmware/partition/rollback state, Git revision, reset
   reason, exact running-image SHA-256, uptime, temperature, heap, watchdog
@@ -161,6 +165,11 @@ The HTTPS server provides three bearer-authenticated endpoints:
   log.
 - `POST /diagnostics/input-self-test` — weak-pull line classification. It does
   not enable GPIO output drivers and may be run with field wiring connected.
+- `GET /config` — export the complete saved BACnet/input configuration and show
+  whether it differs from the active configuration.
+- `PUT /config` — validate and atomically persist a complete configuration.
+  Changes take effect only after restart, preventing a partial live change from
+  disrupting an active BACnet session.
 - `POST /ota` — validated application-image upload and reboot.
 
 DHCP's public ESP-IDF API does not expose lease expiry. Status therefore reports
@@ -172,7 +181,24 @@ Check status or classify the connected input lines:
 ```sh
 python3 tools/ota_client.py status --host 192.168.75.152
 python3 tools/ota_client.py input-self-test --host 192.168.75.152
+python3 tools/ota_client.py config-get \
+  --host 192.168.75.152 --output device-config.json
 ```
+
+To commission the BACnet identity or inputs, save the `config-get` JSON object
+to a file, edit it, and send the complete object back. Read-only result fields
+such as `database_revision`, `active_database_revision`, and
+`restart_required` may remain in the file and are ignored on input:
+
+```sh
+python3 tools/ota_client.py config-put --host 192.168.75.152 device-config.json
+```
+
+The accepted response reports `restart_required: true`. A normal OTA update or
+the later authenticated reboot command activates it. Sending the active values
+again cancels a pending configuration. Each effective change increments the
+BACnet Device `Database_Revision`; the configured Device and Binary Input
+instances and object names must be unique and within BACnet limits.
 
 Build and upload an application:
 
