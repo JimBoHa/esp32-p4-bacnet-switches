@@ -4,20 +4,126 @@
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import getpass
 import hashlib
 import hmac
 import http.client
 import json
 import ssl
+import struct
 import sys
+import time
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CERTIFICATE = PROJECT_ROOT / "main" / "ota_server_cert.pem"
-DEFAULT_TOKEN_FILE = PROJECT_ROOT / "provisioning" / "ota-token.txt"
+DEFAULT_TOKEN_FILE = PROJECT_ROOT / "secrets" / "ota_token.txt"
 DEFAULT_PROJECT = "esp32_p4_bacnet_switches"
+ESP_IMAGE_MAGIC = 0xE9
+ESP32_P4_CHIP_ID = 18
+ESP_APP_DESC_MAGIC = 0xABCD5432
+ESP_IMAGE_HEADER_BYTES = 24
+ESP_SEGMENT_HEADER_BYTES = 8
+ESP_APP_DESC_BYTES = 256
+MAX_OTA_IMAGE_BYTES = 0x400000
+MAX_ESP_IMAGE_SEGMENTS = 16
+ESP_IMAGE_CHECKSUM_MAGIC = 0xEF
+EXPECTED_FLASH_SIZE_CODE = 0x50  # 32 MB
+
+
+@dataclasses.dataclass(frozen=True)
+class FirmwareMetadata:
+    size: int
+    file_sha256: str
+    image_sha256: str
+    project: str
+    version: str
+    image: bytes = dataclasses.field(default=b"", repr=False, compare=False)
+
+
+def _decode_app_field(value: bytes, name: str) -> str:
+    encoded = value.split(b"\0", 1)[0]
+    if not encoded:
+        raise ValueError(f"firmware {name} is empty")
+    try:
+        return encoded.decode("ascii")
+    except UnicodeDecodeError as error:
+        raise ValueError(f"firmware {name} is not ASCII") from error
+
+
+def _inspect_firmware(path: Path) -> FirmwareMetadata:
+    with path.open("rb") as source:
+        image = source.read(MAX_OTA_IMAGE_BYTES + 1)
+    if len(image) > MAX_OTA_IMAGE_BYTES:
+        raise ValueError("firmware image exceeds the 4 MiB OTA partition")
+    descriptor_offset = ESP_IMAGE_HEADER_BYTES + ESP_SEGMENT_HEADER_BYTES
+    minimum_size = descriptor_offset + ESP_APP_DESC_BYTES + hashlib.sha256().digest_size
+    if len(image) < minimum_size:
+        raise ValueError("firmware image is truncated")
+    if image[0] != ESP_IMAGE_MAGIC:
+        raise ValueError("file is not an ESP application image")
+    segment_count = image[1]
+    if not 1 <= segment_count <= MAX_ESP_IMAGE_SEGMENTS:
+        raise ValueError(
+            f"firmware segment count {segment_count} is outside the valid 1-16 range"
+        )
+    chip_id = struct.unpack_from("<H", image, 12)[0]
+    if chip_id != ESP32_P4_CHIP_ID:
+        raise ValueError(f"firmware targets chip ID {chip_id}, not ESP32-P4")
+    if image[3] & 0xF0 != EXPECTED_FLASH_SIZE_CODE:
+        raise ValueError("firmware is not configured for this board's 32 MB flash")
+    if image[23] != 1:
+        raise ValueError("firmware image is missing its appended validation hash")
+
+    digest_size = hashlib.sha256().digest_size
+    digest_offset = len(image) - digest_size
+    position = ESP_IMAGE_HEADER_BYTES
+    checksum = ESP_IMAGE_CHECKSUM_MAGIC
+    descriptor_offset = 0
+    first_segment_size = 0
+    for segment_index in range(segment_count):
+        if position + ESP_SEGMENT_HEADER_BYTES > digest_offset:
+            raise ValueError("firmware segment header is truncated")
+        segment_size = struct.unpack_from("<I", image, position + 4)[0]
+        segment_data_offset = position + ESP_SEGMENT_HEADER_BYTES
+        segment_end = segment_data_offset + segment_size
+        if segment_end > digest_offset:
+            raise ValueError("firmware segment data is truncated")
+        if segment_index == 0:
+            descriptor_offset = segment_data_offset
+            first_segment_size = segment_size
+        for byte in image[segment_data_offset:segment_end]:
+            checksum ^= byte
+        position = segment_end
+
+    checksum_offset = position + (15 - (position % 16))
+    if checksum_offset + 1 != digest_offset:
+        raise ValueError("firmware has an invalid checksum or digest position")
+    if image[checksum_offset] != checksum:
+        raise ValueError("firmware ESP image checksum does not match its segments")
+    if first_segment_size < ESP_APP_DESC_BYTES:
+        raise ValueError("firmware first segment has no complete application descriptor")
+    descriptor_magic = struct.unpack_from("<I", image, descriptor_offset)[0]
+    if descriptor_magic != ESP_APP_DESC_MAGIC:
+        raise ValueError("firmware application descriptor is invalid")
+
+    appended_digest = image[-hashlib.sha256().digest_size :]
+    computed_digest = hashlib.sha256(image[: -hashlib.sha256().digest_size]).digest()
+    if not hmac.compare_digest(appended_digest, computed_digest):
+        raise ValueError("firmware appended validation hash does not match its contents")
+
+    version = _decode_app_field(image[descriptor_offset + 16 : descriptor_offset + 48], "version")
+    project = _decode_app_field(image[descriptor_offset + 48 : descriptor_offset + 80], "project")
+    return FirmwareMetadata(
+        size=len(image),
+        file_sha256=hashlib.sha256(image).hexdigest(),
+        image_sha256=appended_digest.hex(),
+        project=project,
+        version=version,
+        image=image,
+    )
 
 
 def _read_token(path: Path | None) -> str:
@@ -30,8 +136,10 @@ def _read_token(path: Path | None) -> str:
         token = ""
     if not token:
         token = getpass.getpass("OTA bearer token: ").strip()
-    if not 32 <= len(token) <= 128 or not token.isascii():
-        raise ValueError("OTA token must contain 32-128 ASCII characters")
+    if not 32 <= len(token) <= 128 or any(
+        not 0x21 <= ord(character) <= 0x7E for character in token
+    ):
+        raise ValueError("OTA token must contain 32-128 printable ASCII characters")
     return token
 
 
@@ -47,19 +155,19 @@ def _connection(
     timeout: float,
 ) -> http.client.HTTPSConnection:
     expected_der = _certificate_der(certificate)
-    context = ssl.create_default_context(cafile=str(certificate))
+    context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
     context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     connection = http.client.HTTPSConnection(
         host, port=port, timeout=timeout, context=context
     )
     connection.connect()
-    assert connection.sock is not None
+    if connection.sock is None:
+        connection.close()
+        raise ssl.SSLError("TLS connection did not provide a peer socket")
     peer_der = connection.sock.getpeercert(binary_form=True)
-    if not hmac.compare_digest(
-        hashlib.sha256(peer_der).digest(),
-        hashlib.sha256(expected_der).digest(),
-    ):
+    if peer_der is None or not hmac.compare_digest(peer_der, expected_der):
         connection.close()
         raise ssl.SSLCertVerificationError(
             "device certificate does not match the pinned certificate"
@@ -67,15 +175,45 @@ def _connection(
     return connection
 
 
-def _show_response(response: http.client.HTTPResponse) -> int:
+def _show_response(response: http.client.HTTPResponse) -> tuple[int, object | None]:
     payload = response.read().decode("utf-8", errors="replace")
     print(f"HTTP {response.status} {response.reason}")
+    decoded: object | None = None
     try:
-        print(json.dumps(json.loads(payload), indent=2, sort_keys=True))
+        decoded = json.loads(payload)
+        print(json.dumps(decoded, indent=2, sort_keys=True))
     except json.JSONDecodeError:
         if payload:
             print(payload)
-    return 0 if 200 <= response.status < 300 else 1
+    return (0 if 200 <= response.status < 300 else 1), decoded
+
+
+def _fetch_status(
+    host: str,
+    port: int,
+    certificate: Path,
+    timeout: float,
+    token: str,
+) -> dict[str, object]:
+    connection = _connection(host, port, certificate, timeout)
+    try:
+        connection.request(
+            "GET",
+            "/ota/status",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        )
+        response = connection.getresponse()
+        payload = response.read()
+        if not 200 <= response.status < 300:
+            raise http.client.HTTPException(
+                f"status check returned HTTP {response.status} {response.reason}"
+            )
+        decoded = json.loads(payload)
+        if not isinstance(decoded, dict):
+            raise ValueError("status response is not a JSON object")
+        return decoded
+    finally:
+        connection.close()
 
 
 def _status(args: argparse.Namespace, token: str) -> int:
@@ -86,36 +224,160 @@ def _status(args: argparse.Namespace, token: str) -> int:
             "/ota/status",
             headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
         )
-        return _show_response(connection.getresponse())
+        result, _ = _show_response(connection.getresponse())
+        return result
     finally:
         connection.close()
 
 
 def _upload(args: argparse.Namespace, token: str) -> int:
     firmware: Path = args.firmware
-    size = firmware.stat().st_size
-    if size <= 0:
-        raise ValueError("firmware image is empty")
+    metadata = _inspect_firmware(firmware)
+    if metadata.project != args.project:
+        raise ValueError(
+            f"firmware project is {metadata.project!r}, expected {args.project!r}"
+        )
 
-    digest = hashlib.sha256()
-    with firmware.open("rb") as source:
-        for chunk in iter(lambda: source.read(65536), b""):
-            digest.update(chunk)
-    print(f"Uploading {firmware} ({size} bytes, SHA-256 {digest.hexdigest()})")
+    post_certificate = args.post_cert or args.cert
+    if not args.no_wait and not post_certificate.is_file():
+        raise FileNotFoundError(f"post-reboot certificate not found: {post_certificate}")
+    post_token = token
+    if not args.no_wait and args.post_token_file is not None:
+        post_token = _read_token(args.post_token_file)
+
+    before = None
+    if not args.no_wait:
+        before = _fetch_status(args.host, args.port, args.cert, args.timeout, token)
+    print(
+        f"Uploading {firmware} ({metadata.size} bytes, version {metadata.version}, "
+        f"file SHA-256 {metadata.file_sha256}, image SHA-256 {metadata.image_sha256})"
+    )
 
     connection = _connection(args.host, args.port, args.cert, args.timeout)
+    accepted: object | None = None
+    upload_result = 2
     try:
         connection.putrequest("POST", "/ota")
         connection.putheader("Authorization", f"Bearer {token}")
         connection.putheader("Content-Type", "application/octet-stream")
-        connection.putheader("Content-Length", str(size))
+        connection.putheader("Content-Length", str(metadata.size))
         connection.putheader("X-Firmware-Project", args.project)
         connection.putheader("Accept", "application/json")
         connection.endheaders()
-        with firmware.open("rb") as source:
-            for chunk in iter(lambda: source.read(16384), b""):
-                connection.send(chunk)
-        return _show_response(connection.getresponse())
+        for offset in range(0, metadata.size, 16384):
+            connection.send(metadata.image[offset : offset + 16384])
+        upload_result, accepted = _show_response(connection.getresponse())
+    except (OSError, ssl.SSLError, http.client.HTTPException):
+        if args.no_wait:
+            raise
+        print("Upload response was interrupted; checking the rebooted device")
+    finally:
+        connection.close()
+
+    if upload_result == 1:
+        return 1
+    if upload_result == 0:
+        if not isinstance(accepted, dict) or accepted.get("accepted") is not True:
+            raise ValueError("device returned success without an OTA acceptance record")
+        if accepted.get("image_sha256") != metadata.image_sha256:
+            raise ValueError("device accepted image hash does not match uploaded firmware")
+    if args.no_wait:
+        return upload_result
+
+    return _wait_for_deployment(
+        args,
+        post_certificate,
+        post_token,
+        metadata,
+        before,
+    )
+
+
+def _nested_integer(value: object, key: str) -> int | None:
+    if not isinstance(value, dict):
+        return None
+    nested = value.get(key)
+    return nested if isinstance(nested, int) and not isinstance(nested, bool) else None
+
+
+def _wait_for_deployment(
+    args: argparse.Namespace,
+    certificate: Path,
+    token: str,
+    metadata: FirmwareMetadata,
+    before: dict[str, object] | None,
+) -> int:
+    before_boot = (
+        _nested_integer(before.get("system"), "boot_count")
+        if before is not None
+        else None
+    )
+    before_partition = before.get("partition") if before is not None else None
+    deadline = time.monotonic() + args.reboot_timeout
+    last_error = "device did not return"
+    while time.monotonic() < deadline:
+        time.sleep(args.poll_interval)
+        try:
+            status = _fetch_status(
+                args.host,
+                args.port,
+                certificate,
+                min(args.timeout, 10.0),
+                token,
+            )
+        except (
+            OSError,
+            UnicodeError,
+            ValueError,
+            ssl.SSLError,
+            http.client.HTTPException,
+        ) as error:
+            last_error = str(error)
+            continue
+
+        system = status.get("system")
+        current_boot = _nested_integer(system, "boot_count")
+        rebooted = (
+            before_boot is None
+            or (current_boot is not None and current_boot > before_boot)
+            or status.get("partition") != before_partition
+        )
+        current_hash = status.get("image_sha256")
+        state = status.get("state")
+        if rebooted and current_hash == metadata.image_sha256 and state == "valid":
+            print(
+                f"Deployment verified: version {status.get('version')}, "
+                f"partition {status.get('partition')}, image SHA-256 {current_hash}"
+            )
+            return 0
+        if rebooted and current_hash == metadata.image_sha256:
+            last_error = f"new image is present but state is {state!r}"
+        elif rebooted:
+            raise ValueError(
+                "device rebooted into a different image (rollback or wrong binary)"
+            )
+        else:
+            last_error = "device has not rebooted yet"
+    raise TimeoutError(
+        f"deployment was not verified within {args.reboot_timeout:.0f} seconds: {last_error}"
+    )
+
+
+def _input_self_test(args: argparse.Namespace, token: str) -> int:
+    connection = _connection(args.host, args.port, args.cert, args.timeout)
+    try:
+        connection.request(
+            "POST",
+            "/diagnostics/input-self-test",
+            body=b"",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Length": "0",
+                "Accept": "application/json",
+            },
+        )
+        result, _ = _show_response(connection.getresponse())
+        return result
     finally:
         connection.close()
 
@@ -147,6 +409,12 @@ def _arguments() -> argparse.Namespace:
     status = commands.add_parser("status", help="read authenticated OTA status")
     _add_connection_arguments(status)
 
+    self_test = commands.add_parser(
+        "input-self-test",
+        help="test GPIO weak-pull response with all field wiring disconnected",
+    )
+    _add_connection_arguments(self_test)
+
     upload = commands.add_parser("upload", help="upload an ESP-IDF application image")
     _add_connection_arguments(upload)
     upload.add_argument("firmware", type=Path, help="application .bin from idf.py build")
@@ -154,6 +422,33 @@ def _arguments() -> argparse.Namespace:
         "--project",
         default=DEFAULT_PROJECT,
         help=f"required firmware project name (default: {DEFAULT_PROJECT})",
+    )
+    upload.add_argument(
+        "--no-wait",
+        action="store_true",
+        help="return after upload acceptance without verifying reboot and rollback state",
+    )
+    upload.add_argument(
+        "--post-cert",
+        type=Path,
+        help="pinned certificate expected after reboot (for credential rotation)",
+    )
+    upload.add_argument(
+        "--post-token-file",
+        type=Path,
+        help="bearer token expected after reboot (for credential rotation)",
+    )
+    upload.add_argument(
+        "--reboot-timeout",
+        type=float,
+        default=120.0,
+        help="seconds to wait for a healthy, validated image (default: 120)",
+    )
+    upload.add_argument(
+        "--poll-interval",
+        type=float,
+        default=2.0,
+        help="seconds between post-reboot checks (default: 2)",
     )
     return parser.parse_args()
 
@@ -164,12 +459,27 @@ def main() -> int:
         if not args.cert.is_file():
             raise FileNotFoundError(f"certificate not found: {args.cert}")
         token = _read_token(args.token_file)
+        if not 1 <= args.port <= 65535:
+            raise ValueError("port must be between 1 and 65535")
+        if args.timeout <= 0:
+            raise ValueError("timeout must be positive")
         if args.command == "status":
             return _status(args, token)
+        if args.command == "input-self-test":
+            return _input_self_test(args, token)
         if not args.firmware.is_file():
             raise FileNotFoundError(f"firmware not found: {args.firmware}")
+        if args.reboot_timeout <= 0 or args.poll_interval <= 0:
+            raise ValueError("reboot-timeout and poll-interval must be positive")
         return _upload(args, token)
-    except (OSError, ValueError, ssl.SSLError, http.client.HTTPException) as error:
+    except (
+        OSError,
+        TimeoutError,
+        UnicodeError,
+        ValueError,
+        ssl.SSLError,
+        http.client.HTTPException,
+    ) as error:
         print(f"OTA client error: {error}", file=sys.stderr)
         return 2
 

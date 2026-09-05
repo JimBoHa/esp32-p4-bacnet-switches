@@ -1,38 +1,34 @@
-# ESP32-P4 firmware 1.1.0
+# Private firmware artifacts
 
-## First USB installation
+Do not commit firmware binaries from this project. Every OTA-enabled binary
+contains that device's bearer token and TLS private key.
 
-`esp32_p4_bacnet_switches-1.1.0-full.bin` contains the bootloader, dual-slot
-partition table, initial OTA metadata, and application. Flash it at offset
-`0x0` after erasing the device:
+After generating or securely supplying credentials, build a private
+application-only OTA image with:
 
 ```sh
-python -m esptool --chip esp32p4 erase_flash
-python -m esptool --chip esp32p4 write_flash \
-  0x0 esp32_p4_bacnet_switches-1.1.0-full.bin
+idf.py build
+cp build/esp32_p4_bacnet_switches.bin \
+  release/esp32_p4_bacnet_switches-1.3.2-ota.bin
+shasum -a 256 release/esp32_p4_bacnet_switches-1.3.2-ota.bin
 ```
 
-The equivalent ESP-IDF workflow is documented in the project README.
-
-## Future Ethernet installation
-
-`esp32_p4_bacnet_switches-1.1.0-ota.bin` is an application-only image suitable
-for the authenticated HTTPS OTA endpoint:
+Upload it with:
 
 ```sh
-python3 ../tools/ota_client.py upload \
+python3 tools/ota_client.py upload \
   --host DEVICE_IP \
-  esp32_p4_bacnet_switches-1.1.0-ota.bin
+  release/esp32_p4_bacnet_switches-1.3.2-ota.bin
 ```
 
-Do not flash the OTA-only image at offset `0x0`.
+For a private merged image used during the initial USB installation:
 
-## SHA-256
-
-```text
-c96b0dfd5f808782cec81ea0c5008277f1c7feb3bcb8f425f0ffe8fbc37cad71  esp32_p4_bacnet_switches-1.1.0-full.bin
-4bf798a3cf2f6c987b73e6bb485c0884dfa3c4354a7a2cc0581fc3f996648f52  esp32_p4_bacnet_switches-1.1.0-ota.bin
+```sh
+cd build
+esptool.py --chip esp32p4 merge_bin -o \
+  ../release/esp32_p4_bacnet_switches-1.3.2-full.bin \
+  @flash_args
 ```
 
-This package contains the corresponding OTA bearer token and private TLS key.
-Keep the complete package private.
+Keep binaries and checksums in an approved secret store. They are ignored by
+Git. The project README contains the direct `idf.py` USB procedure.

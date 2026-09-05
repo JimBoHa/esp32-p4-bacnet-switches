@@ -4,7 +4,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define SWITCH_INPUT_COUNT 2U
+#include "esp_err.h"
+
+#define SWITCH_INPUT_COUNT 3U
 
 typedef struct {
     bool valid;
@@ -23,6 +25,8 @@ typedef struct {
 
 typedef struct {
     int gpio;
+    bool active_low;
+    uint32_t debounce_ms;
     switch_input_pad_config_t startup_config;
     bool startup_raw_after_input_enable;
     switch_input_pad_config_t configured_config;
@@ -30,10 +34,19 @@ typedef struct {
     switch_input_pad_config_t current_config;
     bool current_raw;
     bool stable;
+    uint32_t transition_count;
+    uint32_t last_transition_uptime_ms;
+    bool self_test_run;
+    bool self_test_passed;
+    bool self_test_pull_down_level;
+    bool self_test_pull_up_level;
 } switch_input_diagnostics_t;
 
 void switch_inputs_init(void);
 bool switch_input_get(size_t index);
+bool switch_input_faulted(size_t index);
+bool switch_input_active_low(size_t index);
+esp_err_t switch_inputs_run_self_test(void);
 bool switch_input_diagnostics_get(
     size_t index,
     switch_input_diagnostics_t *diagnostics);

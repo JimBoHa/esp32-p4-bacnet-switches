@@ -2,12 +2,14 @@ cmake_minimum_required(VERSION 3.20)
 project(bacnet_codec_tests C)
 
 enable_testing()
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
 add_executable(
     bacnet_codec_tests
     test_bacnet_codec.c
     ../main/bacnet_codec.c
     ../main/ota_auth.c
+    ../main/ota_health.c
 )
 target_include_directories(bacnet_codec_tests PRIVATE ../main)
 target_compile_features(bacnet_codec_tests PRIVATE c_std_11)
@@ -29,3 +31,7 @@ target_link_options(
 )
 
 add_test(NAME bacnet_codec_tests COMMAND bacnet_codec_tests)
+add_test(
+    NAME ota_tool_tests
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_ota_tools.py
+)
