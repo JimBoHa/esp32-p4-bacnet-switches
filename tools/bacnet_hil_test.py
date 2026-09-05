@@ -332,6 +332,8 @@ def security_recovery_posture_valid(status: dict[str, Any]) -> bool:
     return status.get("security") == {
         "https_management": True,
         "bearer_authentication": True,
+        "viewer_admin_separation": True,
+        "mutations_require_admin": True,
         "tls_private_key_embedded": True,
         "secure_boot_enabled": False,
         "flash_encryption_enabled": False,
@@ -386,6 +388,9 @@ def validate_args(args: argparse.Namespace) -> None:
         raise HilError(f"pinned certificate not found: {args.certificate}")
     if args.token_file is not None and not args.token_file.is_file():
         raise HilError(f"token file not found: {args.token_file}")
+    if args.viewer_token_file is not None:
+        if args.token_file is None or not args.viewer_token_file.is_file():
+            raise HilError("viewer checks require both admin and viewer token files")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -433,6 +438,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=project_root / "main" / "ota_server_cert.pem",
         help="pinned device certificate for HTTPS checks",
     )
+    parser.add_argument("--viewer-token-file", type=Path,
+                        help="also verify viewer reads and denial of every mutation route")
     parser.add_argument(
         "--mdns-hostname",
         help="enable raw mDNS/DNS-SD validation for this .local hostname",
@@ -1061,6 +1068,7 @@ class HilRunner:
         )
         healthy = (
             status.get("project") == "esp32_p4_bacnet_switches"
+            and status.get("access_role") == "admin"
             and status.get("state") == "valid"
             and version_ok
             and source_ok
@@ -1133,6 +1141,10 @@ class HilRunner:
             ("GET", "/diagnostics/report"),
             ("GET", "/config"),
             ("GET", "/network/config"),
+            ("POST", "/ota"),
+            ("PUT", "/config"),
+            ("PUT", "/network/config"),
+            ("POST", "/network/config/confirm"),
             ("POST", "/diagnostics/input-self-test"),
             ("POST", "/system/reboot"),
         ):
@@ -1155,7 +1167,7 @@ class HilRunner:
         self.report.add(
             "HTTPS authentication boundary",
             "pass",
-            f"six protected routes returned 401; certificate SHA-256={fingerprint}",
+            f"ten protected routes returned 401; certificate SHA-256={fingerprint}",
         )
 
         connection = ota_client._connection(
@@ -1228,6 +1240,7 @@ class HilRunner:
             method: str,
             path: str,
             body: bytes | None = None,
+            credential: str = token,
         ) -> tuple[int, bytes]:
             connection = ota_client._connection(
                 self.args.device_address,
@@ -1236,7 +1249,7 @@ class HilRunner:
                 self.args.timeout,
             )
             headers = {
-                "Authorization": f"Bearer {token}",
+                "Authorization": f"Bearer {credential}",
                 "Accept": "application/json",
             }
             if body is not None:
@@ -1263,6 +1276,37 @@ class HilRunner:
             raise HilError("authenticated GET /config returned invalid JSON") from error
         if get_status != 200 or not isinstance(original_config, dict):
             raise HilError(f"authenticated GET /config returned HTTP {get_status}")
+        if self.args.viewer_token_file is not None:
+            viewer = ota_client._read_token(self.args.viewer_token_file)
+            if viewer == token:
+                raise HilError("viewer and admin test tokens must differ")
+            for path in ("/ota/status", "/diagnostics/report", "/config", "/network/config"):
+                code, body = authenticated_request("GET", path, credential=viewer)
+                if code != 200:
+                    raise HilError(f"viewer GET {path} returned HTTP {code}")
+                document = json.loads(body)
+                if path == "/ota/status" and document.get("access_role") != "viewer":
+                    raise HilError("viewer was not identified as a viewer")
+                if path == "/diagnostics/report":
+                    ota_client._validate_diagnostics_report(document, viewer)
+                    ota_client._validate_diagnostics_report(document, token)
+            self.report.add("Viewer read access", "pass", "all four read routes accessible; role identified; report excludes both credentials")
+            for method, path in (("POST", "/ota"), ("PUT", "/config"),
+                                 ("PUT", "/network/config"), ("POST", "/network/config/confirm"),
+                                 ("POST", "/diagnostics/input-self-test"), ("POST", "/system/reboot")):
+                code, _ = authenticated_request(method, path, b"", credential=viewer)
+                if code != 403:
+                    raise HilError(f"viewer mutation {method} {path} returned HTTP {code}; expected 403")
+            code, after_body = authenticated_request("GET", "/ota/status")
+            after = json.loads(after_body)
+            if (code != 200 or after.get("configuration") != configuration
+                or after.get("network_configuration") != status.get("network_configuration")
+                or after.get("system", {}).get("boot_count") != status.get("system", {}).get("boot_count")
+                or after.get("image_sha256") != image_sha):
+                raise HilError("controller state changed during denied viewer mutations")
+            self.report.add("Viewer mutation boundary", "pass", "all six mutation routes returned 403; configuration, boot, and image unchanged")
+        else:
+            self.report.add("Viewer access boundary", "skip", "provide --viewer-token-file to test both roles")
         collision = json.loads(json.dumps(original_config))
         inputs = collision.get("inputs")
         if not isinstance(inputs, list) or not inputs or not isinstance(inputs[0], dict):

@@ -22,7 +22,16 @@ It never advertises credentials.
 
 ## Management and OTA
 
-Every HTTPS route requires a 32–128 character bearer token. The client pins the
+Every device-data HTTPS route requires a 32–128 character bearer token. Only the
+static dashboard HTML/CSS/JavaScript shell is public; it contains no device data.
+Distinct viewer and admin tokens are required at build time and startup.
+Viewer tokens can read status, diagnostics reports, BACnet configuration, and
+network configuration. All six mutation routes (OTA, configuration changes,
+network confirmation, input self-test, and reboot) require admin, returning 403
+for viewer credentials and 401 for absent/invalid credentials. The dashboard
+remains read-only with either token and displays the authenticated role.
+
+The client pins the
 exact self-signed leaf certificate, requires TLS 1.2 or newer, and bounds device
 responses. Certificate pinning replaces CA/hostname verification because the
 device may use DHCP. It authenticates the expected device certificate; it does
@@ -35,12 +44,13 @@ A candidate remains pending until Ethernet, IP, HTTPS, BACnet, and both watched
 tasks are healthy for five consecutive samples. Failure or a task-watchdog panic
 reboots and lets the bootloader return to the known-good slot.
 
-Keep `secrets/ota_server_key.pem` and `secrets/ota_token.txt` in an approved
-secret store. The token file must be mode 0600. Never pass a token on a command
+Keep `secrets/ota_server_key.pem`, `secrets/ota_token.txt` (admin), and
+`secrets/ota_viewer_token.txt` in an approved secret store. Token files must be
+mode 0600. Never pass a token on a command
 line, in chat, an issue, a CI secret, or a commit. The public certificate in
 `main/ota_server_cert.pem` is intentionally tracked and is not secret.
 
-OTA-enabled binaries contain both the private key and bearer token. Treat every
+OTA-enabled binaries contain the TLS private key and both bearer tokens. Treat every
 application, merged recovery, ELF, core dump, and release bundle as secret.
 CI therefore builds only the OTA-disabled configuration and publishes no
 firmware artifact. `tools/package_release.py` writes only to a mode-0700 private

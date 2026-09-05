@@ -259,7 +259,7 @@ def _validate_diagnostics_report(report: object, token: str) -> dict[str, object
         or any(not isinstance(report.get(name), dict) for name in sections)
     ):
         raise ValueError("invalid diagnostics report document")
-    forbidden_keys = {"token", "ota_token", "admin_token", "viewer_token",
+    forbidden_keys = {"token", "ota_token", "ota_viewer_token", "admin_token", "viewer_token",
                       "bearer_token", "private_key", "ota_server_key"}
 
     def inspect(value: object, depth: int = 0) -> None:

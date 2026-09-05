@@ -19,6 +19,7 @@ PYTHONPATH=/path/to/pinned/site-packages python3 tools/bacnet_hil_test.py \
   --expected-source GIT_REVISION \
   --expected-image-sha256 IMAGE_SHA256 \
   --token-file /secure/path/ota_token.txt \
+  --viewer-token-file /secure/path/ota_viewer_token.txt \
   --report /secure/path/hardware-report.json
 ```
 
