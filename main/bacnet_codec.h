@@ -94,6 +94,11 @@ size_t bacnet_encode_cov_notification(
     uint8_t *response,
     size_t response_capacity);
 
+size_t bacnet_encode_subscribe_cov_no_space(
+    uint8_t invoke_id,
+    uint8_t *response,
+    size_t response_capacity);
+
 bacnet_packet_result_t bacnet_handle_packet(
     const uint8_t *frame,
     size_t frame_length,
