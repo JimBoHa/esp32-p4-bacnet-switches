@@ -248,6 +248,7 @@ class BacnetHilTests(unittest.TestCase):
             "security": {
                 "https_management": True,
                 "bearer_authentication": True,
+                "anonymous_read_only": True,
                 "viewer_admin_separation": True,
                 "mutations_require_admin": True,
                 "tls_private_key_embedded": True,

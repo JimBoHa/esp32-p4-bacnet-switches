@@ -282,7 +282,7 @@ def validate_discovery(
                 hostname,
                 instance_name,
                 https_port,
-                {**common_txt, "path": "/ota/status", "auth": "bearer"},
+                {**common_txt, "path": "/ota/status", "auth": "bearer", "read_auth": "none"},
             )
         )
     failures.extend(

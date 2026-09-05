@@ -44,6 +44,11 @@ ota_role_t ota_authorization_role(
     if (!ota_role_tokens_valid(admin_token, viewer_token)) {
         return OTA_ROLE_NONE;
     }
+    /* Missing credentials grant read-only access, never administrative access.
+     * An explicitly supplied invalid credential still fails authentication. */
+    if (authorization == NULL && authorization_length == 0U) {
+        return OTA_ROLE_ANONYMOUS;
+    }
     const bool admin = ota_authorization_valid(
         authorization, authorization_length, admin_token);
     const bool viewer = ota_authorization_valid(
@@ -53,7 +58,8 @@ ota_role_t ota_authorization_role(
 
 bool ota_role_allows(ota_role_t role, bool read_only)
 {
-    return role == OTA_ROLE_ADMIN || (role == OTA_ROLE_VIEWER && read_only);
+    return role == OTA_ROLE_ADMIN ||
+        ((role == OTA_ROLE_VIEWER || role == OTA_ROLE_ANONYMOUS) && read_only);
 }
 
 bool ota_copy_embedded_token(

@@ -22,14 +22,25 @@ It never advertises credentials.
 
 ## Management and OTA
 
-Every device-data HTTPS route requires a 32–128 character bearer token. Only the
-static dashboard HTML/CSS/JavaScript shell is public; it contains no device data.
-Distinct viewer and admin tokens are required at build time and startup.
-Viewer tokens can read status, diagnostics reports, BACnet configuration, and
-network configuration. All six mutation routes (OTA, configuration changes,
-network confirmation, input self-test, and reboot) require admin, returning 403
-for viewer credentials and 401 for absent/invalid credentials. The dashboard
-remains read-only with either token and displays the authenticated role.
+The dashboard automatically loads read-only diagnostics without a login.
+`GET /ota/status`, `/diagnostics/report`, `/config`, and `/network/config` allow
+anonymous reads. Anyone who can reach TCP 443 can read site configuration,
+network addresses, inputs, and event logs. This is an intentional loss of read
+confidentiality relative to 1.26; use network ACLs to restrict readers. Reports
+exclude credentials, raw NVS, and raw flash. Read responses use `no-store`,
+`nosniff`, and same-origin resource policy, with no CORS permission.
+
+All six mutation routes (OTA, configuration changes, network confirmation,
+input self-test, and reboot) still require a valid 32–128 character admin bearer
+token. Missing or invalid credentials return 401. Valid viewer credentials
+return 403 for writes and remain compatible for reads. Explicitly supplied
+invalid credentials return 401 on read routes as well; omit Authorization for
+anonymous access. Status labels unauthenticated reads as `anonymous` and
+advertises `anonymous_read_only: true`. The dashboard has no token input or
+administrative controls and never sends credentials.
+Distinct viewer and admin tokens remain required at build time and startup for
+compatibility with existing clients; no credential or signing-key rotation is
+needed for this change.
 
 The client pins the
 exact self-signed leaf certificate, requires TLS 1.2 or newer, and bounds device
@@ -78,7 +89,7 @@ decision requiring separately backed-up signing/encryption keys and a proven
 recovery procedure; do not enable them through an ordinary OTA update.
 
 Flash core dumps are disabled because an unencrypted dump can retain credentials
-or field data. Serial logs and authenticated status provide the supported fault
+or field data. Serial logs and read-only status provide the supported fault
 evidence. The status endpoint reports these limits explicitly.
 
 ## Credential exposure response

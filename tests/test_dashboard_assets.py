@@ -68,10 +68,14 @@ class DashboardAssetTests(unittest.TestCase):
         self.assertTrue(referenced)
         self.assertEqual(referenced - parser.ids, set())
 
-    def test_token_and_rendering_stay_on_safe_browser_surfaces(self) -> None:
+    def test_anonymous_reads_and_rendering_stay_on_safe_browser_surfaces(self) -> None:
         script = JAVASCRIPT.read_text(encoding="utf-8")
         self.assertIn('window.fetch("/ota/status"', script)
-        self.assertIn('"Authorization": `Bearer ${tokenForRequest}`', script)
+        self.assertNotIn("Authorization", script)
+        self.assertNotIn("bearerToken", script)
+        self.assertEqual(script.count('method: "GET"'), 2)
+        self.assertEqual(script.count('credentials: "omit"'), 2)
+        self.assertEqual(script.count('redirect: "error"'), 2)
         self.assertIn("signal: controller.signal", script)
         self.assertIn("textContent", script)
         for forbidden in (
@@ -90,9 +94,29 @@ class DashboardAssetTests(unittest.TestCase):
         html = HTML.read_text(encoding="utf-8")
         css = CSS.read_text(encoding="utf-8")
         self.assertIn('aria-live="polite"', html)
-        self.assertIn('type="password"', html)
+        self.assertNotIn('type="password"', html)
+        self.assertNotIn('<form', html)
+        self.assertIn('No login required.', html)
         self.assertIn("@media (max-width: 520px)", css)
         self.assertIn("prefers-reduced-motion", css)
+
+    def test_every_registered_mutation_is_guarded_before_processing(self) -> None:
+        server = (ROOT / "main" / "ota_server.c").read_text(encoding="utf-8")
+        routes = re.findall(
+            r'\.uri = "([^"]+)",\s*\.method = (HTTP_\w+),\s*\.handler = (\w+)',
+            server,
+        )
+        mutations = [(path, method, handler) for path, method, handler in routes
+                     if method != "HTTP_GET"]
+        self.assertEqual({(path, method) for path, method, _ in mutations}, {
+            ("/ota", "HTTP_POST"), ("/config", "HTTP_PUT"),
+            ("/network/config", "HTTP_PUT"), ("/network/config/confirm", "HTTP_POST"),
+            ("/diagnostics/input-self-test", "HTTP_POST"), ("/system/reboot", "HTTP_POST"),
+        })
+        for _, _, handler in mutations:
+            self.assertRegex(server, rf'static esp_err_t {handler}\(httpd_req_t \*request\)\s*'
+                             r'\{\s*if \(!request_authorized\(request\)\)\s*\{\s*'
+                             r'return send_unauthorized\(request\);')
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is unavailable")
     def test_javascript_parses(self) -> None:
@@ -104,7 +128,7 @@ class DashboardAssetTests(unittest.TestCase):
         )
 
     @unittest.skipUnless(shutil.which("node"), "Node.js is unavailable")
-    def test_disconnect_and_unauthorized_responses_hide_device_data(self) -> None:
+    def test_auto_load_refresh_download_and_cancellation_without_login(self) -> None:
         subprocess.run(
             ["node", str(ROOT / "tests" / "dashboard_runtime_test.mjs")],
             check=True,

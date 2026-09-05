@@ -16,6 +16,7 @@ typedef enum {
     OTA_ROLE_NONE = 0,
     OTA_ROLE_VIEWER,
     OTA_ROLE_ADMIN,
+    OTA_ROLE_ANONYMOUS,
 } ota_role_t;
 
 bool ota_role_tokens_valid(const char *admin_token, const char *viewer_token);
