@@ -101,6 +101,10 @@ class LiveReadonlyTests(unittest.TestCase):
                 verifier.validate_status(self.args, {**self.status, field: value})
         self.status["header_diagnostics"]["pins"][18]["raw_level"] = False
         with self.assertRaises(ValueError): self.run_check()
+        for key in ("gpio", "pad", "initialization_preserved_config"):
+            self.status = status_fixture()
+            del self.status["header_diagnostics"]["pins"][2][key]
+            with self.subTest(missing=key), self.assertRaises(ValueError): self.run_check()
 
     def test_state_asset_and_credential_errors_fail(self):
         for mode in ("boot", "pad", "config", "asset", "credential"):
