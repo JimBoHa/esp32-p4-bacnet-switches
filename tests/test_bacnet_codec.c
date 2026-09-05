@@ -2384,6 +2384,48 @@ static void test_config_model(void)
         "%s",
         BACNET_IPV4_READY_INPUT_NAME);
     CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
+    const char *const fixed_names[] = {
+        BACNET_ETHERNET_LINK_INPUT_NAME,
+        BACNET_IPV4_READY_INPUT_NAME,
+        BACNET_CHIP_TEMPERATURE_VALUE_NAME,
+        BACNET_SYSTEM_UPTIME_VALUE_NAME,
+        BACNET_FREE_HEAP_VALUE_NAME,
+        BACNET_MINIMUM_FREE_HEAP_VALUE_NAME,
+        BACNET_ETHERNET_LINK_LOSSES_VALUE_NAME,
+        BACNET_ETHERNET_RECONNECTS_VALUE_NAME,
+        BACNET_RX_PACKETS_VALUE_NAME,
+        BACNET_PROTOCOL_ERRORS_VALUE_NAME,
+        BACNET_LAST_RESET_REASON_VALUE_NAME,
+        BACNET_ACTIVE_COV_SUBSCRIPTIONS_VALUE_NAME,
+        BACNET_BOOT_COUNT_VALUE_NAME,
+        BACNET_NETWORK_PORT_NAME,
+    };
+    for (size_t index = 0U;
+         index < sizeof(fixed_names) / sizeof(fixed_names[0]);
+         ++index) {
+        invalid = config;
+        (void)snprintf(
+            invalid.input_names[index % FIRMWARE_CONFIG_INPUT_COUNT],
+            sizeof(invalid.input_names[0]),
+            "%s",
+            fixed_names[index]);
+        CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
+        CHECK(strcmp(reason, "BACnet object names must be unique") == 0);
+    }
+    invalid = config;
+    (void)snprintf(
+        invalid.device_name,
+        sizeof(invalid.device_name),
+        "%s",
+        BACNET_NETWORK_PORT_NAME);
+    CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    (void)snprintf(
+        invalid.input_names[0],
+        sizeof(invalid.input_names[0]),
+        "chip temperature");
+    CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
+    CHECK(strcmp(reason, "BACnet object names must be unique") == 0);
     invalid = config;
     (void)snprintf(
         invalid.input_names[2],

@@ -105,6 +105,8 @@ clock GPIO50. See the [Waveshare schematic](https://files.waveshare.com/wiki/ESP
 The BACnet `Database_Revision` includes a firmware object-model offset so
 clients can detect fixed objects added by a firmware upgrade as well as later
 commissioning changes.
+Configuration rejects any configurable name that duplicates a fixed diagnostic
+or Network Port `Object_Name`, case-insensitively, so Who-Has stays unambiguous.
 
 Supported services:
 
@@ -162,7 +164,7 @@ python3 tools/mdns_probe.py \
   --hostname esp32-p4-bacnet \
   --address 192.168.75.152 \
   --device-instance 599152 \
-  --firmware-version 1.16.0
+  --firmware-version 1.17.0
 ```
 
 For an endurance run after the finite suite, use the append-only soak monitor.
@@ -305,6 +307,8 @@ the authenticated reboot command activates it. Sending the active values
 again cancels a pending configuration. Each effective change increments the
 BACnet Device `Database_Revision`; the configured Device and Binary Input
 instances and object names must be unique and within BACnet limits.
+Object names also cannot duplicate any fixed status, diagnostic, or Network
+Port name, including a case-only variation.
 
 To export the network settings, edit them, and stage a change:
 
