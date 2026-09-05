@@ -385,6 +385,12 @@ def evaluate_sample(
         for item in gpio:
             if not isinstance(item, dict) or item.get("fault") is not False:
                 alerts.append(f"gpio-fault:{item.get('gpio') if isinstance(item, dict) else '?'}")
+                continue
+            signal = item.get("signal")
+            if not isinstance(signal, dict):
+                alerts.append(f"gpio-signal-missing:{item.get('gpio')}")
+            elif signal.get("chattering") is True:
+                alerts.append(f"gpio-chattering:{item.get('gpio')}")
 
     if previous_status is not None:
         previous_system = previous_status.get("system", {})

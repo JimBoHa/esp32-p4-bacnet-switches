@@ -1309,6 +1309,15 @@ static esp_err_t status_get_handler(httpd_req_t *request)
                 "%s{\"gpio\":%d,\"active_low\":%s,\"debounce_ms\":%u,"
                 "\"transition_count\":%u,"
                 "\"last_transition_uptime_ms\":%" PRIu64 ","
+                "\"signal\":{\"raw_edge_count\":%u,"
+                "\"accepted_transition_count\":%u,"
+                "\"rejected_pulse_count\":%u,"
+                "\"chatter_event_count\":%u,\"chattering\":%s,"
+                "\"candidate_active\":%s,\"candidate_level\":%s,"
+                "\"candidate_age_ms\":%u,"
+                "\"last_raw_edge_uptime_ms\":%" PRIu64 ","
+                "\"last_rejected_pulse_uptime_ms\":%" PRIu64 ","
+                "\"last_rejected_pulse_width_ms\":%u},"
                 "\"fault\":%s,\"self_test\":{\"run\":%s,"
                 "\"passed\":%s,\"classification\":\"%s\","
                 "\"pull_down_level\":%s,\"pull_down_stable\":%s,"
@@ -1321,6 +1330,17 @@ static esp_err_t status_get_handler(httpd_req_t *request)
                 (unsigned)input.debounce_ms,
                 (unsigned)input.transition_count,
                 input.last_transition_uptime_ms,
+                (unsigned)input.raw_edge_count,
+                (unsigned)input.accepted_transition_count,
+                (unsigned)input.rejected_pulse_count,
+                (unsigned)input.chatter_event_count,
+                json_bool(input.chattering),
+                json_bool(input.candidate_active),
+                json_bool(input.candidate_level),
+                (unsigned)input.candidate_age_ms,
+                input.last_raw_edge_uptime_ms,
+                input.last_rejected_pulse_uptime_ms,
+                (unsigned)input.last_rejected_pulse_width_ms,
                 json_bool(switch_input_faulted(index)),
                 json_bool(input.self_test_run),
                 json_bool(input.self_test_passed),
