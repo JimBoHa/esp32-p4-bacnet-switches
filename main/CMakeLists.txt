@@ -69,6 +69,7 @@ idf_component_register(
         "config_store.c"
         "cov_retry_cache.c"
         "diagnostics.c"
+        "diagnostics_metrics.c"
         "diagnostics_time.c"
         "discovery_service.c"
         "hardware_profile.c"

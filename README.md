@@ -162,7 +162,7 @@ python3 tools/mdns_probe.py \
   --hostname esp32-p4-bacnet \
   --address 192.168.75.152 \
   --device-instance 599152 \
-  --firmware-version 1.15.0
+  --firmware-version 1.16.0
 ```
 
 For an endurance run after the finite suite, use the append-only soak monitor.
@@ -247,12 +247,14 @@ the board schematic.
 
 The HTTPS server provides nine bearer-authenticated operations:
 
-- `GET /ota/status` — firmware/partition/rollback state, Git revision, reset
-  reason, exact running-image SHA-256, uptime, temperature, heap, watchdog
+- `GET /ota/status` — running/boot/update partition and rollback state, source
+  and ELF identity, build metadata, exact running-image SHA-256, reset reason,
+  uptime, temperature current/minimum/maximum/error counters, heap, watchdog
   health, Ethernet negotiation, DHCP/address state, BACnet counters, input
   pad/raw/debounced/transition data, self-test results, and the persistent fault
   log. It also reports mDNS readiness, the active `.local` name, hostname
-  conflicts, advertised ports, and initialization errors.
+  conflicts, advertised ports, initialization errors, and fault-log capacity,
+  overwrite, and persistence-write health.
 - `POST /diagnostics/input-self-test` — weak-pull line classification. It does
   not enable GPIO output drivers and may be run with field wiring connected.
 - `GET /config` — export the complete saved BACnet/input configuration and show
@@ -400,6 +402,10 @@ registration failure, and authenticated remote-reboot requests. Entries include
 sequence, boot count, boot-relative time, type, and error code.
 An mDNS initialization or service-advertisement failure is also persisted; a
 runtime hostname conflict is counted in authenticated status.
+Status reports retained/overwritten event counts and NVS write failures. It also
+tracks chip-temperature minimum, maximum, sample count, read/setup failures,
+and the most recent sensor result without confusing die temperature with room
+temperature.
 
 Authenticated status also exposes machine-readable board, P1 header, 3.3 V
 supply, dry-contact circuit, pull-down recommendation, GPIO-to-header, and
