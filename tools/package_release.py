@@ -220,6 +220,7 @@ def _copy_notices(staging: Path, idf_path: Path) -> None:
         ROOT / "THIRD_PARTY_NOTICES.md": staging / "THIRD_PARTY_NOTICES.md",
         ROOT / "SECURITY.md": staging / "docs" / "SECURITY.md",
         ROOT / "docs" / "COMMISSIONING.md": staging / "docs" / "COMMISSIONING.md",
+        ROOT / "docs" / "HEADER_DIAGNOSTICS.md": staging / "docs" / "HEADER_DIAGNOSTICS.md",
     }
     for source, destination in project_files.items():
         if not source.is_file():
