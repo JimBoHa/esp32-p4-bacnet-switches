@@ -247,6 +247,65 @@ def _status(args: argparse.Namespace, token: str) -> int:
         connection.close()
 
 
+def _validate_diagnostics_report(report: object, token: str) -> dict[str, object]:
+    """Reject malformed reports and accidental credential exports before saving."""
+    sections = ("status", "active_configuration", "saved_configuration",
+                "active_network_configuration", "saved_network_configuration",
+                "confirmed_network_configuration")
+    if (
+        not isinstance(report, dict)
+        or report.get("schema") != 1
+        or report.get("report_type") != "esp32-p4-diagnostics"
+        or any(not isinstance(report.get(name), dict) for name in sections)
+    ):
+        raise ValueError("invalid diagnostics report document")
+    forbidden_keys = {"token", "ota_token", "admin_token", "viewer_token",
+                      "bearer_token", "private_key", "ota_server_key"}
+
+    def inspect(value: object, depth: int = 0) -> None:
+        if depth > 32:
+            raise ValueError("diagnostics report nesting exceeds safety limit")
+        if isinstance(value, dict):
+            for key, item in value.items():
+                if str(key).lower() in forbidden_keys:
+                    raise ValueError("diagnostics report contains a credential field")
+                inspect(key, depth + 1)
+                inspect(item, depth + 1)
+        elif isinstance(value, list):
+            for item in value:
+                inspect(item, depth + 1)
+        elif isinstance(value, str) and (
+            (token and token in value)
+            or "PRIVATE KEY-----" in value
+            or "Bearer " in value
+        ):
+            raise ValueError("diagnostics report contains credential material")
+
+    inspect(report)
+    return report
+
+
+def _diagnostics_report(args: argparse.Namespace, token: str) -> int:
+    connection = _connection(args.host, args.port, args.cert, args.timeout)
+    try:
+        connection.request("GET", "/diagnostics/report", headers={
+            "Authorization": f"Bearer {token}", "Accept": "application/json"})
+        response = connection.getresponse()
+        payload = _read_response(response)
+        if response.status != 200:
+            raise http.client.HTTPException(
+                f"diagnostics report returned HTTP {response.status}")
+        report = _validate_diagnostics_report(json.loads(payload), token)
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0)
+        with os.fdopen(os.open(args.output, flags, 0o600), "w", encoding="utf-8") as stream:
+            stream.write(json.dumps(report, indent=2, sort_keys=True) + "\n")
+        print(f"Diagnostics report saved: {args.output}")
+        print("Contains site configuration and network addresses; review before sharing.")
+        return 0
+    finally:
+        connection.close()
+
+
 def _config_get(args: argparse.Namespace, token: str) -> int:
     connection = _connection(args.host, args.port, args.cert, args.timeout)
     try:
@@ -712,6 +771,12 @@ def _arguments() -> argparse.Namespace:
     status = commands.add_parser("status", help="read authenticated OTA status")
     _add_connection_arguments(status)
 
+    report = commands.add_parser(
+        "diagnostics-report", help="download a credential-free diagnostics report")
+    _add_connection_arguments(report)
+    report.add_argument("--output", type=Path, required=True,
+                        help="new private JSON file (existing files are never overwritten)")
+
     config_get = commands.add_parser(
         "config-get", help="read the saved persistent configuration"
     )
@@ -829,6 +894,8 @@ def main() -> int:
             raise ValueError("timeout must be positive")
         if args.command == "status":
             return _status(args, token)
+        if args.command == "diagnostics-report":
+            return _diagnostics_report(args, token)
         if args.command == "config-get":
             return _config_get(args, token)
         if args.command == "config-put":

@@ -1130,6 +1130,7 @@ class HilRunner:
         fingerprint = hashlib.sha256(certificate_der).hexdigest()
         for method, path in (
             ("GET", "/ota/status"),
+            ("GET", "/diagnostics/report"),
             ("GET", "/config"),
             ("GET", "/network/config"),
             ("POST", "/diagnostics/input-self-test"),
@@ -1154,8 +1155,33 @@ class HilRunner:
         self.report.add(
             "HTTPS authentication boundary",
             "pass",
-            f"five protected routes returned 401; certificate SHA-256={fingerprint}",
+            f"six protected routes returned 401; certificate SHA-256={fingerprint}",
         )
+
+        connection = ota_client._connection(
+            self.args.device_address, 443, self.args.certificate, self.args.timeout)
+        try:
+            connection.request("GET", "/diagnostics/report", headers={
+                "Authorization": f"Bearer {token}", "Accept": "application/json"})
+            response = connection.getresponse()
+            payload = ota_client._read_response(response)
+            report = ota_client._validate_diagnostics_report(json.loads(payload), token)
+            report_status = report["status"]
+            self.report.require(
+                "Downloadable diagnostics report",
+                response.status == 200
+                and response.getheader("Cache-Control") == "no-store"
+                and response.getheader("X-Content-Type-Options") == "nosniff"
+                and response.getheader("Content-Disposition", "").startswith("attachment;")
+                and report_status.get("image_sha256") == image_sha
+                and input_history_valid(report_status)
+                and hardware_profile_valid(report_status.get("hardware"))
+                and report["active_configuration"].get("device_instance") == self.args.device_instance,
+                f"{len(payload)} bytes; configuration, hardware, history, identity; no credentials",
+                "report metadata, authentication, contents, or download headers invalid",
+            )
+        finally:
+            connection.close()
 
         dashboard_assets = (
             ("/diagnostics", "text/html", b"ESP32-P4 BACnet Diagnostics"),
