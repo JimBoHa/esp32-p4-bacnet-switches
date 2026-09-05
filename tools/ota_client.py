@@ -18,7 +18,10 @@ import sys
 import time
 from pathlib import Path
 
-from firmware_signing import DEFAULT_PUBLIC_KEY, verify_image_signature
+try:
+    from .firmware_signing import DEFAULT_PUBLIC_KEY, verify_image_signature
+except ImportError:  # Direct script execution adds tools/, not the repository root.
+    from firmware_signing import DEFAULT_PUBLIC_KEY, verify_image_signature
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]

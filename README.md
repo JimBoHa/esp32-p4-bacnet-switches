@@ -21,6 +21,21 @@ project/version, BACnet Device/Vendor identifiers, API path, and authentication
 method (`auth=bearer` for writes, `read_auth=none` for reads)—never a bearer token or private key. mDNS is link-local convenience; it
 does not replace BACnet Who-Is/I-Am discovery or cross-VLAN routing/BBMDs.
 
+## Contributors and Codex/Fable sessions
+
+Start with [AGENTS.md](AGENTS.md) and the [test runbook](docs/TESTING.md).
+Run `python3 tools/run_host_tests.py` before every PR; GitHub CI uses the same
+command. The runbook covers prerequisites, safe read-only checks, approved
+hardware/OTA tests, evidence to record, and protecting an active soak.
+[Validation history](docs/VALIDATION_HISTORY.md) preserves sanitized past
+results and explicitly lists incomplete or untested acceptance.
+
+These instructions and tests live on the host/GitHub, not on the ESP32. If your
+coding client does not automatically load repository instructions, begin with:
+"Read AGENTS.md and docs/TESTING.md, inspect the latest validation history and
+PRs, then follow the documented checks for this change. Do not deploy firmware
+or interrupt an existing soak without authorization."
+
 ## Wiring
 
 Each input is configured input-only with an internal pull-down. Open is
@@ -159,13 +174,17 @@ python3 tools/bacnet_hil_test.py \
   --device-address 192.168.75.152 \
   --device-instance 599152 \
   --mdns-hostname esp32-p4-bacnet \
-  --expect-inputs-off \
   --token-file secrets/ota_token.txt \
+  --viewer-token-file secrets/ota_viewer_token.txt \
   --report hardware-report.json
 ```
 
-The report contains no bearer token or private key. The suite never drives a
-GPIO or changes device configuration. Release validation should also provide
+Run in an approved lab window, with a new private report path and no concurrent
+soak. The suite never drives a GPIO, but sends negative HTTP/BACnet write tests
+and temporarily consumes COV capacity; see [hardware testing](docs/HARDWARE_TESTING.md)
+for side effects and recovery precautions. Use `--expect-inputs-off` only with
+all three inputs confirmed inactive. Keep reports private even though tokens
+and private keys are excluded. Release validation should also provide
 `--expected-version`, `--expected-source`, and `--expected-image-sha256` from
 the exact OTA artifact and its verified running status.
 
@@ -177,7 +196,7 @@ python3 tools/mdns_probe.py \
   --hostname esp32-p4-bacnet \
   --address 192.168.75.152 \
   --device-instance 599152 \
-  --firmware-version 1.19.0
+  --firmware-version VERSION
 ```
 
 For an endurance run after the finite suite, use the append-only soak monitor.
