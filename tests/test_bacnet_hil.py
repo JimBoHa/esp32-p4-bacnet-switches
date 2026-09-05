@@ -36,7 +36,7 @@ def args(**overrides: object) -> argparse.Namespace:
 class BacnetHilTests(unittest.TestCase):
     def test_expected_object_map_preserves_indexes(self) -> None:
         objects = bacnet_hil_test.expected_object_identifiers(599152)
-        self.assertEqual(len(objects), 18)
+        self.assertEqual(len(objects), 27)
         self.assertEqual(
             objects[:4],
             [
@@ -51,8 +51,20 @@ class BacnetHilTests(unittest.TestCase):
             ["network-port,1", "binary-input,1001", "binary-input,1002"],
         )
         self.assertEqual(objects[17], "analog-value,1010")
+        self.assertEqual(objects[18:], [f"analog-value,{i}" for i in range(1011, 1020)])
+        self.assertEqual(len(bacnet_hil_test.INPUT_DIAGNOSTIC_POINTS), 9)
+        self.assertEqual(bacnet_hil_test.INPUT_DIAGNOSTIC_POINTS[1019], ("GPIO22 Transition Age", "seconds"))
 
     def test_network_and_identity_validation(self) -> None:
+        item = {"initialized": True, "transition_age_ms": 5000,
+                "initial_observation_uptime_ms": 400, "last_transition_uptime_ms": 0,
+                "transition_count": 0}
+        self.assertTrue(bacnet_hil_test.input_transition_age_valid(item, 5400))
+        self.assertFalse(bacnet_hil_test.input_transition_age_valid(item, 9999))
+        item.update(transition_count=1, last_transition_uptime_ms=3000, transition_age_ms=2400)
+        self.assertTrue(bacnet_hil_test.input_transition_age_valid(item, 5400))
+        item["initialized"] = False
+        self.assertFalse(bacnet_hil_test.input_transition_age_valid(item, 5400))
         bacnet_hil_test.validate_args(args())
         with self.assertRaisesRegex(bacnet_hil_test.HilError, "subnet"):
             bacnet_hil_test.validate_args(args(device_address="192.168.76.152"))
