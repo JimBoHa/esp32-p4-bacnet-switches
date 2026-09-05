@@ -2355,6 +2355,20 @@ static void test_network_config_model(void)
     CHECK(network_config_crc32(NULL) == 0U);
 }
 
+static void test_subscribe_cov_capacity_error(void)
+{
+    uint8_t response[32];
+    const size_t length = bacnet_encode_subscribe_cov_no_space(
+        0x5AU, response, sizeof(response));
+    static const uint8_t expected[] = {
+        0x81U, 0x0AU, 0x00U, 0x0DU, 0x01U, 0x00U,
+        0x50U, 0x5AU, 0x05U, 0x91U, 0x03U, 0x91U, 0x13U,
+    };
+    CHECK(bytes_equal(response, length, expected, sizeof(expected)));
+    CHECK(bacnet_encode_subscribe_cov_no_space(
+        0x5AU, response, sizeof(expected) - 1U) == 0U);
+}
+
 int main(void)
 {
     test_reference_vectors();
@@ -2364,6 +2378,7 @@ int main(void)
     test_network_status_inputs();
     test_read_property_multiple();
     test_subscribe_cov_and_notifications();
+    test_subscribe_cov_capacity_error();
     test_errors_and_malformed_input();
     test_capacity_guards_and_random_frames();
     test_ota_bearer_authentication();
