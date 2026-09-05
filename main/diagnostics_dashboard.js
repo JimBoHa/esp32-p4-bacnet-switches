@@ -60,6 +60,12 @@
   };
 
   const yesNo = (value) => value === true ? "Yes" : value === false ? "No" : "—";
+  const formatUtc = (value) => {
+    const number = finiteNumber(value);
+    if (number === null || number <= 0 || number > 8640000000000000) return "Unknown";
+    return new Date(number).toISOString();
+  };
+  const eventUtc = (event) => `${formatUtc(event.utc_unix_ms)} · ${event.clock_quality ?? "unsynchronized"}`;
   const onOff = (value) => value === true ? "ON" : value === false ? "OFF" : "—";
 
   const clearChildren = (node) => {
@@ -143,6 +149,7 @@
       appendCell(row, formatInteger(item.sequence), "number");
       appendCell(row, formatInteger(item.boot_count), "number");
       appendCell(row, formatDuration(item.uptime_ms), "number");
+      appendCell(row, eventUtc(item));
       appendCell(row, item.type ?? "unknown");
       appendCell(row, formatInteger(item.code), "number");
       body.appendChild(row);
@@ -158,7 +165,7 @@
     if (events.length === 0) {
       const row = document.createElement("tr");
       const cell = document.createElement("td");
-      cell.colSpan = 6;
+      cell.colSpan = 7;
       cell.textContent = "No input events recorded for this boot.";
       row.appendChild(cell);
       body.appendChild(row);
@@ -170,6 +177,7 @@
       appendCell(row, formatInteger(item.sequence), "number");
       appendCell(row, item.gpio ?? "—", "number");
       appendCell(row, `${formatDuration(item.uptime_ms)} + ${formatInteger(finiteNumber(item.uptime_ms) === null ? null : item.uptime_ms % 1000)} ms`, "number");
+      appendCell(row, eventUtc(item));
       appendCell(row, item.type ?? "unknown");
       appendCell(row, onOff(item.active));
       appendCell(row, item.type === "rejected-pulse" ? `${formatInteger(item.pulse_width_ms)} ms` : "—");
@@ -238,6 +246,16 @@
       ["Rate limited", formatInteger(bacnet.rate_limited)],
     ]);
     renderInputs(inputs);
+    const clock = status.clock && typeof status.clock === "object" ? status.clock : {};
+    renderDetails("clockDetails", [
+      ["UTC now", formatUtc(clock.utc_unix_ms)],
+      ["Sync quality", clock.clock_quality ?? "unsynchronized"],
+      ["Time source", clock.configured_server || clock.source || "—"],
+      ["Last synchronized UTC", formatUtc(clock.last_sync_unix_ms)],
+      ["Time since last sync", formatDuration(clock.sync_age_ms)],
+      ["Syncs / rejected samples", `${formatInteger(clock.sync_count)} / ${formatInteger(clock.rejected_sync_count)}`],
+      ["SNTP service", clock.initialized === true ? (clock.last_error?.name ?? "ready") : "not initialized"],
+    ]);
     renderInputHistory(status.input_history);
     renderWatchdogs(watchdogs);
     renderFaultLog(status.fault_log);

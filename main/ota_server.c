@@ -13,6 +13,7 @@
 
 #include "bacnet_server.h"
 #include "cJSON.h"
+#include "clock_service.h"
 #include "config_store.h"
 #include "diagnostics.h"
 #include "diagnostics_time.h"
@@ -1161,6 +1162,46 @@ static const char *dhcp_status_name(uint32_t status)
     }
 }
 
+static bool append_event_clock(
+    char *response, size_t capacity, size_t *length, uint64_t utc_unix_ms, uint8_t quality)
+{
+    return response_append(response, capacity, length,
+               utc_unix_ms == 0U ? ",\"utc_unix_ms\":null" : ",\"utc_unix_ms\":%" PRIu64,
+               utc_unix_ms) &&
+        response_append(response, capacity, length, ",\"clock_quality\":\"%s\"",
+                        clock_quality_name((clock_quality_t)quality));
+}
+
+static bool append_clock_status(char *response, size_t capacity, size_t *length)
+{
+    clock_service_snapshot_t snapshot;
+    clock_service_snapshot_get(&snapshot);
+    const bool synced = snapshot.clock.sync_count != 0U;
+    const char *server = clock_service_configured_server();
+    return response_append(response, capacity, length,
+        "\"clock\":{\"source\":\"%s\",\"configured_server\":\"%s\","
+        "\"initialized\":%s,\"captured_uptime_ms\":%" PRIu64,
+        server[0] == '\0' ? "dhcp-option-42" : "configured-site-server",
+        server, json_bool(snapshot.initialized), snapshot.now.uptime_ms) &&
+        append_event_clock(response, capacity, length, snapshot.now.unix_ms, snapshot.now.quality) &&
+        response_append(response, capacity, length,
+            ",\"sync_count\":%u,\"rejected_sync_count\":%u,\"last_sync_uptime_ms\":",
+            (unsigned)snapshot.clock.sync_count, (unsigned)snapshot.clock.rejected_sync_count) &&
+        response_append(response, capacity, length, synced ? "%" PRIu64 : "null",
+                        snapshot.clock.last_sync_uptime_ms) &&
+        response_append(response, capacity, length, ",\"last_sync_unix_ms\":") &&
+        response_append(response, capacity, length, synced ? "%" PRIu64 : "null",
+                        snapshot.clock.last_sync_unix_ms) &&
+        response_append(response, capacity, length, ",\"sync_age_ms\":") &&
+        response_append(response, capacity, length, synced ? "%" PRIu64 : "null",
+                        diagnostics_elapsed_milliseconds(snapshot.now.uptime_ms, snapshot.clock.last_sync_uptime_ms)) &&
+        response_append(response, capacity, length,
+            ",\"stale_after_ms\":%" PRIu64 ",\"update_interval_ms\":%u,"
+            "\"last_error\":{\"code\":%d,\"name\":\"%s\"},\"authenticated_time\":false}",
+            (uint64_t)CLOCK_STALE_AFTER_MS, (unsigned)CONFIG_LWIP_SNTP_UPDATE_DELAY,
+            (int)snapshot.last_error, esp_err_to_name(snapshot.last_error));
+}
+
 static bool append_input_history(
     char *response, size_t capacity, size_t *length)
 {
@@ -1184,11 +1225,13 @@ static bool append_input_history(
                 response, capacity, length,
                 "%s{\"sequence\":%" PRIu64 ",\"uptime_ms\":%" PRIu64
                 ",\"gpio\":%u,\"type\":\"%s\",\"active\":%s,"
-                "\"pulse_width_ms\":%u}",
+                "\"pulse_width_ms\":%u",
                 index == 0U ? "" : ",", event.sequence, event.uptime_ms,
                 (unsigned)event.gpio,
                 input_history_kind_name((input_history_kind_t)event.kind),
-                json_bool(event.active), (unsigned)event.pulse_width_ms)) {
+                json_bool(event.active), (unsigned)event.pulse_width_ms) ||
+            !append_event_clock(response, capacity, length, event.utc_unix_ms, event.clock_quality) ||
+            !response_append(response, capacity, length, "}")) {
             return false;
         }
     }
@@ -1849,14 +1892,17 @@ static esp_err_t send_status_json(httpd_req_t *request, bool report)
                 &response_length,
                 "%s{\"sequence\":%u,\"boot_count\":%u,"
                 "\"uptime_ms\":%" PRIu64
-                ",\"type\":\"%s\",\"code\":%d}",
+                ",\"type\":\"%s\",\"code\":%d",
                 index == 0 ? "" : ",",
                 (unsigned)event->sequence,
                 (unsigned)event->boot_count,
                 event->uptime_ms,
                 diagnostics_event_name(
                     (diagnostics_event_type_t)event->type),
-                (int)event->code)) {
+                (int)event->code) ||
+            !append_event_clock(response, OTA_STATUS_RESPONSE_BYTES, &response_length,
+                                event->utc_unix_ms, event->clock_quality) ||
+            !response_append(response, OTA_STATUS_RESPONSE_BYTES, &response_length, "}")) {
             goto encoding_failed;
         }
     }
@@ -1866,6 +1912,8 @@ static esp_err_t send_status_json(httpd_req_t *request, bool report)
             &response_length,
             "],") ||
         !append_input_history(response, OTA_STATUS_RESPONSE_BYTES, &response_length) ||
+        !response_append(response, OTA_STATUS_RESPONSE_BYTES, &response_length, ",") ||
+        !append_clock_status(response, OTA_STATUS_RESPONSE_BYTES, &response_length) ||
         !response_append(response, OTA_STATUS_RESPONSE_BYTES, &response_length, "}")) {
         goto encoding_failed;
     }

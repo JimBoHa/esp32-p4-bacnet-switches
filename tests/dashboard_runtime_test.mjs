@@ -122,6 +122,8 @@ assert.equal(element("overallHealth").textContent, "Not connected");
 const healthyStatus = {
   state: "valid",
   access_role: "viewer",
+  clock: {utc_unix_ms: 1577836800000, clock_quality: "synchronized",
+          configured_server: "site.ntp", sync_count: 1, rejected_sync_count: 0},
   version: "1.20.0",
   system: {
     chip_temperature_c: 36.4,
@@ -147,7 +149,8 @@ const healthyStatus = {
       {sequence: 2, gpio: 20, uptime_ms: 70, type: "rejected-pulse", active: false, pulse_width_ms: 20},
     ],
   },
-  fault_log: [],
+  fault_log: [{sequence: 1, boot_count: 1, uptime_ms: 1000,
+               utc_unix_ms: 1577836800000, clock_quality: "synchronized", type: "boot", code: 3}],
 };
 fetchImplementation = async () => ({
   ok: true,
@@ -162,7 +165,10 @@ assert.equal(element("overallHealth").textContent, "Healthy");
 assert.match(element("connectionStatus").textContent, /Authenticated as viewer/);
 assert.equal(element("inputHistoryRows").children.length, 2);
 assert.equal(element("inputHistoryRows").children[0].children[0].textContent, "2");
-assert.equal(element("inputHistoryRows").children[0].children[5].textContent, "20 ms");
+assert.equal(element("inputHistoryRows").children[0].children[6].textContent, "20 ms");
+assert.match(element("inputHistoryRows").children[0].children[3].textContent, /Unknown.*unsynchronized/);
+assert.match(element("faultRows").children[0].children[3].textContent, /2020-01-01T00:00:00.000Z.*synchronized/);
+assert(element("clockDetails").children.some(child => child.textContent === "2020-01-01T00:00:00.000Z"));
 assert.match(element("inputHistoryStatus").textContent, /2 events shown/);
 
 const diagnosticReport = {schema: 1, report_type: "esp32-p4-diagnostics", status: healthyStatus};

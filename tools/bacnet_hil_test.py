@@ -168,6 +168,46 @@ def hardware_profile_valid(value: object) -> bool:
     return value == EXPECTED_HARDWARE_PROFILE
 
 
+def event_clock_valid(event: object) -> bool:
+    if not isinstance(event, dict) or "utc_unix_ms" not in event:
+        return False
+    quality, utc_ms = event.get("clock_quality"), event["utc_unix_ms"]
+    if quality == "unsynchronized":
+        return utc_ms is None
+    return (isinstance(quality, str) and quality in {"synchronized", "stale"} and type(utc_ms) is int
+            and 1577836800000 <= utc_ms < 4102444800000)
+
+
+def clock_diagnostics_valid(status: dict[str, Any]) -> bool:
+    clock = status.get("clock")
+    if not isinstance(clock, dict) or not event_clock_valid(clock):
+        return False
+    if (clock.get("initialized") is not True
+        or clock.get("authenticated_time") is not False
+        or clock.get("last_error") != {"code": 0, "name": "ESP_OK"}
+        or clock.get("stale_after_ms") != 7200000
+        or any(type(clock.get(key)) is not int or clock[key] < 0
+               for key in ("sync_count", "rejected_sync_count", "captured_uptime_ms", "update_interval_ms"))
+        or clock["update_interval_ms"] < 15000
+        or not isinstance(clock.get("configured_server"), str)
+        or clock.get("source") != ("configured-site-server" if clock["configured_server"] else "dhcp-option-42")
+        or not isinstance(status.get("fault_log"), list)
+        or not all(event_clock_valid(event) for event in status["fault_log"])):
+        return False
+    if clock["sync_count"] == 0:
+        return (clock["clock_quality"] == "unsynchronized"
+                and all(clock.get(key) is None for key in
+                        ("last_sync_uptime_ms", "last_sync_unix_ms", "sync_age_ms")))
+    if any(type(clock.get(key)) is not int for key in
+           ("last_sync_uptime_ms", "last_sync_unix_ms", "sync_age_ms")):
+        return False
+    return (0 <= clock["last_sync_uptime_ms"] <= clock["captured_uptime_ms"]
+            and 1577836800000 <= clock["last_sync_unix_ms"] < 4102444800000
+            and clock["sync_age_ms"] == clock["captured_uptime_ms"] - clock["last_sync_uptime_ms"]
+            and clock["utc_unix_ms"] == clock["last_sync_unix_ms"] + clock["sync_age_ms"]
+            and clock["clock_quality"] == ("stale" if clock["sync_age_ms"] > 7200000 else "synchronized"))
+
+
 def input_history_valid(status: dict[str, Any]) -> bool:
     """Validate bounded, ordered, boot-relative input event history."""
     history = status.get("input_history")
@@ -193,6 +233,8 @@ def input_history_valid(status: dict[str, Any]) -> bool:
         if not isinstance(event, dict):
             return False
         if (
+            not event_clock_valid(event)
+            or
             any(type(event.get(key)) is not int for key in
                 ("sequence", "uptime_ms", "gpio", "pulse_width_ms"))
             or event["sequence"] != first_sequence + index
@@ -440,6 +482,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--viewer-token-file", type=Path,
                         help="also verify viewer reads and denial of every mutation route")
+    parser.add_argument("--require-time-sync", action="store_true",
+                        help="require fresh synchronized UTC within ten seconds of the test host")
     parser.add_argument(
         "--mdns-hostname",
         help="enable raw mDNS/DNS-SD validation for this .local hostname",
@@ -1133,6 +1177,16 @@ class HilRunner:
             input_history_valid(status),
             "bounded chronological input events with boot-relative timing",
             "input history metadata, sequence, timing, or event fields invalid",
+        )
+        clock = status.get("clock", {})
+        self.report.require(
+            "SNTP clock quality and event UTC",
+            clock_diagnostics_valid(status)
+            and (not self.args.require_time_sync or (
+                clock.get("clock_quality") == "synchronized"
+                and abs(time.time() * 1000 - clock["utc_unix_ms"]) < 10000)),
+            f"source={clock.get('source')}; quality={clock.get('clock_quality')}; syncs={clock.get('sync_count')}; event times explicit",
+            "clock service, UTC/quality consistency, event timestamps, or required synchronization invalid",
         )
         certificate_der = ota_client._certificate_der(self.args.certificate)
         fingerprint = hashlib.sha256(certificate_der).hexdigest()

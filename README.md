@@ -256,6 +256,37 @@ the board schematic.
 
 ## Authenticated Ethernet management
 
+### Site time and event UTC
+
+The controller requests NTP server addresses through DHCP option 42 by default.
+There is no public-NTP fallback and time synchronization never blocks BACnet,
+input sampling, management, or OTA validation. If the site does not advertise
+NTP, or if static IPv4 is used, set **Diagnostic wall-clock time → Site NTP
+hostname or IPv4 address** in `idf.py menuconfig` (`CONFIG_DIAGNOSTICS_NTP_SERVER`)
+and rebuild. Only the configured site server is used when this override is set.
+Changing this setting requires a firmware deployment; it is not a live API setting.
+
+Authenticated status/report data includes a `clock` object: UTC milliseconds,
+source, last-sync time/age, synchronization/rejection counts, service errors,
+and synchronization quality. Time is `unsynchronized` with JSON `null` UTC
+until a valid sample arrives. It becomes `stale` after two hours without a new
+sample; the estimate continues using monotonic elapsed time. Default resync is
+hourly. Accepted UTC must fall between 2020 and 2100. SNTP is not authenticated:
+use a trusted site network; quality measures recency, not guaranteed accuracy.
+
+Input and persistent fault events capture `utc_unix_ms` and `clock_quality`
+alongside their existing boot-relative `uptime_ms`. Earlier unsynchronized
+events remain unknown after synchronization; corrections never rewrite event
+history or affect debounce/watchdog/OTA deadlines. Legacy persistent logs are
+migrated without inventing UTC, and a v2 compatibility copy preserves fault
+history across rollback to older firmware. Input history remains RAM-only.
+The dashboard shows UTC/quality alongside both event tables.
+
+For a live acceptance test with a known time source, add `--require-time-sync`
+to the HIL command; it requires fresh device UTC within ten seconds of the host.
+
+### Dashboard and API
+
 Open `https://DEVICE-IP/diagnostics` for the read-only field dashboard. Its
 HTML/CSS/JavaScript shell contains no device data and is intentionally public;
 the page asks for the bearer token before it requests `/ota/status`. The token

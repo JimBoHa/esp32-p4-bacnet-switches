@@ -9,8 +9,8 @@
 #include "esp_netif.h"
 #include "esp_system.h"
 #include "diagnostics_metrics.h"
+#include "diagnostics_log_model.h"
 
-#define DIAGNOSTICS_FAULT_LOG_CAPACITY 16U
 #define DIAGNOSTICS_TASK_COUNT 2U
 #define DIAGNOSTICS_TEMPERATURE_SAMPLE_INTERVAL_MS 1000U
 
@@ -62,14 +62,6 @@ typedef enum {
     DIAGNOSTICS_BACNET_COV_TIMEOUTS,
     DIAGNOSTICS_BACNET_COUNTER_COUNT,
 } diagnostics_bacnet_counter_t;
-
-typedef struct {
-    uint32_t sequence;
-    uint32_t boot_count;
-    uint64_t uptime_ms;
-    uint16_t type;
-    int16_t code;
-} diagnostics_fault_event_t;
 
 typedef struct {
     bool link_up;
