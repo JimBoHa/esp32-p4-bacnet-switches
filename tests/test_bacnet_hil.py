@@ -157,6 +157,43 @@ class BacnetHilTests(unittest.TestCase):
         status["firmware"]["next_update_partition"]["label"] = "ota_0"
         self.assertFalse(bacnet_hil_test.firmware_diagnostics_valid(status))
 
+    def test_header_diagnostics_validation(self) -> None:
+        header = {"header": "P1", "position_count": 40, "gpio_count": 27,
+                  "readable_count": 25, "initialized": True, "initialization_ok": True,
+                  "sample_mode": "sequential-on-request", "captured_uptime_ms": 100,
+                  "completed_uptime_ms": 101, "pins": []}
+        for position, gpio in enumerate(bacnet_hil_test.P1_GPIO_MAP, 1):
+            readable = gpio is not None and gpio not in (24, 25)
+            kind = ("gpio" if gpio is not None else "control" if position in (30, 37)
+                    else "supply" if position in (36, 39, 40) else "ground")
+            header["pins"].append({
+                "position": position, "gpio": gpio, "label": "pin", "usage": "test",
+                "kind": kind, "status": "readable" if readable else "non-gpio" if gpio is None else "reserved-usb",
+                "raw_level": False if readable else None,
+                "input_enabled_by_diagnostics": readable,
+                "initialization_preserved_config": True if readable else None,
+                "pad": {"input_enabled": True, "output_enabled": False,
+                        "output_enable_controlled_by_peripheral": False, "pull_up": False,
+                        "pull_down": False, "function_select": 1} if readable else None,
+            })
+        self.assertTrue(bacnet_hil_test.header_diagnostics_valid(header))
+        for field, value in (("position_count", 39), ("readable_count", 24), ("gpio_count", 40),
+                             ("initialized", False), ("initialization_ok", False),
+                             ("completed_uptime_ms", 99), ("captured_uptime_ms", True)):
+            self.assertFalse(bacnet_hil_test.header_diagnostics_valid({**header, field: value}))
+        for index, field, value in ((0, "gpio", 19), (0, "raw_level", None),
+                                    (0, "position", True), (0, "raw_level", 0),
+                                    (0, "initialization_preserved_config", False),
+                                    (18, "raw_level", False), (2, "raw_level", False),
+                                    (18, "input_enabled_by_diagnostics", True)):
+            invalid = json.loads(json.dumps(header))
+            invalid["pins"][index][field] = value
+            self.assertFalse(bacnet_hil_test.header_diagnostics_valid(invalid))
+        invalid = json.loads(json.dumps(header))
+        invalid["pins"][0]["pad"]["input_enabled"] = False
+        self.assertFalse(bacnet_hil_test.header_diagnostics_valid(invalid))
+        self.assertFalse(bacnet_hil_test.header_diagnostics_valid(None))
+
     def test_input_history_validation(self) -> None:
         history = {
             "capacity": 64, "count": 2, "total_events": 4,

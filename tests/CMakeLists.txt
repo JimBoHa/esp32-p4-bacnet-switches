@@ -4,6 +4,16 @@ project(bacnet_codec_tests C)
 enable_testing()
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
+add_executable(header_diagnostics_tests test_header_diagnostics.c
+    ../main/header_diagnostics.c ../main/hardware_profile.c)
+target_include_directories(header_diagnostics_tests PRIVATE stubs ../main)
+target_compile_features(header_diagnostics_tests PRIVATE c_std_11)
+target_compile_options(header_diagnostics_tests PRIVATE -Wall -Wextra -Werror
+    -pedantic -fsanitize=address,undefined -fno-omit-frame-pointer)
+target_link_options(header_diagnostics_tests PRIVATE -fsanitize=address,undefined)
+add_test(NAME header_diagnostics_tests COMMAND ${Python3_EXECUTABLE}
+    ${CMAKE_CURRENT_SOURCE_DIR}/check_header_json.py $<TARGET_FILE:header_diagnostics_tests>)
+
 add_executable(
     bacnet_codec_tests
     test_bacnet_codec.c

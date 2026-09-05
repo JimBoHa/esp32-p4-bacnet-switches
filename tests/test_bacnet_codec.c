@@ -2650,7 +2650,32 @@ static void test_hardware_profile(void)
     CHECK(hardware_profile_p1_position(20) == 35);
     CHECK(hardware_profile_p1_position(21) == 34);
     CHECK(hardware_profile_p1_position(22) == 32);
-    CHECK(hardware_profile_p1_position(23) == -1);
+    const int p1_gpios[HARDWARE_PROFILE_P1_COUNT] = {
+        54, 19, -1, 18, 17, 16, 15, -1, 14, 6, 5, 4, -1, 3, 2, 8, 7, -1,
+        24, 25, 48, 47, -1, 46, 33, 32, 27, -1, 26, -1, 23, 22, -1, 21,
+        20, -1, -1, -1, -1, -1,
+    };
+    unsigned readable = 0;
+    for (size_t index = 0; index < HARDWARE_PROFILE_P1_COUNT; ++index) {
+        const hardware_profile_pin_t *pin = hardware_profile_p1_pin(index);
+        CHECK(pin != NULL && pin->gpio == p1_gpios[index]);
+        if (pin->gpio >= 0) {
+            CHECK(hardware_profile_p1_position(pin->gpio) == (int)index + 1);
+        }
+        readable += pin->diagnostic_input ? 1U : 0U;
+        CHECK(pin->diagnostic_input ==
+              (pin->gpio >= 0 && pin->gpio != 24 && pin->gpio != 25));
+    }
+    CHECK(readable == 25U);
+    CHECK(hardware_profile_p1_pin(40) == NULL);
+    CHECK(hardware_profile_p1_pin((size_t)-1) == NULL);
+    CHECK(hardware_profile_p1_position(-1) == -1);
+    CHECK(hardware_profile_p1_position(55) == -1);
+    const int protected_gpios[] = {0, 1, 28, 29, 30, 31, 34, 35, 36, 37, 38,
+                                   39, 40, 41, 42, 43, 44, 45, 49, 50, 51, 52, 53};
+    for (size_t index = 0; index < sizeof(protected_gpios) / sizeof(protected_gpios[0]); ++index) {
+        CHECK(hardware_profile_p1_position(protected_gpios[index]) == -1);
+    }
     CHECK(strcmp(hardware_profile_binary_state(false, false), "inactive") == 0);
     CHECK(strcmp(hardware_profile_binary_state(true, false), "active") == 0);
     CHECK(strcmp(hardware_profile_binary_state(false, true), "active") == 0);

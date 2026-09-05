@@ -31,6 +31,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hardware_profile.h"
+#include "header_diagnostics.h"
 #include "network_config_store.h"
 #include "ota_auth.h"
 #include "ota_health.h"
@@ -48,7 +49,7 @@
 #define OTA_ROLLBACK_VALIDATION_TIMEOUT_MS 60000U
 #define OTA_ROLLBACK_HEALTHY_SAMPLES 5U
 #define OTA_PROJECT_HEADER "X-Firmware-Project"
-#define OTA_STATUS_RESPONSE_BYTES 32768U
+#define OTA_STATUS_RESPONSE_BYTES (32768U + HEADER_DIAGNOSTICS_JSON_MAX_BYTES)
 #define OTA_SHA256_BYTES 32U
 #define OTA_SHA256_HEX_BYTES (OTA_SHA256_BYTES * 2U)
 #define CONFIG_JSON_MAX_BYTES 4096U
@@ -1693,6 +1694,20 @@ static esp_err_t send_status_json(httpd_req_t *request, bool report)
             OTA_STATUS_RESPONSE_BYTES,
             &response_length,
             "]},")) {
+        goto encoding_failed;
+    }
+
+    if (!response_append(response, OTA_STATUS_RESPONSE_BYTES, &response_length,
+                         "\"header_diagnostics\":")) {
+        goto encoding_failed;
+    }
+    const size_t header_length = header_diagnostics_json(
+        response + response_length, OTA_STATUS_RESPONSE_BYTES - response_length);
+    if (header_length == 0U) {
+        goto encoding_failed;
+    }
+    response_length += header_length;
+    if (!response_append(response, OTA_STATUS_RESPONSE_BYTES, &response_length, ",")) {
         goto encoding_failed;
     }
 

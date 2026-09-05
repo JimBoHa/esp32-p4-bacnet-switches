@@ -120,6 +120,35 @@
     });
   };
 
+  const renderHeaderPins = (header) => {
+    const body = element("headerPinRows");
+    clearChildren(body);
+    const pins = header && Array.isArray(header.pins) ? header.pins : [];
+    const readable = pins.filter(pin => pin && pin.status === "readable" && typeof pin.raw_level === "boolean");
+    const high = readable.filter(pin => pin.raw_level === true);
+    text("headerPinsStatus", pins.length === 0
+      ? "Header readings unavailable in this firmware."
+      : `${readable.length} of ${formatInteger(header.gpio_count)} GPIOs readable · ${pins.length} positions listed · HIGH: ${high.length ? high.map(pin => `P1-${pin.position} / GPIO${pin.gpio}`).join(", ") : "none"}`);
+    pins.forEach((value) => {
+      const pin = value && typeof value === "object" ? value : {};
+      const pad = pin.pad && typeof pin.pad === "object" ? pin.pad : null;
+      const row = document.createElement("tr");
+      appendCell(row, pin.position ?? "—", "number");
+      appendCell(row, pin.label ?? "—");
+      appendCell(row, pin.gpio ?? "—", "number");
+      const sampled = pin.status === "readable" && typeof pin.raw_level === "boolean";
+      appendCell(row, sampled ? (pin.raw_level ? "HIGH" : "LOW") : "N/A",
+        sampled && pin.raw_level ? "pin-high" : "number");
+      appendCell(row, pin.status ?? "unavailable");
+      appendCell(row, pad ? (pad.pull_up && pad.pull_down ? "Up + down"
+        : pad.pull_up ? "Up" : pad.pull_down ? "Down" : "None (may float)") : "—");
+      appendCell(row, pad ? (pad.output_enable_controlled_by_peripheral
+        ? "Peripheral-controlled" : pad.output_enabled ? "Enabled" : "Disabled") : "—");
+      appendCell(row, pin.usage ?? "—", "pin-note");
+      body.appendChild(row);
+    });
+  };
+
   const renderWatchdogs = (watchdogs) => {
     const body = element("watchdogRows");
     clearChildren(body);
@@ -246,6 +275,7 @@
       ["Rate limited", formatInteger(bacnet.rate_limited)],
     ]);
     renderInputs(inputs);
+    renderHeaderPins(status.header_diagnostics);
     const clock = status.clock && typeof status.clock === "object" ? status.clock : {};
     renderDetails("clockDetails", [
       ["UTC now", formatUtc(clock.utc_unix_ms)],

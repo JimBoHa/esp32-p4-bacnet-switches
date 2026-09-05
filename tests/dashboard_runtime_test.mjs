@@ -142,7 +142,7 @@ const healthyStatus = {
   security: {software_signature_verification: true, anonymous_read_only: true},
   clock: {utc_unix_ms: 1577836800000, clock_quality: "synchronized",
           configured_server: "site.ntp", sync_count: 1, rejected_sync_count: 0},
-  version: "1.27.0",
+  version: "1.28.0",
   system: {
     chip_temperature_c: 36.4,
     task_watchdog: {
@@ -160,6 +160,19 @@ const healthyStatus = {
     signal: {chattering: false},
   })),
   bacnet: {},
+  header_diagnostics: {
+    gpio_count: 27,
+    pins: [54, 19, null, 18, 17, 16, 15, null, 14, 6, 5, 4, null, 3, 2, 8, 7,
+           null, 24, 25, 48, 47, null, 46, 33, 32, 27, null, 26, null, 23, 22,
+           null, 21, 20, null, null, null, null, null].map((gpio, index) => ({
+      position: index + 1, gpio, label: gpio === null ? "GND" : `GPIO${gpio}`,
+      status: gpio === null ? "non-gpio" : [24, 25].includes(gpio) ? "reserved-usb" : "readable",
+      raw_level: gpio === null || [24, 25].includes(gpio) ? null : gpio === 47,
+      pad: gpio === null ? null : {pull_up: false, pull_down: false,
+                                  output_enable_controlled_by_peripheral: false, output_enabled: false},
+      usage: "Header GPIO",
+    })),
+  },
   input_history: {
     overwritten_events: 0,
     events: [
@@ -189,6 +202,15 @@ assert.match(element("inputHistoryRows").children[0].children[3].textContent, /U
 assert.match(element("faultRows").children[0].children[3].textContent, /2020-01-01T00:00:00.000Z.*synchronized/);
 assert(element("clockDetails").children.some(child => child.textContent === "2020-01-01T00:00:00.000Z"));
 assert.match(element("inputHistoryStatus").textContent, /2 events shown/);
+assert.equal(element("headerPinRows").children.length, 40);
+assert.match(element("headerPinsStatus").textContent, /25 of 27 GPIOs readable/);
+assert.match(element("headerPinsStatus").textContent, /HIGH: P1-22 \/ GPIO47/);
+assert.equal(element("headerPinRows").children[21].children[3].textContent, "HIGH");
+assert.equal(element("headerPinRows").children[34].children[3].textContent, "LOW");
+assert.equal(element("headerPinRows").children[2].children[3].textContent, "N/A");
+assert.equal(element("headerPinRows").children[18].children[3].textContent, "N/A");
+assert.equal(element("headerPinRows").children[18].children[4].textContent, "reserved-usb");
+assert.equal(element("headerPinRows").children[21].children[5].textContent, "None (may float)");
 
 // Polling can be disabled; manual refresh works without restarting it.
 assert.equal([...timers.values()].filter(timer => timer.delay === 5000).length, 1);
