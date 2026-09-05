@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "bacnet_codec.h"
+#include "config_model.h"
 #include "cov_retry_cache.h"
 #include "diagnostics_time.h"
 #include "input_line_classifier.h"
@@ -39,6 +40,7 @@ static const bacnet_device_state_t STATE = {
     .firmware_revision = "1.3.2",
     .application_software_version = "1.3.2 (0123456789ab)",
     .description = "Three toggle inputs",
+    .location = "Test bench",
     .database_revision = 3,
     .binary_input_instances = {20, 21, 22},
     .binary_input_names = {"GPIO20 Toggle", "GPIO21 Toggle", "GPIO22 Toggle"},
@@ -1500,6 +1502,95 @@ static void test_input_line_classifier(void)
               "not-tested") == 0);
 }
 
+static firmware_config_t valid_firmware_config(void)
+{
+    firmware_config_t config = {
+        .device_instance = 599152U,
+        .database_revision = 3U,
+        .input_instances = {20U, 21U, 22U},
+        .bacnet_port = 47808U,
+        .vendor_identifier = 999U,
+        .debounce_ms = 50U,
+    };
+    (void)snprintf(
+        config.device_name, sizeof(config.device_name), "ESP32-P4 Toggle Inputs");
+    (void)snprintf(
+        config.vendor_name, sizeof(config.vendor_name), "Lab placeholder");
+    (void)snprintf(
+        config.location, sizeof(config.location), "Uncommissioned");
+    for (size_t index = 0U; index < FIRMWARE_CONFIG_INPUT_COUNT; ++index) {
+        (void)snprintf(
+            config.input_names[index],
+            sizeof(config.input_names[index]),
+            "GPIO%u Toggle",
+            (unsigned)config.input_instances[index]);
+    }
+    config_model_finalize(&config);
+    return config;
+}
+
+static void test_config_model(void)
+{
+    char reason[128];
+    firmware_config_t config = valid_firmware_config();
+    CHECK(config_model_validate(&config, reason, sizeof(reason)));
+    CHECK(strcmp(reason, "ok") == 0);
+    CHECK(config_model_is_valid_blob(&config));
+    CHECK(config.magic == FIRMWARE_CONFIG_MAGIC);
+    CHECK(config.schema == FIRMWARE_CONFIG_SCHEMA);
+    CHECK(config.size == sizeof(config));
+    CHECK(config.crc32 == config_model_crc32(&config));
+
+    firmware_config_t same = config;
+    same.database_revision++;
+    same.crc32 ^= 1U;
+    CHECK(config_model_mutable_equal(&config, &same));
+    same.location[0] = 'X';
+    CHECK(!config_model_mutable_equal(&config, &same));
+    CHECK(!config_model_mutable_equal(NULL, &same));
+
+    firmware_config_t invalid = config;
+    invalid.device_instance = 4194303U;
+    CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    invalid.bacnet_port = 0U;
+    CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    invalid.debounce_ms = 9U;
+    CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    invalid.debounce_ms = 501U;
+    CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    invalid.input_active_low_mask = 0x08U;
+    CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    invalid.input_instances[2] = invalid.input_instances[0];
+    CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    (void)snprintf(
+        invalid.input_names[2],
+        sizeof(invalid.input_names[2]),
+        "%s",
+        invalid.input_names[0]);
+    CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    memset(invalid.device_name, 'A', sizeof(invalid.device_name));
+    CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    invalid.vendor_name[0] = '\x01';
+    CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    invalid.location[0] = '\x7f';
+    CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    invalid.crc32 ^= 1U;
+    CHECK(!config_model_is_valid_blob(&invalid));
+    CHECK(!config_model_validate(NULL, reason, sizeof(reason)));
+    config_model_finalize(NULL);
+    CHECK(config_model_crc32(NULL) == 0U);
+}
+
 int main(void)
 {
     test_reference_vectors();
@@ -1513,6 +1604,7 @@ int main(void)
     test_diagnostics_time_rollover();
     test_cov_retry_payload_cache();
     test_input_line_classifier();
+    test_config_model();
     printf("bacnet_codec_tests: %u checks passed\n", tests_run);
     return EXIT_SUCCESS;
 }

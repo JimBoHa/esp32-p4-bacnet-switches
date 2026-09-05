@@ -230,6 +230,59 @@ def _status(args: argparse.Namespace, token: str) -> int:
         connection.close()
 
 
+def _config_get(args: argparse.Namespace, token: str) -> int:
+    connection = _connection(args.host, args.port, args.cert, args.timeout)
+    try:
+        connection.request(
+            "GET",
+            "/config",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        )
+        result, decoded = _show_response(connection.getresponse())
+        if result == 0 and args.output is not None:
+            if not isinstance(decoded, dict):
+                raise ValueError("configuration response is not a JSON object")
+            args.output.write_text(
+                json.dumps(decoded, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            print(f"Saved configuration to {args.output}")
+        return result
+    finally:
+        connection.close()
+
+
+def _config_put(args: argparse.Namespace, token: str) -> int:
+    configuration: Path = args.configuration
+    try:
+        decoded = json.loads(configuration.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"configuration is not valid JSON: {error}") from error
+    if not isinstance(decoded, dict):
+        raise ValueError("configuration must be a JSON object")
+    body = json.dumps(decoded, separators=(",", ":")).encode("utf-8")
+    if not 1 <= len(body) <= 4096:
+        raise ValueError("encoded configuration must be 1-4096 bytes")
+
+    connection = _connection(args.host, args.port, args.cert, args.timeout)
+    try:
+        connection.request(
+            "PUT",
+            "/config",
+            body=body,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(body)),
+                "Accept": "application/json",
+            },
+        )
+        result, _ = _show_response(connection.getresponse())
+        return result
+    finally:
+        connection.close()
+
+
 def _upload(args: argparse.Namespace, token: str) -> int:
     firmware: Path = args.firmware
     metadata = _inspect_firmware(firmware)
@@ -409,6 +462,20 @@ def _arguments() -> argparse.Namespace:
     status = commands.add_parser("status", help="read authenticated OTA status")
     _add_connection_arguments(status)
 
+    config_get = commands.add_parser(
+        "config-get", help="read the saved persistent configuration"
+    )
+    _add_connection_arguments(config_get)
+    config_get.add_argument(
+        "--output", type=Path, help="also write the JSON object to this file"
+    )
+
+    config_put = commands.add_parser(
+        "config-put", help="validate and save a complete configuration JSON file"
+    )
+    _add_connection_arguments(config_put)
+    config_put.add_argument("configuration", type=Path, help="configuration JSON file")
+
     self_test = commands.add_parser(
         "input-self-test",
         help="classify GPIO lines using safe internal weak pulls",
@@ -465,6 +532,14 @@ def main() -> int:
             raise ValueError("timeout must be positive")
         if args.command == "status":
             return _status(args, token)
+        if args.command == "config-get":
+            return _config_get(args, token)
+        if args.command == "config-put":
+            if not args.configuration.is_file():
+                raise FileNotFoundError(
+                    f"configuration not found: {args.configuration}"
+                )
+            return _config_put(args, token)
         if args.command == "input-self-test":
             return _input_self_test(args, token)
         if not args.firmware.is_file():
