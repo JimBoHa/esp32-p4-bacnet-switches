@@ -11,9 +11,11 @@
 #include "esp_idf_version.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "network_config_store.h"
 #include "ota_server.h"
 #include "sdkconfig.h"
 #include "switch_inputs.h"
+#include "lwip/ip4_addr.h"
 
 #if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0)
 #include "esp_eth_phy_ip101.h"
@@ -25,6 +27,63 @@
 #define WAVESHARE_ETH_PHY_ADDRESS 1
 
 static const char *TAG = "p4_bacnet";
+
+static void set_ipv4_address(
+    esp_ip4_addr_t *address,
+    const uint8_t octets[4])
+{
+    IP4_ADDR(
+        address,
+        octets[0],
+        octets[1],
+        octets[2],
+        octets[3]);
+}
+
+static esp_err_t apply_network_configuration(
+    esp_netif_t *netif,
+    const network_config_t *config)
+{
+    ESP_RETURN_ON_FALSE(
+        netif != NULL && network_config_is_valid_blob(config),
+        ESP_ERR_INVALID_ARG,
+        TAG,
+        "invalid network configuration");
+    ESP_RETURN_ON_ERROR(
+        esp_netif_set_hostname(netif, config->hostname),
+        TAG,
+        "could not set hostname");
+    if (config->mode == NETWORK_ADDRESS_DHCP) {
+        return ESP_OK;
+    }
+
+    const esp_err_t stop_result = esp_netif_dhcpc_stop(netif);
+    ESP_RETURN_ON_FALSE(
+        stop_result == ESP_OK ||
+            stop_result == ESP_ERR_ESP_NETIF_DHCP_ALREADY_STOPPED,
+        stop_result,
+        TAG,
+        "could not stop DHCP client");
+    esp_netif_ip_info_t ip_info = {0};
+    set_ipv4_address(&ip_info.ip, config->ipv4);
+    set_ipv4_address(&ip_info.netmask, config->netmask);
+    set_ipv4_address(&ip_info.gw, config->gateway);
+    ESP_RETURN_ON_ERROR(
+        esp_netif_set_ip_info(netif, &ip_info),
+        TAG,
+        "could not set static IPv4 configuration");
+    if (config->dns[0] != 0U || config->dns[1] != 0U ||
+        config->dns[2] != 0U || config->dns[3] != 0U) {
+        esp_netif_dns_info_t dns = {0};
+        set_ipv4_address(&dns.ip.u_addr.ip4, config->dns);
+        dns.ip.type = ESP_IPADDR_TYPE_V4;
+        ESP_RETURN_ON_ERROR(
+            esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns),
+            TAG,
+            "could not set static DNS server");
+    }
+    return ESP_OK;
+}
 
 static esp_err_t install_waveshare_ethernet(esp_eth_handle_t *handle)
 {
@@ -156,8 +215,11 @@ void app_main(void)
 {
     ESP_ERROR_CHECK(diagnostics_init());
     ESP_ERROR_CHECK(config_store_init());
+    ESP_ERROR_CHECK(network_config_store_init());
     firmware_config_t active_config;
+    network_config_t network_config;
     config_store_get_active(&active_config);
+    network_config_get_active(&network_config);
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     switch_inputs_init(&active_config);
@@ -169,7 +231,7 @@ void app_main(void)
     const esp_netif_config_t netif_config = ESP_NETIF_DEFAULT_ETH();
     esp_netif_t *netif = esp_netif_new(&netif_config);
     ESP_ERROR_CHECK(netif != NULL ? ESP_OK : ESP_ERR_NO_MEM);
-    ESP_ERROR_CHECK(esp_netif_set_hostname(netif, CONFIG_BACNET_HOSTNAME));
+    ESP_ERROR_CHECK(apply_network_configuration(netif, &network_config));
 
     esp_eth_netif_glue_handle_t glue = esp_eth_new_netif_glue(eth_handle);
     ESP_ERROR_CHECK(glue != NULL ? ESP_OK : ESP_ERR_NO_MEM);
@@ -200,10 +262,11 @@ void app_main(void)
         CONFIG_TOGGLE_INPUT_3_GPIO);
     ESP_LOGI(
         TAG,
-        "starting BACnet Device %u on UDP %u with DHCP hostname %s",
+        "starting BACnet Device %u on UDP %u with %s hostname %s",
         (unsigned)active_config.device_instance,
         (unsigned)active_config.bacnet_port,
-        CONFIG_BACNET_HOSTNAME);
+        network_config.mode == NETWORK_ADDRESS_DHCP ? "DHCP" : "static",
+        network_config.hostname);
 #if CONFIG_OTA_HTTPS_ENABLED
     const esp_err_t ota_result = ota_server_start();
     if (ota_result != ESP_OK) {
@@ -213,5 +276,6 @@ void app_main(void)
     ESP_ERROR_CHECK_WITHOUT_ABORT(ota_result);
 #endif
     ESP_ERROR_CHECK(esp_eth_start(eth_handle));
+    ESP_ERROR_CHECK(network_config_start_trial_guard());
     ESP_ERROR_CHECK(ota_start_rollback_validation());
 }
