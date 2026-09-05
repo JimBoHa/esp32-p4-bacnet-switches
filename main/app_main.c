@@ -3,6 +3,8 @@
 #include "bacnet_server.h"
 #include "config_store.h"
 #include "diagnostics.h"
+#include "discovery_service.h"
+#include "esp_app_desc.h"
 #include "esp_check.h"
 #include "esp_eth.h"
 #include "esp_eth_mac.h"
@@ -267,6 +269,7 @@ void app_main(void)
         (unsigned)active_config.bacnet_port,
         network_config.mode == NETWORK_ADDRESS_DHCP ? "DHCP" : "static",
         network_config.hostname);
+    uint16_t discovery_https_port = 0U;
 #if CONFIG_OTA_HTTPS_ENABLED
     const esp_err_t ota_result = ota_server_start();
     if (ota_result != ESP_OK) {
@@ -274,7 +277,24 @@ void app_main(void)
             DIAGNOSTICS_EVENT_OTA_SERVER_FAILED, ota_result);
     }
     ESP_ERROR_CHECK_WITHOUT_ABORT(ota_result);
+    if (ota_result == ESP_OK) {
+        discovery_https_port = CONFIG_OTA_HTTPS_PORT;
+    }
 #endif
+    const esp_app_desc_t *app = esp_app_get_description();
+    const esp_err_t discovery_result = discovery_service_start(
+        network_config.hostname,
+        active_config.device_name,
+        discovery_https_port,
+        active_config.bacnet_port,
+        active_config.device_instance,
+        active_config.vendor_identifier,
+        app != NULL ? app->version : "unknown");
+    if (discovery_result != ESP_OK) {
+        diagnostics_record_event(
+            DIAGNOSTICS_EVENT_MDNS_FAILED, discovery_result);
+    }
+    ESP_ERROR_CHECK_WITHOUT_ABORT(discovery_result);
     ESP_ERROR_CHECK(esp_eth_start(eth_handle));
     ESP_ERROR_CHECK(network_config_start_trial_guard());
     ESP_ERROR_CHECK(ota_start_rollback_validation());

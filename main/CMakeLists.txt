@@ -14,6 +14,7 @@ set(private_dependencies
     esp_timer
     lwip
     mbedtls
+    mdns
     nvs_flash
     json
 )
@@ -69,6 +70,7 @@ idf_component_register(
         "cov_retry_cache.c"
         "diagnostics.c"
         "diagnostics_time.c"
+        "discovery_service.c"
         "input_debounce.c"
         "input_line_classifier.c"
         "network_config_model.c"

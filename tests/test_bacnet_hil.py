@@ -26,6 +26,7 @@ def args(**overrides: object) -> argparse.Namespace:
         "expected_image_sha256": None,
         "token_file": None,
         "certificate": Path("main/ota_server_cert.pem"),
+        "mdns_hostname": None,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -58,6 +59,8 @@ class BacnetHilTests(unittest.TestCase):
             bacnet_hil_test.validate_args(args(client_instance=599152))
         with self.assertRaisesRegex(bacnet_hil_test.HilError, "greater than zero"):
             bacnet_hil_test.validate_args(args(timeout=0))
+        with self.assertRaisesRegex(bacnet_hil_test.HilError, "RFC 1123"):
+            bacnet_hil_test.validate_args(args(mdns_hostname="bad hostname"))
 
     def test_expected_identity_format_validation(self) -> None:
         bacnet_hil_test.validate_args(

@@ -1,0 +1,2 @@
+# Compile-time coverage for deployments that intentionally omit HTTPS OTA.
+# CONFIG_OTA_HTTPS_ENABLED is not set

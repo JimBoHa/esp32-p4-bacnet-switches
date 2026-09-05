@@ -16,6 +16,7 @@
 #include "config_store.h"
 #include "diagnostics.h"
 #include "diagnostics_time.h"
+#include "discovery_service.h"
 #include "esp_app_desc.h"
 #include "esp_check.h"
 #include "esp_https_server.h"
@@ -1135,6 +1136,13 @@ static esp_err_t status_get_handler(httpd_req_t *request)
     network_config_get_active(&active_network_config);
     network_config_get_saved(&saved_network_config);
     network_config_get_confirmed(&confirmed_network_config);
+    discovery_service_snapshot_t discovery;
+    if (!discovery_service_snapshot_get(&discovery)) {
+        return httpd_resp_send_err(
+            request,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "discovery snapshot failed");
+    }
 
     char *response = malloc(OTA_STATUS_RESPONSE_BYTES);
     if (response == NULL) {
@@ -1227,6 +1235,29 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             json_bool(network_config_restart_required()),
             json_bool(network_config_trial_active()),
             (unsigned)network_config_trial_seconds_remaining())) {
+        goto encoding_failed;
+    }
+    if (!response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            "\"discovery\":{\"mdns_ready\":%s,"
+            "\"hostname\":\"%s\",\"local_fqdn\":\"%s.local\","
+            "\"hostname_conflict_count\":%u,"
+            "\"last_error\":{\"code\":%d,\"name\":\"%s\"},"
+            "\"services\":{"
+            "\"https\":{\"advertised\":%s,\"port\":%u},"
+            "\"bacnet\":{\"advertised\":%s,\"port\":%u}}},",
+            json_bool(discovery.ready),
+            discovery.hostname,
+            discovery.hostname,
+            (unsigned)discovery.hostname_conflict_count,
+            (int)discovery.last_error,
+            esp_err_to_name(discovery.last_error),
+            json_bool(discovery.https_advertised),
+            (unsigned)discovery.https_port,
+            json_bool(discovery.bacnet_advertised),
+            (unsigned)discovery.bacnet_port)) {
         goto encoding_failed;
     }
 

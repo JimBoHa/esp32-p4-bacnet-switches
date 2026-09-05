@@ -2,7 +2,6 @@
 /build-tests/
 /sdkconfig
 /sdkconfig.old
-/dependencies.lock
 /managed_components/
 /.cache/
 /secrets/
