@@ -10,6 +10,7 @@
 #include "cov_retry_cache.h"
 #include "diagnostics_time.h"
 #include "input_line_classifier.h"
+#include "network_config_model.h"
 #include "ota_auth.h"
 #include "ota_health.h"
 
@@ -1591,6 +1592,87 @@ static void test_config_model(void)
     CHECK(config_model_crc32(NULL) == 0U);
 }
 
+static network_config_t valid_network_config(void)
+{
+    network_config_t config = {
+        .revision = 7U,
+        .mode = NETWORK_ADDRESS_STATIC,
+        .ipv4 = {192U, 168U, 75U, 152U},
+        .netmask = {255U, 255U, 255U, 0U},
+        .gateway = {192U, 168U, 75U, 1U},
+        .dns = {192U, 168U, 75U, 1U},
+    };
+    (void)snprintf(
+        config.hostname, sizeof(config.hostname), "esp32-p4-bacnet");
+    network_config_finalize(&config);
+    return config;
+}
+
+static void test_network_config_model(void)
+{
+    char reason[128];
+    network_config_t config = valid_network_config();
+    CHECK(network_config_validate(&config, reason, sizeof(reason)));
+    CHECK(strcmp(reason, "ok") == 0);
+    CHECK(network_config_is_valid_blob(&config));
+    CHECK(config.magic == NETWORK_CONFIG_MAGIC);
+    CHECK(config.schema == NETWORK_CONFIG_SCHEMA);
+    CHECK(config.size == sizeof(config));
+    CHECK(config.crc32 == network_config_crc32(&config));
+
+    network_config_t same = config;
+    same.revision++;
+    same.crc32 ^= 1U;
+    CHECK(network_config_mutable_equal(&config, &same));
+    same.ipv4[3]++;
+    CHECK(!network_config_mutable_equal(&config, &same));
+    CHECK(!network_config_mutable_equal(NULL, &same));
+
+    network_config_t dhcp = {0};
+    dhcp.mode = NETWORK_ADDRESS_DHCP;
+    (void)snprintf(dhcp.hostname, sizeof(dhcp.hostname), "p4-controller");
+    network_config_finalize(&dhcp);
+    CHECK(network_config_validate(&dhcp, reason, sizeof(reason)));
+    CHECK(network_config_is_valid_blob(&dhcp));
+    dhcp.ipv4[3] = 1U;
+    CHECK(!network_config_validate(&dhcp, reason, sizeof(reason)));
+
+    network_config_t invalid = config;
+    invalid.mode = 2U;
+    CHECK(!network_config_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    invalid.hostname[0] = '-';
+    CHECK(!network_config_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    (void)snprintf(
+        invalid.hostname, sizeof(invalid.hostname), "bad.hostname");
+    CHECK(!network_config_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    memset(invalid.hostname, 'a', sizeof(invalid.hostname));
+    CHECK(!network_config_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    invalid.netmask[3] = 1U;
+    CHECK(!network_config_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    invalid.gateway[2] = 76U;
+    CHECK(!network_config_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    invalid.ipv4[3] = 0U;
+    CHECK(!network_config_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    invalid.ipv4[0] = 224U;
+    CHECK(!network_config_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    invalid.dns[0] = 127U;
+    CHECK(!network_config_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    invalid.crc32 ^= 1U;
+    CHECK(!network_config_is_valid_blob(&invalid));
+    CHECK(!network_config_validate(NULL, reason, sizeof(reason)));
+    network_config_finalize(NULL);
+    CHECK(network_config_crc32(NULL) == 0U);
+}
+
 int main(void)
 {
     test_reference_vectors();
@@ -1605,6 +1687,7 @@ int main(void)
     test_cov_retry_payload_cache();
     test_input_line_classifier();
     test_config_model();
+    test_network_config_model();
     printf("bacnet_codec_tests: %u checks passed\n", tests_run);
     return EXIT_SUCCESS;
 }

@@ -495,6 +495,82 @@ class OtaToolTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not valid JSON"):
                 client._config_put(arguments, "x" * 64)
 
+    def test_client_manages_guarded_network_configuration(self) -> None:
+        client = _load_client_module()
+
+        class Response:
+            status = 200
+            reason = "OK"
+
+            def read(self) -> bytes:
+                return b'{"mode":"dhcp","trial_active":false}'
+
+        class Connection:
+            def __init__(self) -> None:
+                self.request_call: tuple[object, ...] | None = None
+                self.closed = False
+
+            def request(self, *args: object, **kwargs: object) -> None:
+                self.request_call = (*args, kwargs)
+
+            def getresponse(self) -> Response:
+                return Response()
+
+            def close(self) -> None:
+                self.closed = True
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            configuration = root / "network.json"
+            configuration.write_text(
+                json.dumps(
+                    {
+                        "schema": 1,
+                        "mode": "dhcp",
+                        "hostname": "esp32-p4-bacnet",
+                        "static": None,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            arguments = type(
+                "Arguments",
+                (),
+                {
+                    "configuration": configuration,
+                    "output": root / "exported.json",
+                    "host": "192.0.2.1",
+                    "port": 443,
+                    "cert": Path("certificate.pem"),
+                    "timeout": 1.0,
+                },
+            )()
+
+            for operation, method, path in (
+                (client._network_get, "GET", "/network/config"),
+                (client._network_put, "PUT", "/network/config"),
+                (client._network_confirm, "POST", "/network/config/confirm"),
+            ):
+                connection = Connection()
+                with mock.patch.object(
+                    client, "_connection", return_value=connection
+                ), mock.patch("builtins.print"):
+                    self.assertEqual(operation(arguments, "x" * 64), 0)
+                self.assertTrue(connection.closed)
+                self.assertIsNotNone(connection.request_call)
+                self.assertEqual(connection.request_call[0:2], (method, path))
+
+            self.assertEqual(
+                json.loads(arguments.output.read_text()),
+                {"mode": "dhcp", "trial_active": False},
+            )
+            configuration.write_text("[]", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "JSON object"):
+                client._network_put(arguments, "x" * 64)
+            configuration.write_text("{", encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "not valid JSON"):
+                client._network_put(arguments, "x" * 64)
+
     def test_client_waits_for_reboot_and_rollback_validation(self) -> None:
         client = _load_client_module()
         metadata = client.FirmwareMetadata(

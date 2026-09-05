@@ -283,6 +283,78 @@ def _config_put(args: argparse.Namespace, token: str) -> int:
         connection.close()
 
 
+def _network_get(args: argparse.Namespace, token: str) -> int:
+    connection = _connection(args.host, args.port, args.cert, args.timeout)
+    try:
+        connection.request(
+            "GET",
+            "/network/config",
+            headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
+        )
+        result, decoded = _show_response(connection.getresponse())
+        if result == 0 and args.output is not None:
+            if not isinstance(decoded, dict):
+                raise ValueError("network configuration response is not a JSON object")
+            args.output.write_text(
+                json.dumps(decoded, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            print(f"Saved network configuration to {args.output}")
+        return result
+    finally:
+        connection.close()
+
+
+def _network_put(args: argparse.Namespace, token: str) -> int:
+    configuration: Path = args.configuration
+    try:
+        decoded = json.loads(configuration.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as error:
+        raise ValueError(f"network configuration is not valid JSON: {error}") from error
+    if not isinstance(decoded, dict):
+        raise ValueError("network configuration must be a JSON object")
+    body = json.dumps(decoded, separators=(",", ":")).encode("utf-8")
+    if not 1 <= len(body) <= 4096:
+        raise ValueError("encoded network configuration must be 1-4096 bytes")
+
+    connection = _connection(args.host, args.port, args.cert, args.timeout)
+    try:
+        connection.request(
+            "PUT",
+            "/network/config",
+            body=body,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json",
+                "Content-Length": str(len(body)),
+                "Accept": "application/json",
+            },
+        )
+        result, _ = _show_response(connection.getresponse())
+        return result
+    finally:
+        connection.close()
+
+
+def _network_confirm(args: argparse.Namespace, token: str) -> int:
+    connection = _connection(args.host, args.port, args.cert, args.timeout)
+    try:
+        connection.request(
+            "POST",
+            "/network/config/confirm",
+            body=b"",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Length": "0",
+                "Accept": "application/json",
+            },
+        )
+        result, _ = _show_response(connection.getresponse())
+        return result
+    finally:
+        connection.close()
+
+
 def _upload(args: argparse.Namespace, token: str) -> int:
     firmware: Path = args.firmware
     metadata = _inspect_firmware(firmware)
@@ -476,6 +548,26 @@ def _arguments() -> argparse.Namespace:
     _add_connection_arguments(config_put)
     config_put.add_argument("configuration", type=Path, help="configuration JSON file")
 
+    network_get = commands.add_parser(
+        "network-get", help="read the saved Ethernet address configuration"
+    )
+    _add_connection_arguments(network_get)
+    network_get.add_argument(
+        "--output", type=Path, help="also write the JSON object to this file"
+    )
+
+    network_put = commands.add_parser(
+        "network-put",
+        help="validate and stage a complete Ethernet address configuration",
+    )
+    _add_connection_arguments(network_put)
+    network_put.add_argument("configuration", type=Path, help="configuration JSON file")
+
+    network_confirm = commands.add_parser(
+        "network-confirm", help="confirm the active network trial before it rolls back"
+    )
+    _add_connection_arguments(network_confirm)
+
     self_test = commands.add_parser(
         "input-self-test",
         help="classify GPIO lines using safe internal weak pulls",
@@ -540,6 +632,16 @@ def main() -> int:
                     f"configuration not found: {args.configuration}"
                 )
             return _config_put(args, token)
+        if args.command == "network-get":
+            return _network_get(args, token)
+        if args.command == "network-put":
+            if not args.configuration.is_file():
+                raise FileNotFoundError(
+                    f"configuration not found: {args.configuration}"
+                )
+            return _network_put(args, token)
+        if args.command == "network-confirm":
+            return _network_confirm(args, token)
         if args.command == "input-self-test":
             return _input_self_test(args, token)
         if not args.firmware.is_file():

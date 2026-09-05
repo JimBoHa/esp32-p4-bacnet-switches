@@ -7,10 +7,11 @@ supports ReadPropertyMultiple and COV; and accepts authenticated HTTPS
 application updates over Ethernet after the initial USB installation.
 The target definition matches the board's 32 MB onboard NOR flash.
 
-The firmware uses DHCP. Its BACnet identity does not depend on its IP address:
-Device instance **599152**, UDP port **47808** (`0xBAC0`). The device has most
-recently used `192.168.75.152`, but a DHCP reservation is recommended if its
-management address must remain stable.
+The firmware uses DHCP by default and supports guarded persistent static IPv4
+commissioning. Its BACnet identity does not depend on its IP address: Device
+instance **599152**, UDP port **47808** (`0xBAC0`). The device has most recently
+used `192.168.75.152`; a DHCP reservation remains the simplest way to keep its
+management address stable.
 
 ## Wiring
 
@@ -156,7 +157,7 @@ the board schematic.
 
 ## Authenticated Ethernet management
 
-The HTTPS server provides five bearer-authenticated operations:
+The HTTPS server provides eight bearer-authenticated operations:
 
 - `GET /ota/status` — firmware/partition/rollback state, Git revision, reset
   reason, exact running-image SHA-256, uptime, temperature, heap, watchdog
@@ -170,6 +171,13 @@ The HTTPS server provides five bearer-authenticated operations:
 - `PUT /config` — validate and atomically persist a complete configuration.
   Changes take effect only after restart, preventing a partial live change from
   disrupting an active BACnet session.
+- `GET /network/config` — export DHCP/static IPv4 and hostname configuration,
+  including confirmed, pending, and trial state.
+- `PUT /network/config` — validate and stage a complete network configuration
+  for the next reboot.
+- `POST /network/config/confirm` — confirm a reachable trial configuration.
+  An unconfirmed trial is discarded automatically after 60 seconds and the
+  device reboots to its last confirmed network configuration.
 - `POST /ota` — validated application-image upload and reboot.
 
 DHCP's public ESP-IDF API does not expose lease expiry. Status therefore reports
@@ -199,6 +207,47 @@ the later authenticated reboot command activates it. Sending the active values
 again cancels a pending configuration. Each effective change increments the
 BACnet Device `Database_Revision`; the configured Device and Binary Input
 instances and object names must be unique and within BACnet limits.
+
+To export the network settings, edit them, and stage a change:
+
+```sh
+python3 tools/ota_client.py network-get \
+  --host 192.168.75.152 --output network-config.json
+python3 tools/ota_client.py network-put \
+  --host 192.168.75.152 network-config.json
+```
+
+The exported DHCP form uses `"mode": "dhcp"` and `"static": null`. Static
+mode requires an IPv4 address, contiguous netmask, same-subnet gateway, and DNS
+address, for example:
+
+```json
+{
+  "schema": 1,
+  "mode": "static",
+  "hostname": "esp32-p4-bacnet",
+  "static": {
+    "ipv4": "192.168.75.152",
+    "netmask": "255.255.255.0",
+    "gateway": "192.168.75.1",
+    "dns": "192.168.75.1"
+  }
+}
+```
+
+After reboot, connect to the staged address and confirm it before its countdown
+expires:
+
+```sh
+python3 tools/ota_client.py network-confirm --host 192.168.75.152
+```
+
+The confirmation must arrive through the running trial address. If the address,
+netmask, VLAN, gateway, or cabling prevents access, the device automatically
+removes the pending configuration and returns to the prior confirmed settings.
+If a trial crashes or is power-cycled before confirmation, a persistent boot
+marker makes the following boot discard it immediately. Only one network change
+may be pending or on trial at a time.
 
 Build and upload an application:
 
