@@ -47,6 +47,9 @@ static atomic_bool self_test_run[SWITCH_INPUT_COUNT];
 static atomic_bool self_test_passed[SWITCH_INPUT_COUNT];
 static atomic_bool self_test_pull_down_levels[SWITCH_INPUT_COUNT];
 static atomic_bool self_test_pull_up_levels[SWITCH_INPUT_COUNT];
+static atomic_bool self_test_pull_down_stable[SWITCH_INPUT_COUNT];
+static atomic_bool self_test_pull_up_stable[SWITCH_INPUT_COUNT];
+static atomic_uint_fast32_t self_test_classifications[SWITCH_INPUT_COUNT];
 static switch_input_pad_config_t startup_pad_configs[SWITCH_INPUT_COUNT];
 static bool startup_raw_levels[SWITCH_INPUT_COUNT];
 static switch_input_pad_config_t configured_pad_configs[SWITCH_INPUT_COUNT];
@@ -232,6 +235,10 @@ void switch_inputs_init(void)
         atomic_init(&self_test_passed[index], false);
         atomic_init(&self_test_pull_down_levels[index], false);
         atomic_init(&self_test_pull_up_levels[index], false);
+        atomic_init(&self_test_pull_down_stable[index], false);
+        atomic_init(&self_test_pull_up_stable[index], false);
+        atomic_init(
+            &self_test_classifications[index], INPUT_LINE_NOT_TESTED);
         startup_pad_configs[index] = read_pad_config(INPUT_GPIOS[index]);
         ESP_ERROR_CHECK(
             gpio_set_direction(INPUT_GPIOS[index], GPIO_MODE_INPUT));
@@ -305,7 +312,12 @@ bool switch_input_active_low(size_t index)
     return index < SWITCH_INPUT_COUNT && INPUT_ACTIVE_LOW[index];
 }
 
-static bool sample_gpio_level(gpio_num_t gpio)
+typedef struct {
+    bool stable;
+    bool level;
+} gpio_level_sample_t;
+
+static gpio_level_sample_t sample_gpio_level(gpio_num_t gpio)
 {
     unsigned high_samples = 0U;
     for (unsigned sample = 0; sample < 8U; ++sample) {
@@ -314,7 +326,10 @@ static bool sample_gpio_level(gpio_num_t gpio)
         }
         vTaskDelay(pdMS_TO_TICKS(1));
     }
-    return high_samples >= 6U;
+    return (gpio_level_sample_t){
+        .stable = high_samples <= 2U || high_samples >= 6U,
+        .level = high_samples >= 6U,
+    };
 }
 
 esp_err_t switch_inputs_run_self_test(void)
@@ -327,34 +342,54 @@ esp_err_t switch_inputs_run_self_test(void)
     uint_fast32_t fault_bits = 0U;
     for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
         const gpio_num_t gpio = INPUT_GPIOS[index];
+        gpio_level_sample_t pull_down = {0};
+        gpio_level_sample_t pull_up = {0};
         esp_err_t result = gpio_set_direction(gpio, GPIO_MODE_INPUT);
         if (result == ESP_OK) {
             result = gpio_set_pull_mode(gpio, GPIO_PULLDOWN_ONLY);
         }
-        vTaskDelay(pdMS_TO_TICKS(3));
-        const bool pull_down_level =
-            result == ESP_OK ? sample_gpio_level(gpio) : true;
         if (result == ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(3));
+            pull_down = sample_gpio_level(gpio);
             result = gpio_set_pull_mode(gpio, GPIO_PULLUP_ONLY);
         }
-        vTaskDelay(pdMS_TO_TICKS(3));
-        const bool pull_up_level =
-            result == ESP_OK ? sample_gpio_level(gpio) : false;
+        if (result == ESP_OK) {
+            vTaskDelay(pdMS_TO_TICKS(3));
+            pull_up = sample_gpio_level(gpio);
+        }
         const esp_err_t restore_result =
             gpio_set_pull_mode(gpio, GPIO_PULLDOWN_ONLY);
         if (result == ESP_OK) {
             result = restore_result;
         }
 
-        const bool passed =
-            result == ESP_OK && !pull_down_level && pull_up_level;
+        const input_line_classification_t classification = result == ESP_OK
+            ? input_line_classify(
+                  pull_down.stable,
+                  pull_down.level,
+                  pull_up.stable,
+                  pull_up.level)
+            : INPUT_LINE_UNSTABLE;
+        const bool passed = input_line_classification_valid(classification);
         atomic_store_explicit(
             &self_test_pull_down_levels[index],
-            pull_down_level,
+            pull_down.level,
             memory_order_release);
         atomic_store_explicit(
             &self_test_pull_up_levels[index],
-            pull_up_level,
+            pull_up.level,
+            memory_order_release);
+        atomic_store_explicit(
+            &self_test_pull_down_stable[index],
+            pull_down.stable,
+            memory_order_release);
+        atomic_store_explicit(
+            &self_test_pull_up_stable[index],
+            pull_up.stable,
+            memory_order_release);
+        atomic_store_explicit(
+            &self_test_classifications[index],
+            (uint32_t)classification,
             memory_order_release);
         atomic_store_explicit(
             &self_test_passed[index], passed, memory_order_release);
@@ -404,6 +439,13 @@ bool switch_input_diagnostics_get(
             &self_test_pull_down_levels[index], memory_order_acquire),
         .self_test_pull_up_level = atomic_load_explicit(
             &self_test_pull_up_levels[index], memory_order_acquire),
+        .self_test_pull_down_stable = atomic_load_explicit(
+            &self_test_pull_down_stable[index], memory_order_acquire),
+        .self_test_pull_up_stable = atomic_load_explicit(
+            &self_test_pull_up_stable[index], memory_order_acquire),
+        .self_test_classification =
+            (input_line_classification_t)atomic_load_explicit(
+                &self_test_classifications[index], memory_order_acquire),
     };
     return true;
 }

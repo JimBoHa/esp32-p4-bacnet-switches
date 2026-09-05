@@ -507,8 +507,10 @@ static esp_err_t status_get_handler(httpd_req_t *request)
                 "\"transition_count\":%u,"
                 "\"last_transition_uptime_ms\":%" PRIu64 ","
                 "\"fault\":%s,\"self_test\":{\"run\":%s,"
-                "\"passed\":%s,\"pull_down_level\":%s,"
-                "\"pull_up_level\":%s},\"startup\":{"
+                "\"passed\":%s,\"classification\":\"%s\","
+                "\"pull_down_level\":%s,\"pull_down_stable\":%s,"
+                "\"pull_up_level\":%s,\"pull_up_stable\":%s},"
+                "\"startup\":{"
                 "\"raw_after_input_enable\":%s,\"config\":",
                 index == 0 ? "" : ",",
                 input.gpio,
@@ -519,8 +521,12 @@ static esp_err_t status_get_handler(httpd_req_t *request)
                 json_bool(switch_input_faulted(index)),
                 json_bool(input.self_test_run),
                 json_bool(input.self_test_passed),
+                input_line_classification_name(
+                    input.self_test_classification),
                 json_bool(input.self_test_pull_down_level),
+                json_bool(input.self_test_pull_down_stable),
                 json_bool(input.self_test_pull_up_level),
+                json_bool(input.self_test_pull_up_stable),
                 json_bool(input.startup_raw_after_input_enable)) ||
             !append_pad_config(
                 response,
@@ -615,14 +621,14 @@ static esp_err_t input_self_test_post_handler(httpd_req_t *request)
         return httpd_resp_sendstr(request, "input self-test already running");
     }
 
-    char response[384];
+    char response[768];
     size_t length = 0U;
     unsigned failures = 0U;
     if (!response_append(
             response,
             sizeof(response),
             &length,
-            "{\"warning\":\"disconnect field wiring before running\","
+            "{\"notice\":\"test uses internal weak pulls and does not drive outputs\","
             "\"inputs\":[")) {
         return ESP_FAIL;
     }
@@ -641,12 +647,18 @@ static esp_err_t input_self_test_post_handler(httpd_req_t *request)
                 sizeof(response),
                 &length,
                 "%s{\"gpio\":%d,\"passed\":%s,"
-                "\"pull_down_level\":%s,\"pull_up_level\":%s}",
+                "\"classification\":\"%s\","
+                "\"pull_down_level\":%s,\"pull_down_stable\":%s,"
+                "\"pull_up_level\":%s,\"pull_up_stable\":%s}",
                 index == 0 ? "" : ",",
                 input.gpio,
                 json_bool(input.self_test_passed),
+                input_line_classification_name(
+                    input.self_test_classification),
                 json_bool(input.self_test_pull_down_level),
-                json_bool(input.self_test_pull_up_level))) {
+                json_bool(input.self_test_pull_down_stable),
+                json_bool(input.self_test_pull_up_level),
+                json_bool(input.self_test_pull_up_stable))) {
             return ESP_FAIL;
         }
     }

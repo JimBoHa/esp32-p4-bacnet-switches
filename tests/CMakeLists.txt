@@ -10,6 +10,7 @@ add_executable(
     ../main/bacnet_codec.c
     ../main/cov_retry_cache.c
     ../main/diagnostics_time.c
+    ../main/input_line_classifier.c
     ../main/ota_auth.c
     ../main/ota_health.c
 )

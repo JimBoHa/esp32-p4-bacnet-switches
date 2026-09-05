@@ -107,9 +107,10 @@ router, or BACnet/SC node; discovery requires the local subnet or an existing
 BACnet/IP router.
 
 The input debounce default is 50 ms. Per-input polarity can be reversed in
-`menuconfig`. A failed electrical self-test sets BACnet `Reliability` to
-`unreliable-other` and the `fault` bit in `Status_Flags` without removing the
-object or changing its instance.
+`menuconfig`. The electrical test classifies each line as `floating-open`,
+`externally-high`, `externally-low`, or `unstable`. The first three are valid
+line conditions; only an unstable/invalid test sets BACnet `Reliability` to
+`unreliable-other` and the `fault` bit in `Status_Flags`.
 
 ## Build and initial flash
 
@@ -158,15 +159,15 @@ The HTTPS server provides three bearer-authenticated endpoints:
   health, Ethernet negotiation, DHCP/address state, BACnet counters, input
   pad/raw/debounced/transition data, self-test results, and the persistent fault
   log.
-- `POST /diagnostics/input-self-test` — weak-pull electrical test. Disconnect
-  all field wiring first. The test never drives a GPIO as an output.
+- `POST /diagnostics/input-self-test` — weak-pull line classification. It does
+  not enable GPIO output drivers and may be run with field wiring connected.
 - `POST /ota` — validated application-image upload and reboot.
 
 DHCP's public ESP-IDF API does not expose lease expiry. Status therefore reports
 DHCP state, address/netmask/gateway, acquisition count/time, address age, and IP
 change count; `address_age_ms` is not lease time remaining.
 
-Check status or run the disconnected-wire self-test:
+Check status or classify the connected input lines:
 
 ```sh
 python3 tools/ota_client.py status --host 192.168.75.152
