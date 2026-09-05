@@ -1274,7 +1274,7 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             response,
             OTA_STATUS_RESPONSE_BYTES,
             &response_length,
-            "\"bacnet\":{\"rx\":%u,\"who_is\":%u,"
+            "\"bacnet\":{\"rx\":%u,\"who_is\":%u,\"who_has\":%u,"
             "\"read_property\":%u,\"read_property_multiple\":%u,"
             "\"subscribe_cov\":%u,\"malformed\":%u,\"ignored\":%u,"
             "\"responses\":%u,\"errors\":%u,\"rate_limited\":%u,"
@@ -1282,6 +1282,7 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             "\"active_cov_subscriptions\":%u},\"gpio_diagnostics\":[",
             (unsigned)snapshot.bacnet[DIAGNOSTICS_BACNET_RX],
             (unsigned)snapshot.bacnet[DIAGNOSTICS_BACNET_WHO_IS],
+            (unsigned)snapshot.bacnet[DIAGNOSTICS_BACNET_WHO_HAS],
             (unsigned)snapshot.bacnet[DIAGNOSTICS_BACNET_READ_PROPERTY],
             (unsigned)snapshot.bacnet[
                 DIAGNOSTICS_BACNET_READ_PROPERTY_MULTIPLE],

@@ -15,9 +15,11 @@ enum {
     BACNET_SERVICE_CONFIRMED_COV_NOTIFICATION = 1,
     BACNET_SERVICE_SUBSCRIBE_COV = 5,
     BACNET_SERVICE_I_AM = 0,
+    BACNET_SERVICE_I_HAVE = 1,
     BACNET_SERVICE_READ_PROPERTY = 12,
     BACNET_SERVICE_READ_PROPERTY_MULTIPLE = 14,
     BACNET_SERVICE_UNCONFIRMED_COV_NOTIFICATION = 2,
+    BACNET_SERVICE_WHO_HAS = 7,
     BACNET_SERVICE_WHO_IS = 8,
     BACNET_NPDU_NETWORK_MESSAGE = 0x80,
     BACNET_NPDU_DESTINATION_SPECIFIED = 0x20,
@@ -130,6 +132,7 @@ static const uint16_t ANALOG_VALUE_PROPERTIES[] = {
 
 #define BACNET_RPM_MAX_OBJECTS 8U
 #define BACNET_RPM_MAX_REFERENCES 48U
+#define BACNET_WHO_HAS_NAME_CAPACITY 96U
 
 typedef enum {
     PROPERTY_LIST_DEVICE,
@@ -183,6 +186,16 @@ typedef struct {
     bool confirmed;
     uint32_t lifetime_seconds;
 } subscribe_cov_request_t;
+
+typedef struct {
+    bool has_limits;
+    uint32_t low_limit;
+    uint32_t high_limit;
+    bool by_name;
+    uint32_t object_type;
+    uint32_t object_instance;
+    char object_name[BACNET_WHO_HAS_NAME_CAPACITY];
+} who_has_request_t;
 
 typedef struct {
     uint8_t tag;
@@ -547,6 +560,100 @@ static bool parse_who_is(
     return true;
 }
 
+static bool decode_context_character_string(
+    const uint8_t *data,
+    size_t length,
+    uint8_t expected_tag,
+    char *value,
+    size_t value_capacity,
+    size_t *used)
+{
+    decoded_tag_t tag;
+    if (!decode_tag(data, length, &tag) || tag.tag != expected_tag ||
+        !tag.context || tag.length < 2U || tag.length > value_capacity) {
+        return false;
+    }
+    const uint8_t *body = data + tag.header_length;
+    if (body[0] != 0U && body[0] != 5U) {
+        return false;
+    }
+    const size_t text_length = tag.length - 1U;
+    for (size_t index = 0U; index < text_length; ++index) {
+        if (body[index + 1U] < 0x20U || body[index + 1U] > 0x7EU) {
+            return false;
+        }
+        value[index] = (char)body[index + 1U];
+    }
+    value[text_length] = '\0';
+    *used = tag.header_length + tag.length;
+    return true;
+}
+
+static bool parse_who_has(
+    const uint8_t *payload,
+    size_t length,
+    who_has_request_t *request)
+{
+    memset(request, 0, sizeof(*request));
+    size_t offset = 0U;
+    size_t used = 0U;
+    if (length > 0U && (payload[0] >> 4U) == 0U &&
+        (payload[0] & 0x08U) != 0U) {
+        if (!decode_context_unsigned(
+                payload,
+                length,
+                0U,
+                &request->low_limit,
+                &used)) {
+            return false;
+        }
+        offset += used;
+        if (!decode_context_unsigned(
+                payload + offset,
+                length - offset,
+                1U,
+                &request->high_limit,
+                &used)) {
+            return false;
+        }
+        offset += used;
+        if (request->low_limit > request->high_limit ||
+            request->high_limit > BACNET_MAX_INSTANCE) {
+            return false;
+        }
+        request->has_limits = true;
+    }
+    if (offset >= length) {
+        return false;
+    }
+    const uint8_t choice_tag = payload[offset] >> 4U;
+    if (choice_tag == 2U) {
+        if (!decode_context_object_id_tag(
+                payload + offset,
+                length - offset,
+                2U,
+                &request->object_type,
+                &request->object_instance,
+                &used)) {
+            return false;
+        }
+    } else if (choice_tag == 3U) {
+        request->by_name = true;
+        if (!decode_context_character_string(
+                payload + offset,
+                length - offset,
+                3U,
+                request->object_name,
+                sizeof(request->object_name),
+                &used)) {
+            return false;
+        }
+    } else {
+        return false;
+    }
+    return offset + used == length;
+}
+
 static bool parse_read_property(
     const uint8_t *payload,
     size_t length,
@@ -808,6 +915,32 @@ size_t bacnet_encode_i_am(
     return finish_bvlc(&writer);
 }
 
+static size_t encode_i_have(
+    const bacnet_device_state_t *state,
+    uint32_t object_type,
+    uint32_t object_instance,
+    const char *object_name,
+    bool broadcast,
+    uint8_t *response,
+    size_t response_capacity)
+{
+    if (state == NULL || object_name == NULL || response == NULL) {
+        return 0U;
+    }
+    writer_t writer = {
+        .data = response,
+        .capacity = response_capacity,
+    };
+    start_bvlc(&writer, broadcast);
+    write_u8(&writer, 0x10); /* Unconfirmed-Request-PDU */
+    write_u8(&writer, BACNET_SERVICE_I_HAVE);
+    encode_application_object_id(
+        &writer, BACNET_OBJECT_DEVICE, state->device_instance);
+    encode_application_object_id(&writer, object_type, object_instance);
+    encode_application_character_string(&writer, object_name);
+    return finish_bvlc(&writer);
+}
+
 static property_result_t property_ok(void)
 {
     return (property_result_t){.ok = true};
@@ -959,7 +1092,7 @@ static property_result_t encode_device_property(
         encode_application_unsigned(writer, 14);
         break;
     case PROP_PROTOCOL_SERVICES_SUPPORTED: {
-        const uint8_t set_bits[] = {1, 5, 12, 14, 26, 28, 34};
+        const uint8_t set_bits[] = {1, 5, 12, 14, 26, 27, 28, 33, 34};
         encode_application_bit_string(
             writer, 35, set_bits, sizeof(set_bits));
         break;
@@ -1174,6 +1307,53 @@ static bool find_analog_value(
     for (size_t index = 0; index < BACNET_ANALOG_VALUE_COUNT; ++index) {
         if (state->analog_value_instances[index] == instance) {
             *value_index = index;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool find_who_has_object(
+    const bacnet_device_state_t *state,
+    const who_has_request_t *request,
+    uint32_t *object_type,
+    uint32_t *object_instance,
+    const char **object_name)
+{
+    if ((request->by_name &&
+            strcmp(request->object_name, state->device_name) == 0) ||
+        (!request->by_name && request->object_type == BACNET_OBJECT_DEVICE &&
+         request->object_instance == state->device_instance)) {
+        *object_type = BACNET_OBJECT_DEVICE;
+        *object_instance = state->device_instance;
+        *object_name = state->device_name;
+        return true;
+    }
+    for (size_t index = 0U; index < BACNET_BINARY_INPUT_COUNT; ++index) {
+        if ((request->by_name &&
+                strcmp(
+                    request->object_name,
+                    state->binary_input_names[index]) == 0) ||
+            (!request->by_name &&
+             request->object_type == BACNET_OBJECT_BINARY_INPUT &&
+             request->object_instance == state->binary_input_instances[index])) {
+            *object_type = BACNET_OBJECT_BINARY_INPUT;
+            *object_instance = state->binary_input_instances[index];
+            *object_name = state->binary_input_names[index];
+            return true;
+        }
+    }
+    for (size_t index = 0U; index < BACNET_ANALOG_VALUE_COUNT; ++index) {
+        if ((request->by_name &&
+                strcmp(
+                    request->object_name,
+                    state->analog_value_names[index]) == 0) ||
+            (!request->by_name &&
+             request->object_type == BACNET_OBJECT_ANALOG_VALUE &&
+             request->object_instance == state->analog_value_instances[index])) {
+            *object_type = BACNET_OBJECT_ANALOG_VALUE;
+            *object_instance = state->analog_value_instances[index];
+            *object_name = state->analog_value_names[index];
             return true;
         }
     }
@@ -1691,6 +1871,44 @@ bacnet_packet_result_t bacnet_handle_packet(
                 response,
                 response_capacity);
         }
+        return result;
+    }
+
+    if (apdu_length >= 2U && apdu[0] == 0x10U &&
+        apdu[1] == BACNET_SERVICE_WHO_HAS) {
+        result.kind = BACNET_PACKET_WHO_HAS;
+        who_has_request_t request;
+        if (!parse_who_has(apdu + 2U, apdu_length - 2U, &request)) {
+            result.kind = BACNET_PACKET_MALFORMED;
+            return result;
+        }
+        if (request.has_limits &&
+            (state->device_instance < request.low_limit ||
+             state->device_instance > request.high_limit)) {
+            return result;
+        }
+        uint32_t object_type;
+        uint32_t object_instance;
+        const char *object_name;
+        if (!find_who_has_object(
+                state,
+                &request,
+                &object_type,
+                &object_instance,
+                &object_name)) {
+            return result;
+        }
+        result.broadcast_response =
+            frame[1] == BACNET_BVLC_ORIGINAL_BROADCAST_NPDU ||
+            npdu.global_broadcast_destination;
+        result.response_length = encode_i_have(
+            state,
+            object_type,
+            object_instance,
+            object_name,
+            result.broadcast_response,
+            response,
+            response_capacity);
         return result;
     }
 
