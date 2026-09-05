@@ -58,6 +58,7 @@ class MdnsProbeTests(unittest.TestCase):
                     {
                         "path": "/ota/status",
                         "auth": "bearer",
+                        "read_auth": "none",
                         "project": "esp32_p4_bacnet_switches",
                         "version": "1.14.0",
                     }

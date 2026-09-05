@@ -2,15 +2,12 @@
 
 (() => {
   const element = (id) => document.getElementById(id);
-  const connectForm = element("connectForm");
-  const tokenInput = element("token");
-  const connectedControls = element("connectedControls");
   const dashboard = element("dashboard");
   const connectionStatus = element("connectionStatus");
   const overallHealth = element("overallHealth");
   const autoRefresh = element("autoRefresh");
 
-  let bearerToken = "";
+  let pageActive = true;
   let refreshTimer = 0;
   let activeRequest = null;
   let reportRequest = null;
@@ -268,14 +265,14 @@
 
   const scheduleRefresh = () => {
     window.clearTimeout(refreshTimer);
-    if (bearerToken && autoRefresh.checked) {
+    if (pageActive && autoRefresh.checked) {
       refreshTimer = window.setTimeout(refresh, 5000);
     }
   };
 
   const refresh = async () => {
-    if (!bearerToken || activeRequest) return;
-    const tokenForRequest = bearerToken;
+    if (!pageActive || activeRequest) return;
+    window.clearTimeout(refreshTimer);
     const controller = new AbortController();
     let requestTimedOut = false;
     const requestTimeout = window.setTimeout(() => {
@@ -284,47 +281,36 @@
     }, 10000);
     activeRequest = controller;
     connectionStatus.className = "status-line";
-    connectionStatus.textContent = "Refreshing authenticated diagnostics…";
+    connectionStatus.textContent = "Refreshing read-only diagnostics…";
     try {
       const response = await window.fetch("/ota/status", {
         method: "GET",
-        headers: {"Authorization": `Bearer ${tokenForRequest}`, "Accept": "application/json"},
+        headers: {"Accept": "application/json"},
         cache: "no-store",
         credentials: "omit",
+        redirect: "error",
         signal: controller.signal,
       });
-      if (activeRequest !== controller || bearerToken !== tokenForRequest) return;
+      if (activeRequest !== controller || !pageActive) return;
       if (!response.ok) {
-        if (response.status === 401) {
-          bearerToken = "";
-          cancelReport();
-        }
         throw new Error(`HTTP ${response.status}`);
       }
       const status = await response.json();
-      if (activeRequest !== controller || bearerToken !== tokenForRequest) return;
+      if (activeRequest !== controller || !pageActive) return;
+      if (controller.signal.aborted) throw new Error("request timed out");
       if (!status || typeof status !== "object" || Array.isArray(status)) {
         throw new Error("invalid status document");
       }
       render(status);
-      connectedControls.hidden = false;
-      connectionStatus.textContent = status.access_role === "viewer"
-        ? "Authenticated as viewer. Read-only access."
-        : "Authenticated as admin. This dashboard is read-only.";
+      connectionStatus.textContent = "Read-only access. No login required.";
     } catch (error) {
       if (activeRequest !== controller) return;
       if (controller.signal.aborted && !requestTimedOut) return;
       connectionStatus.className = "status-line error";
       connectionStatus.textContent = `Diagnostics unavailable: ${requestTimedOut ? "request timed out" : error instanceof Error ? error.message : "request failed"}`;
-      if (!bearerToken) {
-        dashboard.hidden = true;
-        connectedControls.hidden = true;
-        overallHealth.textContent = "Not connected";
-        overallHealth.className = "health health-idle";
-      } else {
-        overallHealth.textContent = "Connection error";
-        overallHealth.className = "health health-bad";
-      }
+      dashboard.hidden = true;
+      overallHealth.textContent = "Connection error";
+      overallHealth.className = "health health-bad";
     } finally {
       window.clearTimeout(requestTimeout);
       if (activeRequest === controller) {
@@ -334,22 +320,20 @@
     }
   };
 
-  const clearSession = () => {
-    bearerToken = "";
+  const stopPage = () => {
+    pageActive = false;
     window.clearTimeout(refreshTimer);
     if (activeRequest) activeRequest.abort();
     activeRequest = null;
     cancelReport();
     dashboard.hidden = true;
-    connectedControls.hidden = true;
     overallHealth.textContent = "Not connected";
     overallHealth.className = "health health-idle";
     text("reportStatus", "Reports exclude credentials but include site configuration and network addresses. Review before sharing.");
   };
 
   const downloadReport = async () => {
-    if (!bearerToken || reportRequest) return;
-    const tokenForRequest = bearerToken;
+    if (!pageActive || reportRequest) return;
     const controller = new AbortController();
     reportRequest = controller;
     element("downloadReport").disabled = true;
@@ -358,20 +342,15 @@
     try {
       const response = await window.fetch("/diagnostics/report", {
         method: "GET",
-        headers: {"Authorization": `Bearer ${tokenForRequest}`, "Accept": "application/json"},
+        headers: {"Accept": "application/json"},
         cache: "no-store", credentials: "omit", redirect: "error",
         signal: controller.signal,
       });
-      if (reportRequest !== controller || bearerToken !== tokenForRequest) return;
-      if (response.status === 401) {
-        clearSession();
-        connectionStatus.textContent = "Not connected. Enter a valid token.";
-        text("reportStatus", "Report unavailable: HTTP 401. Reconnect with a valid token.");
-        return;
-      }
+      if (reportRequest !== controller || !pageActive) return;
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       const report = await response.json();
-      if (reportRequest !== controller || bearerToken !== tokenForRequest) return;
+      if (reportRequest !== controller || !pageActive) return;
+      if (controller.signal.aborted) throw new Error("request timed out");
       if (!report || report.schema !== 1 || report.report_type !== "esp32-p4-diagnostics" || !report.status) {
         throw new Error("invalid report document");
       }
@@ -399,27 +378,15 @@
     }
   };
 
-  connectForm.addEventListener("submit", (event) => {
-    event.preventDefault();
-    const candidate = tokenInput.value.trim();
-    if (!/^[\x21-\x7e]{32,128}$/.test(candidate)) {
-      connectionStatus.className = "status-line error";
-      connectionStatus.textContent = "Token must contain 32–128 printable characters without spaces.";
-      return;
-    }
-    clearSession();
-    bearerToken = candidate;
-    tokenInput.value = "";
-    refresh();
-  });
-
   element("refresh").addEventListener("click", refresh);
   element("downloadReport").addEventListener("click", downloadReport);
   autoRefresh.addEventListener("change", scheduleRefresh);
-  element("disconnect").addEventListener("click", () => {
-    clearSession();
-    connectionStatus.className = "status-line";
-    connectionStatus.textContent = "Token cleared from page memory.";
-    tokenInput.focus();
+  window.addEventListener("pagehide", stopPage);
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted) {
+      pageActive = true;
+      refresh();
+    }
   });
+  refresh();
 })();

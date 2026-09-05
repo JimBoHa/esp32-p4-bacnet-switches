@@ -18,7 +18,7 @@ The configured hostname is also advertised with mDNS. On the local subnet,
 `_bacnet._udp` on the configured BACnet port plus `_https._tcp` when the
 management server started successfully. TXT metadata contains only the public
 project/version, BACnet Device/Vendor identifiers, API path, and authentication
-method—never a bearer token or private key. mDNS is link-local convenience; it
+method (`auth=bearer` for writes, `read_auth=none` for reads)—never a bearer token or private key. mDNS is link-local convenience; it
 does not replace BACnet Who-Is/I-Am discovery or cross-VLAN routing/BBMDs.
 
 ## Wiring
@@ -134,7 +134,7 @@ Supported services:
 The read-only Network Port object follows BACnet protocol revision 17. Its
 `MAC_Address` is the BACnet/IP address (four IPv4 octets plus the two-byte UDP
 port), as required by BACnet; the hardware Ethernet MAC remains available in
-the authenticated diagnostics endpoint. Network configuration changes continue
+the read-only diagnostics endpoint. Network configuration changes continue
 to use the guarded HTTPS API, not BACnet WriteProperty.
 
 COV supports eight simultaneous subscriptions, lifetimes up to seven days,
@@ -216,7 +216,7 @@ these signal counters.
 Four rejected pulses inside two seconds start one chatter episode; the live
 `chattering` flag remains set until the line has been quiet for five seconds.
 
-The dashboard and authenticated status retain the latest 64 initial-state,
+The dashboard and read-only status retain the latest 64 initial-state,
 accepted-transition, rejected-pulse, and chatter-start events in a bounded RAM
 ring. Each event carries its GPIO, stable logical state, sequence, 64-bit
 boot-relative time, and rejected-pulse width when applicable. History is ordered
@@ -315,29 +315,41 @@ to the HIL command; it requires fresh device UTC within ten seconds of the host.
 ### Dashboard and API
 
 Open `https://DEVICE-IP/diagnostics` for the read-only field dashboard. Its
-HTML/CSS/JavaScript shell contains no device data and is intentionally public;
-the page asks for the bearer token before it requests `/ota/status`. The token
-is held only in page memory, never placed in a URL, cookie, or browser storage.
+live status loads automatically, without a login or token. Refresh and report
+downloads also work without credentials. The page never requests, stores, or
+sends a bearer token or cookie, and it cannot perform administrative actions.
 All assets are same-origin and carry restrictive CSP, framing, MIME-sniffing,
 referrer, permissions, and caching headers. Verify the self-signed device
-certificate before entering the token.
+certificate before using the page. Failed status requests hide stale readings
+and retry every five seconds while automatic refresh is enabled.
 
-The dashboard accepts either a viewer or admin token and shows its role.
-Viewer access is read-only across the HTTPS API: status, report, `/config`, and
-`/network/config` reads are allowed; all uploads, configuration writes, network
-confirmation, input self-tests, and reboot requests return HTTP 403. Absent or
-invalid credentials return 401. The existing `ota_token.txt` remains the admin
-credential. To add a viewer credential without changing admin or TLS identity:
+All four read-only API routes (`/ota/status`, `/diagnostics/report`, `/config`,
+and `/network/config`) are accessible without credentials. Status identifies
+these requests as `access_role: "anonymous"` and reports
+`security.anonymous_read_only: true`. Anyone able to reach HTTPS can read site
+names, network addresses, configuration, inputs, and logs. Keep the controller
+on a trusted, access-controlled BAS/management network; never expose it to the
+Internet. Read responses are not cached, do not enable cross-origin reads, and
+exclude credentials.
+
+All six mutation routes still require the admin token: uploads, configuration
+writes, network confirmation, input self-tests, and reboot. Missing or invalid
+credentials return HTTP 401; a valid viewer token returns HTTP 403 for writes.
+An explicitly supplied invalid credential returns 401 even on a read route;
+omit the Authorization header for public reads. Existing admin/viewer clients
+remain compatible, and authenticated status still identifies their roles.
+The existing `ota_token.txt` remains the admin credential. To provision the
+legacy viewer credential without changing admin or TLS identity:
 
 ```sh
 python3 tools/generate_ota_credentials.py --viewer-only
 ```
 
-The new `secrets/ota_viewer_token.txt` must be backed up privately and included
-in the next firmware build. Both role tokens must be distinct. Use the viewer
-file with `--token-file` for read-only CLI operations; mutations require the
-admin file. Viewer-token rotation uses `--viewer-only --force` and a new
-admin-authorized firmware deployment.
+The `secrets/ota_viewer_token.txt` file is retained for compatible CLI clients
+and builds, but is no longer needed to use the dashboard. Both role tokens must
+remain distinct and privately backed up. CLI operations continue to use
+`--token-file`; mutations require the admin file. Viewer-token rotation uses
+`--viewer-only --force` and a new admin-authorized firmware deployment.
 
 Use **Download diagnostics** to save a JSON report. It contains the complete
 status (including hardware pin map, firmware identity, input history, and fault
@@ -351,10 +363,10 @@ during capture. The CLI also supports a private, no-overwrite download:
 python3 tools/ota_client.py diagnostics-report --host DEVICE-IP --output report.json
 ```
 
-The HTTPS server provides ten bearer-authenticated operations:
+The HTTPS server provides four public read operations and six admin-only writes:
 
 - `GET /diagnostics/report` — schema-versioned diagnostic JSON attachment;
-  no-cache and read-only, with the same authentication as status.
+  no-cache and read-only, with no login required.
 - `GET /ota/status` — running/boot/update partition and rollback state, source
   and ELF identity, build metadata, exact running-image SHA-256, reset reason,
   enforced OTA size/media-type/deadline/secure-version policy,
@@ -572,7 +584,7 @@ temperature setup failure, BACnet socket failure, HTTPS server startup failure,
 task-watchdog registration failure, and authenticated remote-reboot requests.
 Entries include sequence, boot count, boot-relative time, type, and error code.
 An mDNS initialization or service-advertisement failure is also persisted; a
-runtime hostname conflict is counted in authenticated status.
+runtime hostname conflict is counted in read-only status.
 Status reports retained/overwritten event counts and NVS write failures. It also
 tracks chip-temperature minimum, maximum, sample count, read/setup failures,
 and the most recent sensor result without confusing die temperature with room
