@@ -59,7 +59,7 @@ typedef enum {
 typedef struct {
     uint32_t sequence;
     uint32_t boot_count;
-    uint32_t uptime_ms;
+    uint64_t uptime_ms;
     uint16_t type;
     int16_t code;
 } diagnostics_fault_event_t;
@@ -75,7 +75,7 @@ typedef struct {
     uint32_t reconnect_count;
     uint32_t ip_acquisition_count;
     uint32_t ip_changed_count;
-    uint32_t ip_acquired_uptime_ms;
+    uint64_t ip_acquired_uptime_ms;
     uint32_t ipv4_address;
     uint32_t ipv4_netmask;
     uint32_t ipv4_gateway;
@@ -83,7 +83,7 @@ typedef struct {
 } diagnostics_network_snapshot_t;
 
 typedef struct {
-    uint32_t uptime_ms;
+    uint64_t uptime_ms;
     float chip_temperature_c;
     bool chip_temperature_valid;
     uint32_t free_heap_bytes;
@@ -96,7 +96,7 @@ typedef struct {
     uint32_t active_cov_subscriptions;
     bool task_watchdog_subscribed[DIAGNOSTICS_TASK_COUNT];
     bool task_healthy[DIAGNOSTICS_TASK_COUNT];
-    uint32_t task_last_heartbeat_ms[DIAGNOSTICS_TASK_COUNT];
+    uint64_t task_last_heartbeat_ms[DIAGNOSTICS_TASK_COUNT];
     diagnostics_fault_event_t fault_log[DIAGNOSTICS_FAULT_LOG_CAPACITY];
     size_t fault_log_count;
 } diagnostics_snapshot_t;

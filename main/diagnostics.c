@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "driver/temperature_sensor.h"
+#include "diagnostics_time.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_task_wdt.h"
@@ -18,7 +19,8 @@
 #endif
 
 #define DIAGNOSTICS_PERSISTENT_MAGIC 0x44494147U
-#define DIAGNOSTICS_PERSISTENT_VERSION 1U
+#define DIAGNOSTICS_PERSISTENT_VERSION 2U
+#define DIAGNOSTICS_PERSISTENT_VERSION_LEGACY_32_BIT_TIME 1U
 #define DIAGNOSTICS_NVS_NAMESPACE "diagnostics"
 #define DIAGNOSTICS_NVS_KEY "state"
 #define DIAGNOSTICS_TASK_HEALTH_MAX_AGE_MS 2500U
@@ -34,6 +36,29 @@ typedef struct {
     diagnostics_fault_event_t events[DIAGNOSTICS_FAULT_LOG_CAPACITY];
 } diagnostics_persistent_state_t;
 
+typedef struct {
+    uint32_t sequence;
+    uint32_t boot_count;
+    uint32_t uptime_ms;
+    uint16_t type;
+    int16_t code;
+} diagnostics_fault_event_v1_t;
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t boot_count;
+    uint32_t next_sequence;
+    uint32_t event_head;
+    uint32_t event_count;
+    uint32_t last_ota_result;
+    diagnostics_fault_event_v1_t events[DIAGNOSTICS_FAULT_LOG_CAPACITY];
+} diagnostics_persistent_state_v1_t;
+
+_Static_assert(
+    sizeof(diagnostics_fault_event_v1_t) == 16U,
+    "legacy diagnostics event layout changed");
+
 static const char *TAG = "diagnostics";
 static SemaphoreHandle_t state_mutex;
 static nvs_handle_t diagnostics_nvs_handle;
@@ -47,12 +72,13 @@ static temperature_sensor_handle_t temperature_sensor;
 static atomic_bool temperature_read_failure_recorded;
 static atomic_uint_fast32_t bacnet_counters[DIAGNOSTICS_BACNET_COUNTER_COUNT];
 static atomic_uint_fast32_t active_cov_subscriptions;
-static atomic_uint_fast32_t task_last_heartbeat[DIAGNOSTICS_TASK_COUNT];
+static uint64_t task_last_heartbeat[DIAGNOSTICS_TASK_COUNT];
+static portMUX_TYPE task_heartbeat_lock = portMUX_INITIALIZER_UNLOCKED;
 static atomic_bool task_watchdog_subscribed[DIAGNOSTICS_TASK_COUNT];
 
-static uint32_t uptime_ms(void)
+static uint64_t uptime_ms(void)
 {
-    return (uint32_t)(esp_timer_get_time() / 1000LL);
+    return diagnostics_milliseconds_from_microseconds(esp_timer_get_time());
 }
 
 static bool abnormal_reset(esp_reset_reason_t reason)
@@ -81,6 +107,86 @@ static void save_persistent_locked(void)
             "failed to persist diagnostics: %s",
             esp_err_to_name(commit_result));
     }
+}
+
+static bool persistent_state_header_valid(
+    uint32_t magic,
+    uint32_t version,
+    uint32_t event_head,
+    uint32_t event_count,
+    uint32_t expected_version)
+{
+    return magic == DIAGNOSTICS_PERSISTENT_MAGIC &&
+        version == expected_version &&
+        event_head < DIAGNOSTICS_FAULT_LOG_CAPACITY &&
+        event_count <= DIAGNOSTICS_FAULT_LOG_CAPACITY;
+}
+
+static bool load_persistent_state(void)
+{
+    size_t stored_size = 0U;
+    esp_err_t result = nvs_get_blob(
+        diagnostics_nvs_handle, DIAGNOSTICS_NVS_KEY, NULL, &stored_size);
+    if (result != ESP_OK) {
+        return false;
+    }
+
+    if (stored_size == sizeof(persistent)) {
+        diagnostics_persistent_state_t stored = {0};
+        result = nvs_get_blob(
+            diagnostics_nvs_handle,
+            DIAGNOSTICS_NVS_KEY,
+            &stored,
+            &stored_size);
+        if (result == ESP_OK && persistent_state_header_valid(
+                stored.magic,
+                stored.version,
+                stored.event_head,
+                stored.event_count,
+                DIAGNOSTICS_PERSISTENT_VERSION)) {
+            persistent = stored;
+            return true;
+        }
+        return false;
+    }
+
+    if (stored_size != sizeof(diagnostics_persistent_state_v1_t)) {
+        return false;
+    }
+    diagnostics_persistent_state_v1_t legacy = {0};
+    result = nvs_get_blob(
+        diagnostics_nvs_handle,
+        DIAGNOSTICS_NVS_KEY,
+        &legacy,
+        &stored_size);
+    if (result != ESP_OK || !persistent_state_header_valid(
+            legacy.magic,
+            legacy.version,
+            legacy.event_head,
+            legacy.event_count,
+            DIAGNOSTICS_PERSISTENT_VERSION_LEGACY_32_BIT_TIME)) {
+        return false;
+    }
+
+    memset(&persistent, 0, sizeof(persistent));
+    persistent.magic = legacy.magic;
+    persistent.version = DIAGNOSTICS_PERSISTENT_VERSION;
+    persistent.boot_count = legacy.boot_count;
+    persistent.next_sequence = legacy.next_sequence;
+    persistent.event_head = legacy.event_head;
+    persistent.event_count = legacy.event_count;
+    persistent.last_ota_result = legacy.last_ota_result;
+    for (size_t index = 0; index < DIAGNOSTICS_FAULT_LOG_CAPACITY; ++index) {
+        persistent.events[index] = (diagnostics_fault_event_t){
+            .sequence = legacy.events[index].sequence,
+            .boot_count = legacy.events[index].boot_count,
+            .uptime_ms = legacy.events[index].uptime_ms,
+            .type = legacy.events[index].type,
+            .code = legacy.events[index].code,
+        };
+    }
+    ESP_LOGI(TAG, "migrated persistent diagnostics to 64-bit timestamps");
+    return true;
 }
 
 static void record_event_locked(diagnostics_event_type_t type, int code)
@@ -138,14 +244,7 @@ esp_err_t diagnostics_init(void)
         "diagnostics NVS open failed");
     nvs_ready = true;
 
-    size_t stored_size = sizeof(persistent);
-    result = nvs_get_blob(
-        diagnostics_nvs_handle, DIAGNOSTICS_NVS_KEY, &persistent, &stored_size);
-    if (result != ESP_OK || stored_size != sizeof(persistent) ||
-        persistent.magic != DIAGNOSTICS_PERSISTENT_MAGIC ||
-        persistent.version != DIAGNOSTICS_PERSISTENT_VERSION ||
-        persistent.event_head >= DIAGNOSTICS_FAULT_LOG_CAPACITY ||
-        persistent.event_count > DIAGNOSTICS_FAULT_LOG_CAPACITY) {
+    if (!load_persistent_state()) {
         memset(&persistent, 0, sizeof(persistent));
         persistent.magic = DIAGNOSTICS_PERSISTENT_MAGIC;
         persistent.version = DIAGNOSTICS_PERSISTENT_VERSION;
@@ -168,7 +267,7 @@ esp_err_t diagnostics_init(void)
     atomic_init(&active_cov_subscriptions, 0U);
     atomic_init(&temperature_read_failure_recorded, false);
     for (size_t index = 0; index < DIAGNOSTICS_TASK_COUNT; ++index) {
-        atomic_init(&task_last_heartbeat[index], 0U);
+        task_last_heartbeat[index] = 0U;
         atomic_init(&task_watchdog_subscribed[index], false);
     }
 
@@ -431,8 +530,10 @@ void diagnostics_task_heartbeat(diagnostics_task_t task)
     if ((size_t)task >= DIAGNOSTICS_TASK_COUNT) {
         return;
     }
-    atomic_store_explicit(
-        &task_last_heartbeat[task], uptime_ms(), memory_order_release);
+    const uint64_t heartbeat_ms = uptime_ms();
+    portENTER_CRITICAL(&task_heartbeat_lock);
+    task_last_heartbeat[task] = heartbeat_ms;
+    portEXIT_CRITICAL(&task_heartbeat_lock);
     if (atomic_load_explicit(
             &task_watchdog_subscribed[task], memory_order_acquire)) {
         (void)esp_task_wdt_reset();
@@ -488,15 +589,19 @@ bool diagnostics_snapshot_get(diagnostics_snapshot_t *snapshot)
     }
     snapshot->active_cov_subscriptions = (uint32_t)atomic_load_explicit(
         &active_cov_subscriptions, memory_order_relaxed);
+    portENTER_CRITICAL(&task_heartbeat_lock);
+    for (size_t index = 0; index < DIAGNOSTICS_TASK_COUNT; ++index) {
+        snapshot->task_last_heartbeat_ms[index] = task_last_heartbeat[index];
+    }
+    portEXIT_CRITICAL(&task_heartbeat_lock);
     for (size_t index = 0; index < DIAGNOSTICS_TASK_COUNT; ++index) {
         snapshot->task_watchdog_subscribed[index] = atomic_load_explicit(
             &task_watchdog_subscribed[index], memory_order_acquire);
-        snapshot->task_last_heartbeat_ms[index] = (uint32_t)atomic_load_explicit(
-            &task_last_heartbeat[index], memory_order_acquire);
-        snapshot->task_healthy[index] =
-            snapshot->task_watchdog_subscribed[index] &&
-            snapshot->uptime_ms - snapshot->task_last_heartbeat_ms[index] <=
-                DIAGNOSTICS_TASK_HEALTH_MAX_AGE_MS;
+        snapshot->task_healthy[index] = diagnostics_heartbeat_is_healthy(
+            snapshot->task_watchdog_subscribed[index],
+            snapshot->uptime_ms,
+            snapshot->task_last_heartbeat_ms[index],
+            DIAGNOSTICS_TASK_HEALTH_MAX_AGE_MS);
     }
     return true;
 }
