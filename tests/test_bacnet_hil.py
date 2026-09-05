@@ -149,9 +149,11 @@ class BacnetHilTests(unittest.TestCase):
             "sample_interval_ms": 10, "captured_uptime_ms": 5000000000,
             "events": [
                 {"sequence": 3, "uptime_ms": 4300000000, "gpio": 20,
-                 "type": "state-changed", "active": True, "pulse_width_ms": 0},
+                 "type": "state-changed", "active": True, "pulse_width_ms": 0,
+                 "utc_unix_ms": None, "clock_quality": "unsynchronized"},
                 {"sequence": 4, "uptime_ms": 4300000040, "gpio": 21,
-                 "type": "rejected-pulse", "active": False, "pulse_width_ms": 20},
+                 "type": "rejected-pulse", "active": False, "pulse_width_ms": 20,
+                 "utc_unix_ms": 1700000000000, "clock_quality": "synchronized"},
             ],
         }
         self.assertTrue(bacnet_hil_test.input_history_valid({"input_history": history}))
@@ -164,6 +166,29 @@ class BacnetHilTests(unittest.TestCase):
             invalid = json.loads(json.dumps(history))
             invalid["events"][0][field] = value
             self.assertFalse(bacnet_hil_test.input_history_valid({"input_history": invalid}))
+
+    def test_clock_diagnostics_and_unknown_event_time(self) -> None:
+        clock = {
+            "source": "dhcp-option-42", "configured_server": "", "initialized": True,
+            "captured_uptime_ms": 10000, "utc_unix_ms": None,
+            "clock_quality": "unsynchronized", "sync_count": 0, "rejected_sync_count": 0,
+            "last_sync_uptime_ms": None, "last_sync_unix_ms": None, "sync_age_ms": None,
+            "stale_after_ms": 7200000, "update_interval_ms": 3600000,
+            "last_error": {"code": 0, "name": "ESP_OK"}, "authenticated_time": False,
+        }
+        status = {"clock": clock, "fault_log": [{"utc_unix_ms": None, "clock_quality": "unsynchronized"}]}
+        self.assertTrue(bacnet_hil_test.clock_diagnostics_valid(status))
+        clock.update(sync_count=1, clock_quality="synchronized", last_sync_uptime_ms=2000,
+                     last_sync_unix_ms=1700000000000, sync_age_ms=8000, utc_unix_ms=1700000008000)
+        self.assertTrue(bacnet_hil_test.clock_diagnostics_valid(status))
+        clock.update(captured_uptime_ms=7202001, sync_age_ms=7200001,
+                     utc_unix_ms=1700007200001, clock_quality="stale")
+        self.assertTrue(bacnet_hil_test.clock_diagnostics_valid(status))
+        clock["sync_age_ms"] = 1
+        self.assertFalse(bacnet_hil_test.clock_diagnostics_valid(status))
+        self.assertFalse(bacnet_hil_test.event_clock_valid({"utc_unix_ms": 0, "clock_quality": "unsynchronized"}))
+        self.assertFalse(bacnet_hil_test.event_clock_valid({"utc_unix_ms": None, "clock_quality": "synchronized"}))
+        self.assertFalse(bacnet_hil_test.event_clock_valid({"clock_quality": "unsynchronized"}))
 
     def test_runtime_diagnostics_validation(self) -> None:
         status = {

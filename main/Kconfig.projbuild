@@ -99,6 +99,24 @@ menu "BACnet toggle input configuration"
 
 endmenu
 
+menu "Diagnostic wall-clock time"
+
+    config DIAGNOSTICS_SNTP_SUPPORT
+        bool
+        default y
+        select LWIP_DHCP_GET_NTP_SRV
+
+    config DIAGNOSTICS_NTP_SERVER
+        string "Site NTP hostname or IPv4 address (empty = DHCP option 42)"
+        default ""
+        help
+            Empty uses only site DHCP-provided NTP servers. There is no public
+            server fallback. Static IPv4 deployments should provide a site NTP
+            hostname or IPv4 address here. SNTP is unauthenticated; only use a
+            trusted site network. UTC is explicitly unknown until synchronized.
+
+endmenu
+
 menu "Authenticated HTTPS OTA configuration"
 
     config OTA_HTTPS_ENABLED

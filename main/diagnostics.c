@@ -5,6 +5,7 @@
 
 #include "driver/temperature_sensor.h"
 #include "diagnostics_time.h"
+#include "clock_service.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
@@ -19,46 +20,10 @@
 #define PROJECT_GIT_REVISION "unknown"
 #endif
 
-#define DIAGNOSTICS_PERSISTENT_MAGIC 0x44494147U
-#define DIAGNOSTICS_PERSISTENT_VERSION 2U
-#define DIAGNOSTICS_PERSISTENT_VERSION_LEGACY_32_BIT_TIME 1U
 #define DIAGNOSTICS_NVS_NAMESPACE "diagnostics"
-#define DIAGNOSTICS_NVS_KEY "state"
+#define DIAGNOSTICS_NVS_KEY "state_v3"
+#define DIAGNOSTICS_NVS_LEGACY_KEY "state"
 #define DIAGNOSTICS_TASK_HEALTH_MAX_AGE_MS 2500U
-
-typedef struct {
-    uint32_t magic;
-    uint32_t version;
-    uint32_t boot_count;
-    uint32_t next_sequence;
-    uint32_t event_head;
-    uint32_t event_count;
-    uint32_t last_ota_result;
-    diagnostics_fault_event_t events[DIAGNOSTICS_FAULT_LOG_CAPACITY];
-} diagnostics_persistent_state_t;
-
-typedef struct {
-    uint32_t sequence;
-    uint32_t boot_count;
-    uint32_t uptime_ms;
-    uint16_t type;
-    int16_t code;
-} diagnostics_fault_event_v1_t;
-
-typedef struct {
-    uint32_t magic;
-    uint32_t version;
-    uint32_t boot_count;
-    uint32_t next_sequence;
-    uint32_t event_head;
-    uint32_t event_count;
-    uint32_t last_ota_result;
-    diagnostics_fault_event_v1_t events[DIAGNOSTICS_FAULT_LOG_CAPACITY];
-} diagnostics_persistent_state_v1_t;
-
-_Static_assert(
-    sizeof(diagnostics_fault_event_v1_t) == 16U,
-    "legacy diagnostics event layout changed");
 
 static const char *TAG = "diagnostics";
 static SemaphoreHandle_t state_mutex;
@@ -103,11 +68,17 @@ static void save_persistent_locked(void)
     if (!nvs_ready) {
         return;
     }
-    const esp_err_t set_result = nvs_set_blob(
+    esp_err_t set_result = nvs_set_blob(
         diagnostics_nvs_handle,
         DIAGNOSTICS_NVS_KEY,
         &persistent,
         sizeof(persistent));
+    if (set_result == ESP_OK) {
+        diagnostics_persistent_state_v2_t legacy;
+        diagnostics_log_to_v2(&persistent, &legacy);
+        set_result = nvs_set_blob(diagnostics_nvs_handle, DIAGNOSTICS_NVS_LEGACY_KEY,
+                                 &legacy, sizeof(legacy));
+    }
     const esp_err_t commit_result =
         set_result == ESP_OK ? nvs_commit(diagnostics_nvs_handle) : set_result;
     if (commit_result != ESP_OK) {
@@ -122,98 +93,41 @@ static void save_persistent_locked(void)
     }
 }
 
-static bool persistent_state_header_valid(
-    uint32_t magic,
-    uint32_t version,
-    uint32_t next_sequence,
-    uint32_t event_head,
-    uint32_t event_count,
-    uint32_t expected_version)
+static bool load_log_blob(const char *key, diagnostics_persistent_state_t *state)
 {
-    return magic == DIAGNOSTICS_PERSISTENT_MAGIC &&
-        version == expected_version &&
-        next_sequence != 0U &&
-        event_head < DIAGNOSTICS_FAULT_LOG_CAPACITY &&
-        event_count <= DIAGNOSTICS_FAULT_LOG_CAPACITY;
+    uint8_t data[sizeof(diagnostics_persistent_state_t)];
+    size_t size = sizeof(data);
+    return nvs_get_blob(diagnostics_nvs_handle, key, data, &size) == ESP_OK &&
+        diagnostics_log_decode(data, size, state);
 }
 
 static bool load_persistent_state(void)
 {
-    size_t stored_size = 0U;
-    esp_err_t result = nvs_get_blob(
-        diagnostics_nvs_handle, DIAGNOSTICS_NVS_KEY, NULL, &stored_size);
-    if (result != ESP_OK) {
-        return false;
+    const bool current_loaded = load_log_blob(DIAGNOSTICS_NVS_KEY, &persistent);
+    diagnostics_persistent_state_t legacy;
+    const bool legacy_loaded = load_log_blob(DIAGNOSTICS_NVS_LEGACY_KEY, &legacy);
+    if (current_loaded) {
+        if (legacy_loaded) diagnostics_log_reconcile(&persistent, &legacy);
+        return true;
     }
-
-    if (stored_size == sizeof(persistent)) {
-        diagnostics_persistent_state_t stored = {0};
-        result = nvs_get_blob(
-            diagnostics_nvs_handle,
-            DIAGNOSTICS_NVS_KEY,
-            &stored,
-            &stored_size);
-        if (result == ESP_OK && persistent_state_header_valid(
-                stored.magic,
-                stored.version,
-                stored.next_sequence,
-                stored.event_head,
-                stored.event_count,
-                DIAGNOSTICS_PERSISTENT_VERSION)) {
-            persistent = stored;
-            return true;
-        }
-        return false;
+    if (legacy_loaded) {
+        persistent = legacy;
+        return true;
     }
-
-    if (stored_size != sizeof(diagnostics_persistent_state_v1_t)) {
-        return false;
-    }
-    diagnostics_persistent_state_v1_t legacy = {0};
-    result = nvs_get_blob(
-        diagnostics_nvs_handle,
-        DIAGNOSTICS_NVS_KEY,
-        &legacy,
-        &stored_size);
-    if (result != ESP_OK || !persistent_state_header_valid(
-            legacy.magic,
-            legacy.version,
-            legacy.next_sequence,
-            legacy.event_head,
-            legacy.event_count,
-            DIAGNOSTICS_PERSISTENT_VERSION_LEGACY_32_BIT_TIME)) {
-        return false;
-    }
-
-    memset(&persistent, 0, sizeof(persistent));
-    persistent.magic = legacy.magic;
-    persistent.version = DIAGNOSTICS_PERSISTENT_VERSION;
-    persistent.boot_count = legacy.boot_count;
-    persistent.next_sequence = legacy.next_sequence;
-    persistent.event_head = legacy.event_head;
-    persistent.event_count = legacy.event_count;
-    persistent.last_ota_result = legacy.last_ota_result;
-    for (size_t index = 0; index < DIAGNOSTICS_FAULT_LOG_CAPACITY; ++index) {
-        persistent.events[index] = (diagnostics_fault_event_t){
-            .sequence = legacy.events[index].sequence,
-            .boot_count = legacy.events[index].boot_count,
-            .uptime_ms = legacy.events[index].uptime_ms,
-            .type = legacy.events[index].type,
-            .code = legacy.events[index].code,
-        };
-    }
-    ESP_LOGI(TAG, "migrated persistent diagnostics to 64-bit timestamps");
-    return true;
+    return false;
 }
 
 static void record_event_locked(diagnostics_event_type_t type, int code)
 {
+    const clock_stamp_t stamp = clock_service_stamp(uptime_ms());
     diagnostics_fault_event_t *event =
         &persistent.events[persistent.event_head];
     *event = (diagnostics_fault_event_t){
         .sequence = persistent.next_sequence,
         .boot_count = persistent.boot_count,
-        .uptime_ms = uptime_ms(),
+        .uptime_ms = stamp.uptime_ms,
+        .utc_unix_ms = stamp.unix_ms,
+        .clock_quality = (uint8_t)stamp.quality,
         .type = (uint16_t)type,
         .code = (int16_t)code,
     };
