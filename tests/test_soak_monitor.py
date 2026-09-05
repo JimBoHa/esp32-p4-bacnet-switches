@@ -62,6 +62,17 @@ def healthy_values() -> tuple[dict[str, object], dict[str, object], dict[str, ob
             "restart_required": False,
             "trial_active": False,
         },
+        "discovery": {
+            "mdns_ready": True,
+            "hostname": "esp32-p4-bacnet",
+            "local_fqdn": "esp32-p4-bacnet.local",
+            "hostname_conflict_count": 0,
+            "last_error": {"code": 0, "name": "ESP_OK"},
+            "services": {
+                "https": {"advertised": True, "port": 443},
+                "bacnet": {"advertised": True, "port": 47808},
+            },
+        },
         "bacnet": {
             "rx": 100,
             "responses": 95,
@@ -185,6 +196,28 @@ class SoakMonitorTests(unittest.TestCase):
             maximum_temperature_c=85.0,
         )
         self.assertIn("gpio-signal-missing:22", alerts)
+
+    def test_mdns_discovery_alerts(self) -> None:
+        status, config, network_config = healthy_values()
+        baseline = soak_monitor.Baseline.from_values(status, config, network_config)
+        missing = json.loads(json.dumps(status))
+        del missing["discovery"]
+        alerts = soak_monitor.evaluate_sample(
+            baseline,
+            None,
+            missing,
+            config,
+            network_config,
+            {
+                "device_instance": 599152,
+                "vendor_identifier": 999,
+                "max_apdu": 1476,
+                "segmentation": 3,
+            },
+            minimum_heap_bytes=1024,
+            maximum_temperature_c=85.0,
+        )
+        self.assertIn("mdns-discovery-missing", alerts)
 
     def test_reboot_config_network_and_resource_changes_alert(self) -> None:
         status, config, network_config = healthy_values()
