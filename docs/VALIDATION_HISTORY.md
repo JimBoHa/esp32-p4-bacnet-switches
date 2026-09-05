@@ -13,7 +13,8 @@ application descriptor's `image_sha256`, not the whole `.bin` file SHA-256.
 
 ## 2026-09-05 — reproducible testing handoff (host-only)
 
-- Change tree based on `00bebb7ad59c44ef5d50305b0ba839c6e431dec3`; new host
+- [PR #36](https://github.com/JimBoHa/esp32-p4-bacnet-switches/pull/36), change
+  tree based on `00bebb7ad59c44ef5d50305b0ba839c6e431dec3`; new host
   runner, GET-only verifier, 17 regression tests, agent/PR instructions and
   this evidence ledger. Final clean-head/main SHAs and CI links are recorded
   in the associated PR, separately from this pre-commit acceptance record.

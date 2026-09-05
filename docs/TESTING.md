@@ -10,9 +10,11 @@ are not a substitute for testing the revision you change.
 `tests/`, the Python tools, this runbook, validation history, and PR instructions
 run on a workstation or GitHub Actions. They are not added to the ESP-IDF
 component sources, embedded assets, startup tasks, polling loops, or flash
-partitions. Adding or running these checks does not add ESP32 CPU, RAM, or flash
-overhead. The C tests compile selected production modules into separate host
-executables; they do not install a test framework on the board.
+partitions. No test code, persistent background load or storage is added to
+the firmware. The host suite never contacts the board. Optional live checks
+below generate ordinary network requests and must respect the device's load
+and maintenance limits. The C tests compile selected production modules into
+separate host executables; they do not install a test framework on the board.
 
 Do not flash, reboot, bump the firmware version, or restart an endurance run
 just because host tests or documentation changed. GitHub HEAD can legitimately
