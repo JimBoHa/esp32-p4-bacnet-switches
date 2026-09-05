@@ -154,6 +154,7 @@ typedef struct {
     const uint8_t *apdu;
     size_t apdu_length;
     bool routed_source;
+    bool global_broadcast_destination;
 } application_npdu_t;
 
 typedef struct {
@@ -1565,6 +1566,8 @@ static npdu_parse_status_t parse_application_npdu(
     uint16_t destination_network = 0;
     uint8_t destination_length = 0;
 
+    npdu->global_broadcast_destination = false;
+
     if ((control & BACNET_NPDU_RESERVED_BITS) != 0U) {
         return NPDU_PARSE_MALFORMED;
     }
@@ -1587,6 +1590,8 @@ static npdu_parse_status_t parse_application_npdu(
             return NPDU_PARSE_MALFORMED;
         }
         offset += destination_length;
+        npdu->global_broadcast_destination =
+            destination_network == BACNET_GLOBAL_NETWORK;
     }
 
     npdu->routed_source =
@@ -1677,9 +1682,14 @@ bacnet_packet_result_t bacnet_handle_packet(
         if (!has_limits ||
             (low_limit <= state->device_instance &&
              state->device_instance <= high_limit)) {
-            result.broadcast_response = true;
+            result.broadcast_response =
+                frame[1] == BACNET_BVLC_ORIGINAL_BROADCAST_NPDU ||
+                npdu.global_broadcast_destination;
             result.response_length = bacnet_encode_i_am(
-                state, true, response, response_capacity);
+                state,
+                result.broadcast_response,
+                response,
+                response_capacity);
         }
         return result;
     }
