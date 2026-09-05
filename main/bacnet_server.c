@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "bacnet_codec.h"
+#include "config_store.h"
 #include "cov_retry_cache.h"
 #include "diagnostics.h"
 #include "esp_app_desc.h"
@@ -111,6 +112,7 @@ static portMUX_TYPE server_lock = portMUX_INITIALIZER_UNLOCKED;
 static cov_subscription_t cov_subscriptions[BACNET_MAX_COV_SUBSCRIPTIONS];
 static uint8_t next_cov_invoke_id = 1U;
 static char application_software_version[64];
+static firmware_config_t bacnet_config;
 
 static void snapshot_device_state(bacnet_device_state_t *state)
 {
@@ -124,25 +126,26 @@ static void snapshot_device_state(bacnet_device_state_t *state)
         app != NULL ? app->version : "unknown",
         diagnostics_git_revision());
     *state = (bacnet_device_state_t){
-        .device_instance = CONFIG_BACNET_DEVICE_INSTANCE,
-        .vendor_identifier = CONFIG_BACNET_VENDOR_IDENTIFIER,
-        .device_name = CONFIG_BACNET_DEVICE_NAME,
-        .vendor_name = CONFIG_BACNET_VENDOR_NAME,
+        .device_instance = bacnet_config.device_instance,
+        .vendor_identifier = bacnet_config.vendor_identifier,
+        .device_name = bacnet_config.device_name,
+        .vendor_name = bacnet_config.vendor_name,
         .model_name = "Waveshare ESP32-P4-POE-ETH",
         .firmware_revision = app != NULL ? app->version : "unknown",
         .application_software_version = application_software_version,
         .description =
             "Read-only BACnet/IP Device exposing three physical toggle inputs",
-        .database_revision = 3,
+        .location = bacnet_config.location,
+        .database_revision = bacnet_config.database_revision,
         .binary_input_instances = {
-            CONFIG_TOGGLE_INPUT_1_OBJECT_INSTANCE,
-            CONFIG_TOGGLE_INPUT_2_OBJECT_INSTANCE,
-            CONFIG_TOGGLE_INPUT_3_OBJECT_INSTANCE,
+            bacnet_config.input_instances[0],
+            bacnet_config.input_instances[1],
+            bacnet_config.input_instances[2],
         },
         .binary_input_names = {
-            CONFIG_TOGGLE_INPUT_1_NAME,
-            CONFIG_TOGGLE_INPUT_2_NAME,
-            CONFIG_TOGGLE_INPUT_3_NAME,
+            bacnet_config.input_names[0],
+            bacnet_config.input_names[1],
+            bacnet_config.input_names[2],
         },
         .binary_input_descriptions = {
             INPUT_DESCRIPTIONS[0],
@@ -589,7 +592,7 @@ static bool broadcast_destination(
 
     *destination = (struct sockaddr_in){
         .sin_family = AF_INET,
-        .sin_port = htons(CONFIG_BACNET_UDP_PORT),
+        .sin_port = htons(bacnet_config.bacnet_port),
         .sin_addr.s_addr =
             (ip_info.ip.addr & ip_info.netmask.addr) | ~ip_info.netmask.addr,
     };
@@ -628,7 +631,7 @@ static void send_i_am_broadcast(int socket_fd, esp_netif_t *netif)
         TAG,
         "announced Device %u on UDP port %u",
         (unsigned)state.device_instance,
-        (unsigned)CONFIG_BACNET_UDP_PORT);
+        (unsigned)bacnet_config.bacnet_port);
 }
 
 static int open_bacnet_socket(void)
@@ -657,7 +660,7 @@ static int open_bacnet_socket(void)
 
     const struct sockaddr_in bind_address = {
         .sin_family = AF_INET,
-        .sin_port = htons(CONFIG_BACNET_UDP_PORT),
+        .sin_port = htons(bacnet_config.bacnet_port),
         .sin_addr.s_addr = htonl(INADDR_ANY),
     };
     if (bind(
@@ -667,7 +670,7 @@ static int open_bacnet_socket(void)
         ESP_LOGE(
             TAG,
             "bind to UDP %u failed: errno %d",
-            (unsigned)CONFIG_BACNET_UDP_PORT,
+            (unsigned)bacnet_config.bacnet_port,
             errno);
         close(socket_fd);
         return -1;
@@ -839,15 +842,17 @@ bool bacnet_server_ready(void)
 esp_err_t bacnet_server_start(esp_netif_t *netif)
 {
     ESP_RETURN_ON_FALSE(netif != NULL, ESP_ERR_INVALID_ARG, TAG, "netif is null");
+    config_store_get_active(&bacnet_config);
     ESP_RETURN_ON_FALSE(
-        CONFIG_BACNET_DEVICE_INSTANCE < BACNET_MAX_INSTANCE,
+        config_model_is_valid_blob(&bacnet_config) &&
+            bacnet_config.device_instance < BACNET_MAX_INSTANCE,
         ESP_ERR_INVALID_ARG,
         TAG,
         "invalid BACnet Device instance");
     const uint32_t input_instances[BACNET_BINARY_INPUT_COUNT] = {
-        CONFIG_TOGGLE_INPUT_1_OBJECT_INSTANCE,
-        CONFIG_TOGGLE_INPUT_2_OBJECT_INSTANCE,
-        CONFIG_TOGGLE_INPUT_3_OBJECT_INSTANCE,
+        bacnet_config.input_instances[0],
+        bacnet_config.input_instances[1],
+        bacnet_config.input_instances[2],
     };
     for (size_t index = 0; index < BACNET_BINARY_INPUT_COUNT; ++index) {
         ESP_RETURN_ON_FALSE(

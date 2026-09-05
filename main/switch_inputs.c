@@ -31,11 +31,12 @@ static const gpio_num_t INPUT_GPIOS[SWITCH_INPUT_COUNT] = {
     (gpio_num_t)CONFIG_TOGGLE_INPUT_2_GPIO,
     (gpio_num_t)CONFIG_TOGGLE_INPUT_3_GPIO,
 };
-static const bool INPUT_ACTIVE_LOW[SWITCH_INPUT_COUNT] = {
-    CONFIG_TOGGLE_INPUT_1_ACTIVE_LOW,
-    CONFIG_TOGGLE_INPUT_2_ACTIVE_LOW,
-    CONFIG_TOGGLE_INPUT_3_ACTIVE_LOW,
-};
+static bool input_active_low[SWITCH_INPUT_COUNT];
+static uint32_t input_debounce_ms;
+
+_Static_assert(
+    SWITCH_INPUT_COUNT == FIRMWARE_CONFIG_INPUT_COUNT,
+    "switch/config input counts must match");
 
 static atomic_uint_fast32_t stable_input_bits;
 static atomic_uint_fast32_t input_fault_bits;
@@ -109,7 +110,7 @@ static uint32_t read_input_bits(void)
 
     for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
         const bool raw = gpio_get_level(INPUT_GPIOS[index]) != 0;
-        const bool active = raw != INPUT_ACTIVE_LOW[index];
+        const bool active = raw != input_active_low[index];
         if (active) {
             bits |= (1U << index);
         }
@@ -179,10 +180,10 @@ static void switch_poll_task(void *argument)
                 continue;
             }
 
-            if (candidate_time_ms[index] < CONFIG_TOGGLE_DEBOUNCE_MS) {
+            if (candidate_time_ms[index] < input_debounce_ms) {
                 candidate_time_ms[index] += INPUT_POLL_MS;
             }
-            if (candidate_time_ms[index] >= CONFIG_TOGGLE_DEBOUNCE_MS) {
+            if (candidate_time_ms[index] >= input_debounce_ms) {
                 stable[index] = sampled;
                 candidate_time_ms[index] = 0;
                 store_input(index, stable[index]);
@@ -202,8 +203,18 @@ static void switch_poll_task(void *argument)
     }
 }
 
-void switch_inputs_init(void)
+void switch_inputs_init(const firmware_config_t *config)
 {
+    if (config == NULL || !config_model_is_valid_blob(config)) {
+        ESP_LOGE(TAG, "cannot initialize inputs from invalid configuration");
+        abort();
+    }
+    input_debounce_ms = config->debounce_ms;
+    for (size_t index = 0U; index < SWITCH_INPUT_COUNT; ++index) {
+        input_active_low[index] =
+            (config->input_active_low_mask & (1U << index)) != 0U;
+    }
+
     uint64_t pin_bit_mask = 0;
 
     for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
@@ -246,14 +257,14 @@ void switch_inputs_init(void)
             gpio_get_level(INPUT_GPIOS[index]) != 0;
     }
 
-    const gpio_config_t config = {
+    const gpio_config_t gpio_configuration = {
         .pin_bit_mask = pin_bit_mask,
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_ENABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
-    ESP_ERROR_CHECK(gpio_config(&config));
+    ESP_ERROR_CHECK(gpio_config(&gpio_configuration));
 
     /* Repeat the safety-critical settings through public APIs. ESP-IDF 5.5
        fixed the output-disable path used by gpio_set_direction() so
@@ -309,7 +320,7 @@ bool switch_input_faulted(size_t index)
 
 bool switch_input_active_low(size_t index)
 {
-    return index < SWITCH_INPUT_COUNT && INPUT_ACTIVE_LOW[index];
+    return index < SWITCH_INPUT_COUNT && input_active_low[index];
 }
 
 typedef struct {
@@ -419,8 +430,8 @@ bool switch_input_diagnostics_get(
 
     *diagnostics = (switch_input_diagnostics_t){
         .gpio = (int)INPUT_GPIOS[index],
-        .active_low = INPUT_ACTIVE_LOW[index],
-        .debounce_ms = CONFIG_TOGGLE_DEBOUNCE_MS,
+        .active_low = input_active_low[index],
+        .debounce_ms = input_debounce_ms,
         .startup_config = startup_pad_configs[index],
         .startup_raw_after_input_enable = startup_raw_levels[index],
         .configured_config = configured_pad_configs[index],

@@ -15,6 +15,7 @@ set(private_dependencies
     lwip
     mbedtls
     nvs_flash
+    json
 )
 
 if(DEFINED IDF_VERSION_MAJOR AND IDF_VERSION_MAJOR GREATER_EQUAL 6)
@@ -63,6 +64,8 @@ idf_component_register(
         "app_main.c"
         "bacnet_codec.c"
         "bacnet_server.c"
+        "config_model.c"
+        "config_store.c"
         "cov_retry_cache.c"
         "diagnostics.c"
         "diagnostics_time.c"

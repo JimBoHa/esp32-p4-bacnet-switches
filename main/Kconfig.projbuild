@@ -1,5 +1,7 @@
 menu "BACnet toggle input configuration"
 
+    comment "These values are factory defaults; authenticated /config settings override them after first boot"
+
     config BACNET_DEVICE_INSTANCE
         int "BACnet Device object instance"
         range 0 4194302

@@ -8,6 +8,7 @@ add_executable(
     bacnet_codec_tests
     test_bacnet_codec.c
     ../main/bacnet_codec.c
+    ../main/config_model.c
     ../main/cov_retry_cache.c
     ../main/diagnostics_time.c
     ../main/input_line_classifier.c
