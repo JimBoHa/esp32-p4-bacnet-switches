@@ -319,6 +319,10 @@ def firmware_diagnostics_valid(status: dict[str, Any]) -> bool:
         and ota_policy.get("upload_deadline_seconds") == 300
         and ota_policy.get("required_content_type")
         == "application/octet-stream"
+        and ota_policy.get("signature_required") is True
+        and ota_policy.get("signature_scheme") == "rsa-pss-3072-sha256"
+        and isinstance(ota_policy.get("signing_key_sha256"), str)
+        and re.fullmatch(r"[0-9a-f]{64}", ota_policy["signing_key_sha256"]) is not None
         and ota_policy.get("minimum_secure_version")
         == firmware.get("secure_version")
     )
@@ -398,6 +402,8 @@ def security_recovery_posture_valid(status: dict[str, Any]) -> bool:
         "viewer_admin_separation": True,
         "mutations_require_admin": True,
         "tls_private_key_embedded": True,
+        "software_signature_verification": True,
+        "signing_private_key_embedded": False,
         "secure_boot_enabled": False,
         "flash_encryption_enabled": False,
         "application_anti_rollback_enabled": False,

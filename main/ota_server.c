@@ -25,6 +25,7 @@
 #include "esp_ota_ops.h"
 #include "esp_partition.h"
 #include "esp_random.h"
+#include "esp_secure_boot.h"
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -92,6 +93,7 @@ static atomic_bool server_ready;
 static char bearer_token[OTA_TOKEN_MAX_LENGTH + 1U];
 static char viewer_token[OTA_TOKEN_MAX_LENGTH + 1U];
 static char running_image_sha256[OTA_SHA256_HEX_BYTES + 1U];
+static char running_signing_key_sha256[OTA_SHA256_HEX_BYTES + 1U];
 
 static bool load_embedded_token(void)
 {
@@ -186,6 +188,13 @@ static esp_err_t cache_running_image_sha256(void)
         TAG,
         "running firmware image hash validation failed");
     sha256_to_hex(digest, running_image_sha256);
+    esp_image_sig_public_key_digests_t signing_keys = {0};
+    ESP_RETURN_ON_ERROR(
+        esp_secure_boot_get_signature_blocks_for_running_app(true, &signing_keys),
+        TAG, "running app signature key unavailable");
+    ESP_RETURN_ON_FALSE(signing_keys.num_digests == 1U, ESP_ERR_INVALID_STATE,
+                        TAG, "exactly one signing key required");
+    sha256_to_hex(signing_keys.key_digests[0], running_signing_key_sha256);
     return ESP_OK;
 }
 
@@ -1471,10 +1480,13 @@ static esp_err_t send_status_json(httpd_req_t *request, bool report)
             "\"maximum_image_bytes\":%u,"
             "\"upload_deadline_seconds\":%u,"
             "\"required_content_type\":\"application/octet-stream\","
+            "\"signature_required\":true,\"signature_scheme\":\"rsa-pss-3072-sha256\","
+            "\"signing_key_sha256\":\"%s\","
             "\"minimum_secure_version\":%u},",
             (unsigned)OTA_MINIMUM_IMAGE_BYTES,
             next_update != NULL ? (unsigned)next_update->size : 0U,
             (unsigned)(OTA_RECEIVE_DEADLINE_US / 1000000LL),
+            running_signing_key_sha256,
             app != NULL ? (unsigned)app->secure_version : 0U)) {
         goto encoding_failed;
     }
@@ -1486,6 +1498,8 @@ static esp_err_t send_status_json(httpd_req_t *request, bool report)
             "\"bearer_authentication\":true,"
             "\"viewer_admin_separation\":true,\"mutations_require_admin\":true,"
             "\"tls_private_key_embedded\":true,"
+            "\"software_signature_verification\":true,"
+            "\"signing_private_key_embedded\":false,"
             "\"secure_boot_enabled\":%s,"
             "\"flash_encryption_enabled\":%s,"
             "\"application_anti_rollback_enabled\":%s},"

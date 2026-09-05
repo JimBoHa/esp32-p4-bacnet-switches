@@ -39,7 +39,12 @@ not make a copied bearer token safe.
 
 The server validates the certificate/key pair at startup and OTA uploads by
 authentication, media type, size, whole-transfer deadline, ESP image structure,
-project identity, secure version, inactive-slot destination, and boot selection.
+project identity, RSA-PSS-3072/SHA-256 signature, secure version, inactive-slot
+destination, and boot selection. ESP-IDF software verification uses the first
+signing key from the current signed app. The client independently verifies the
+signature against `main/ota_signing_public_key.pem` before uploading and confirms
+the enforcing policy and key digest after reboot. Unsigned or wrong-key OTA
+images cannot be installed through an enforcing device's OTA API.
 A candidate remains pending until Ethernet, IP, HTTPS, BACnet, and both watched
 tasks are healthy for five consecutive samples. Failure or a task-watchdog panic
 reboots and lets the bootloader return to the known-good slot.
@@ -50,9 +55,17 @@ mode 0600. Never pass a token on a command
 line, in chat, an issue, a CI secret, or a commit. The public certificate in
 `main/ota_server_cert.pem` is intentionally tracked and is not secret.
 
+The independent `secrets/firmware_signing_key.pem` (RSA-3072, mode 0600) must stay
+host-only. Never embed it, pass its contents on a command line, or place it in CI.
+Keep a separate approved/offline backup. Losing it requires physical recovery;
+this single-key workflow does not support remote key rotation. A stolen signing
+key is firmware-authoring authority; HTTPS admin authentication is still required.
+Serial recovery remains available. Permission-restricted backups are not encrypted.
+
 OTA-enabled binaries contain the TLS private key and both bearer tokens. Treat every
 application, merged recovery, ELF, core dump, and release bundle as secret.
-CI therefore builds only the OTA-disabled configuration and publishes no
+CI signs with a disposable test key, never the production signing key. It
+builds only the OTA-disabled configuration and publishes no
 firmware artifact. `tools/package_release.py` writes only to a mode-0700 private
 directory and creates mode-0600 files.
 

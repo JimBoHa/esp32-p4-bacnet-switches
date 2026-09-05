@@ -122,6 +122,7 @@ assert.equal(element("overallHealth").textContent, "Not connected");
 const healthyStatus = {
   state: "valid",
   access_role: "viewer",
+  security: {software_signature_verification: true},
   clock: {utc_unix_ms: 1577836800000, clock_quality: "synchronized",
           configured_server: "site.ntp", sync_count: 1, rejected_sync_count: 0},
   version: "1.20.0",
@@ -163,6 +164,7 @@ await flush();
 assert.equal(element("dashboard").hidden, false);
 assert.equal(element("overallHealth").textContent, "Healthy");
 assert.match(element("connectionStatus").textContent, /Authenticated as viewer/);
+assert.match(element("signaturePolicy").textContent, /Signed OTA required/);
 assert.equal(element("inputHistoryRows").children.length, 2);
 assert.equal(element("inputHistoryRows").children[0].children[0].textContent, "2");
 assert.equal(element("inputHistoryRows").children[0].children[6].textContent, "20 ms");

@@ -176,6 +176,10 @@ def _arguments() -> argparse.Namespace:
         "--token-file", type=Path, default=ota_client.DEFAULT_TOKEN_FILE
     )
     parser.add_argument("--firmware", type=Path, default=DEFAULT_FIRMWARE)
+    parser.add_argument("--wrong-key-firmware", type=Path,
+                        help="optional valid SBv2 image signed with a disposable untrusted key")
+    parser.add_argument("--wrong-key-public-key", type=Path,
+                        help="disposable public key proving the wrong-key image is correctly signed")
     parser.add_argument("--timeout", type=float, default=10.0)
     parser.add_argument("--settle-timeout", type=float, default=30.0)
     parser.add_argument(
@@ -199,12 +203,25 @@ def run(args: argparse.Namespace) -> int:
 
     token = ota_client._read_token(args.token_file)
     metadata = ota_client._inspect_firmware(args.firmware)
+    wrong_key_path = getattr(args, "wrong_key_firmware", None)
+    wrong_key_public = getattr(args, "wrong_key_public_key", None)
+    if bool(wrong_key_path) != bool(wrong_key_public):
+        raise ValueError("both wrong-key firmware and its public key are required")
+    wrong_key = ota_client._inspect_firmware(
+        wrong_key_path, wrong_key_public, require_signature=True,
+    ) if wrong_key_path is not None else None
     baseline = ota_client._fetch_status(
         args.host, args.port, args.cert, args.timeout, token
     )
     baseline_identity = _identity(baseline)
     if baseline.get("state") != "valid" or baseline.get("project") != metadata.project:
         raise ValueError("device is not a validated member of the firmware project")
+    if wrong_key is not None and (
+        not metadata.signed or wrong_key.project != metadata.project
+        or wrong_key.signing_key_sha256 == metadata.signing_key_sha256
+        or baseline.get("ota_policy", {}).get("signing_key_sha256") != metadata.signing_key_sha256
+    ):
+        raise ValueError("wrong-key tests require signature enforcement and an independently signed project image")
 
     print(
         "WARNING: rejection tests overwrite only the inactive OTA slot; "
@@ -278,9 +295,25 @@ def run(args: argparse.Namespace) -> int:
     _wait_for_unchanged(args, token, baseline_identity)
     print("[PASS] interrupted firmware upload: running image unchanged")
 
-    wrong_project_image = _rewrite_project(metadata.image, "wrong_project")
+    if metadata.signed:
+        import struct
+        import zlib
+        tampered = bytearray(metadata.image)
+        offset = len(tampered) - 4096
+        tampered[offset + 812] ^= 1  # Only signature changes; image hash remains valid.
+        struct.pack_into("<I", tampered, offset + 1196, zlib.crc32(tampered[offset:offset + 1196]))
+        cases = [("unsigned image", metadata.image[:metadata.unsigned_size]),
+                 ("tampered signature with valid block CRC", bytes(tampered))]
+        if wrong_key is not None:
+            cases.append(("cryptographically valid but untrusted signing key", wrong_key.image))
+        for name, body in cases:
+            _expect_rejection(name, 400, lambda body=body: _post(
+                **{**common, "body": body, "content_length": len(body)}))
+            _wait_for_unchanged(args, token, baseline_identity)
+
+    wrong_project_image = _rewrite_project(metadata.image[:metadata.unsigned_size], "wrong_project")
     _expect_rejection(
-        "valid image for wrong project",
+        "wrong-project ESP image (unsigned)",
         400,
         lambda: _post(
             **{
