@@ -34,7 +34,7 @@ def args(**overrides: object) -> argparse.Namespace:
 class BacnetHilTests(unittest.TestCase):
     def test_expected_object_map_preserves_indexes(self) -> None:
         objects = bacnet_hil_test.expected_object_identifiers(599152)
-        self.assertEqual(len(objects), 17)
+        self.assertEqual(len(objects), 18)
         self.assertEqual(
             objects[:4],
             [
@@ -45,9 +45,10 @@ class BacnetHilTests(unittest.TestCase):
             ],
         )
         self.assertEqual(
-            objects[14:],
+            objects[14:17],
             ["network-port,1", "binary-input,1001", "binary-input,1002"],
         )
+        self.assertEqual(objects[17], "analog-value,1010")
 
     def test_network_and_identity_validation(self) -> None:
         bacnet_hil_test.validate_args(args())
