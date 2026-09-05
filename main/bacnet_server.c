@@ -54,7 +54,7 @@ static const char *const INPUT_DESCRIPTIONS[BACNET_BINARY_INPUT_COUNT] = {
     "Ethernet interface has an IPv4 address",
 };
 static const uint32_t ANALOG_VALUE_INSTANCES[BACNET_ANALOG_VALUE_COUNT] = {
-    1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009,
+    1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010,
 };
 static const char *const ANALOG_VALUE_NAMES[BACNET_ANALOG_VALUE_COUNT] = {
     "Chip Temperature",
@@ -67,6 +67,7 @@ static const char *const ANALOG_VALUE_NAMES[BACNET_ANALOG_VALUE_COUNT] = {
     "BACnet Protocol Errors",
     "Last Reset Reason",
     "Active COV Subscriptions",
+    "Boot Count",
 };
 static const char *const ANALOG_VALUE_DESCRIPTIONS[
     BACNET_ANALOG_VALUE_COUNT] = {
@@ -80,10 +81,12 @@ static const char *const ANALOG_VALUE_DESCRIPTIONS[
     "Malformed, rejected, aborted, or error BACnet transactions",
     "Numeric ESP-IDF reset reason for the current boot",
     "Currently active BACnet COV subscriptions",
+    "Persistent successful-start count including the current boot",
 };
 static const uint32_t ANALOG_VALUE_UNITS[BACNET_ANALOG_VALUE_COUNT] = {
     BACNET_UNITS_DEGREES_CELSIUS,
     BACNET_UNITS_SECONDS,
+    BACNET_UNITS_NO_UNITS,
     BACNET_UNITS_NO_UNITS,
     BACNET_UNITS_NO_UNITS,
     BACNET_UNITS_NO_UNITS,
@@ -206,6 +209,7 @@ static void snapshot_device_state(bacnet_device_state_t *state)
             ANALOG_VALUE_INSTANCES[7],
             ANALOG_VALUE_INSTANCES[8],
             ANALOG_VALUE_INSTANCES[9],
+            ANALOG_VALUE_INSTANCES[10],
         },
         .analog_value_names = {
             ANALOG_VALUE_NAMES[0],
@@ -218,6 +222,7 @@ static void snapshot_device_state(bacnet_device_state_t *state)
             ANALOG_VALUE_NAMES[7],
             ANALOG_VALUE_NAMES[8],
             ANALOG_VALUE_NAMES[9],
+            ANALOG_VALUE_NAMES[10],
         },
         .analog_value_descriptions = {
             ANALOG_VALUE_DESCRIPTIONS[0],
@@ -230,6 +235,7 @@ static void snapshot_device_state(bacnet_device_state_t *state)
             ANALOG_VALUE_DESCRIPTIONS[7],
             ANALOG_VALUE_DESCRIPTIONS[8],
             ANALOG_VALUE_DESCRIPTIONS[9],
+            ANALOG_VALUE_DESCRIPTIONS[10],
         },
         .analog_value_values = {
             diagnostics_valid ? diagnostics.chip_temperature_c : 0.0F,
@@ -255,6 +261,7 @@ static void snapshot_device_state(bacnet_device_state_t *state)
             diagnostics_valid
                 ? (float)diagnostics.active_cov_subscriptions
                 : 0.0F,
+            diagnostics_valid ? (float)diagnostics.boot_count : 0.0F,
         },
         .analog_value_units = {
             ANALOG_VALUE_UNITS[0],
@@ -267,9 +274,13 @@ static void snapshot_device_state(bacnet_device_state_t *state)
             ANALOG_VALUE_UNITS[7],
             ANALOG_VALUE_UNITS[8],
             ANALOG_VALUE_UNITS[9],
+            ANALOG_VALUE_UNITS[10],
         },
         .analog_value_reliability = {
             diagnostics_valid && diagnostics.chip_temperature_valid
+                ? BACNET_RELIABILITY_NO_FAULT
+                : BACNET_RELIABILITY_UNRELIABLE_OTHER,
+            diagnostics_valid
                 ? BACNET_RELIABILITY_NO_FAULT
                 : BACNET_RELIABILITY_UNRELIABLE_OTHER,
             diagnostics_valid
