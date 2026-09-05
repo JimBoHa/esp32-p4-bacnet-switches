@@ -329,6 +329,26 @@ def evaluate_sample(
     if network.get("speed_mbps") not in {10, 100}:
         alerts.append(f"network-speed-invalid:{network.get('speed_mbps')!r}")
 
+    discovery = status.get("discovery")
+    expected_hostname = network_config.get("hostname")
+    expected_bacnet_port = config.get("bacnet_port")
+    if not isinstance(discovery, dict):
+        alerts.append("mdns-discovery-missing")
+    else:
+        services = discovery.get("services")
+        if (
+            discovery.get("mdns_ready") is not True
+            or discovery.get("hostname") != expected_hostname
+            or discovery.get("local_fqdn") != f"{expected_hostname}.local"
+            or discovery.get("hostname_conflict_count") != 0
+            or discovery.get("last_error") != {"code": 0, "name": "ESP_OK"}
+            or not isinstance(services, dict)
+            or services.get("https") != {"advertised": True, "port": 443}
+            or services.get("bacnet")
+            != {"advertised": True, "port": expected_bacnet_port}
+        ):
+            alerts.append("mdns-discovery-unhealthy")
+
     watchdog = system.get("task_watchdog", {})
     if not isinstance(watchdog, dict) or not watchdog:
         alerts.append("task-watchdog-missing")

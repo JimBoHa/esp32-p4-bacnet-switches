@@ -1,6 +1,8 @@
 dependencies:
   idf:
     version: ">=5.5.4"
+  espressif/mdns:
+    version: "1.12.0"
   espressif/ip101:
     version: "^1.0.0"
     rules:

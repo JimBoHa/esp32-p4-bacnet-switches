@@ -166,6 +166,11 @@ def validate_args(args: argparse.Namespace) -> None:
         r"[0-9a-fA-F]{64}", args.expected_image_sha256
     ):
         raise HilError("--expected-image-sha256 must contain 64 hexadecimal digits")
+    if args.mdns_hostname is not None and not re.fullmatch(
+        r"(?=.{1,63}$)[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?",
+        args.mdns_hostname,
+    ):
+        raise HilError("--mdns-hostname must be a 1-63 character RFC 1123 label")
     if args.token_file is not None and not args.certificate.is_file():
         raise HilError(f"pinned certificate not found: {args.certificate}")
     if args.token_file is not None and not args.token_file.is_file():
@@ -217,6 +222,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=project_root / "main" / "ota_server_cert.pem",
         help="pinned device certificate for HTTPS checks",
     )
+    parser.add_argument(
+        "--mdns-hostname",
+        help="enable raw mDNS/DNS-SD validation for this .local hostname",
+    )
     return parser
 
 
@@ -249,6 +258,9 @@ class HilRunner:
         self.app: Any = None
         self.objects: list[str] = []
         self.database_revision: int | None = None
+        self.device_name: str | None = None
+        self.vendor_identifier: int | None = None
+        self.firmware_version: str | None = None
 
     async def operation(self, name: str, awaitable: Awaitable[Any]) -> Any:
         started = time.monotonic()
@@ -324,6 +336,14 @@ class HilRunner:
         try:
             await self.test_discovery()
             await self.test_object_model()
+            if self.args.mdns_hostname is None:
+                self.report.add(
+                    "mDNS/DNS-SD discovery",
+                    "skip",
+                    "provide --mdns-hostname to enable the multicast discovery check",
+                )
+            else:
+                await asyncio.to_thread(self.test_mdns)
             await self.test_rpm()
             await self.test_who_has()
             await self.test_cov()
@@ -418,6 +438,9 @@ class HilRunner:
             )
         }
         self.database_revision = int(metadata["database-revision"])
+        self.device_name = str(metadata["object-name"])
+        self.vendor_identifier = int(metadata["vendor-identifier"])
+        self.firmware_version = str(metadata["firmware-revision"])
         strings_ok = all(
             str(metadata[prop]).strip()
             for prop in (
@@ -549,6 +572,47 @@ class HilRunner:
             len(names) == len(set(names)),
             f"all {len(names)} object names are unique",
             "one or more Object_Name values are duplicated",
+        )
+
+    def test_mdns(self) -> None:
+        try:
+            import mdns_probe
+        except ImportError as error:
+            raise HilError("tools/mdns_probe.py is unavailable") from error
+        if (
+            self.device_name is None
+            or self.vendor_identifier is None
+            or self.firmware_version is None
+        ):
+            raise HilError("BACnet identity metadata is unavailable for mDNS validation")
+        interface = str(ipaddress.ip_interface(self.args.local_address).ip)
+        started = time.monotonic()
+        try:
+            records = mdns_probe.probe(
+                interface,
+                self.args.mdns_hostname,
+                self.args.device_address,
+                self.device_name,
+                443,
+                self.args.bacnet_port,
+                self.args.device_instance,
+                self.vendor_identifier,
+                self.firmware_version,
+                self.args.timeout,
+            )
+        except (mdns_probe.MdnsProbeError, OSError) as error:
+            self.report.add(
+                "mDNS/DNS-SD discovery",
+                "fail",
+                str(error),
+                time.monotonic() - started,
+            )
+            raise HilError("mDNS/DNS-SD discovery failed") from error
+        self.report.add(
+            "mDNS/DNS-SD discovery",
+            "pass",
+            f"{self.args.mdns_hostname}.local and HTTPS/BACnet services verified ({len(records)} records)",
+            time.monotonic() - started,
         )
 
     async def test_rpm(self) -> None:
@@ -743,6 +807,7 @@ class HilRunner:
         network = status.get("network", {})
         system = status.get("system", {})
         configuration = status.get("configuration", {})
+        discovery = status.get("discovery", {})
         bacnet = status.get("bacnet", {})
         watchdog = system.get("task_watchdog", {}) if isinstance(system, dict) else {}
         gpio_diagnostics = status.get("gpio_diagnostics", [])
@@ -808,6 +873,27 @@ class HilRunner:
                 for item in watchdog.values()
             )
             and signal_diagnostics_ok
+            and (
+                self.args.mdns_hostname is None
+                or (
+                    isinstance(discovery, dict)
+                    and discovery.get("mdns_ready") is True
+                    and discovery.get("hostname") == self.args.mdns_hostname
+                    and discovery.get("local_fqdn")
+                    == f"{self.args.mdns_hostname}.local"
+                    and discovery.get("hostname_conflict_count") == 0
+                    and discovery.get("last_error")
+                    == {"code": 0, "name": "ESP_OK"}
+                    and discovery.get("services")
+                    == {
+                        "https": {"advertised": True, "port": 443},
+                        "bacnet": {
+                            "advertised": True,
+                            "port": self.args.bacnet_port,
+                        },
+                    }
+                )
+            )
         )
         self.report.require(
             "Authenticated HTTPS health",
@@ -892,6 +978,7 @@ def main(argv: list[str] | None = None) -> int:
             "expected_version": args.expected_version,
             "expected_source": args.expected_source,
             "expected_image_sha256": args.expected_image_sha256,
+            "mdns_hostname": args.mdns_hostname,
         },
     )
     exit_code = 0

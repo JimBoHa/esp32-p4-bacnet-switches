@@ -46,3 +46,16 @@ CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 # BACnet/IP owns one UDP socket and needs directed-broadcast transmission.
 CONFIG_LWIP_MAX_SOCKETS=10
 CONFIG_LWIP_SO_REUSE=y
+
+# Advertise only this Ethernet controller and its two implemented services.
+# Query, browse, Wi-Fi, and console surfaces are intentionally excluded.
+# mDNS 1.12.0 internally inspects two slots during duplicate detection.
+CONFIG_MDNS_MAX_INTERFACES=2
+CONFIG_MDNS_MAX_SERVICES=2
+CONFIG_MDNS_ACTION_QUEUE_LEN=8
+# CONFIG_MDNS_ENABLE_CONSOLE_CLI is not set
+# CONFIG_MDNS_ENABLE_BROWSE is not set
+# CONFIG_MDNS_MULTIPLE_INSTANCE is not set
+# CONFIG_MDNS_PREDEF_NETIF_STA is not set
+# CONFIG_MDNS_PREDEF_NETIF_AP is not set
+CONFIG_MDNS_PREDEF_NETIF_ETH=y

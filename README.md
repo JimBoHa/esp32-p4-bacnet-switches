@@ -13,6 +13,14 @@ instance **599152**, UDP port **47808** (`0xBAC0`). The device has most recently
 used `192.168.75.152`; a DHCP reservation remains the simplest way to keep its
 management address stable.
 
+The configured hostname is also advertised with mDNS. On the local subnet,
+`esp32-p4-bacnet.local` resolves to the controller and DNS-SD advertises
+`_bacnet._udp` on the configured BACnet port plus `_https._tcp` when the
+management server started successfully. TXT metadata contains only the public
+project/version, BACnet Device/Vendor identifiers, API path, and authentication
+method—never a bearer token or private key. mDNS is link-local convenience; it
+does not replace BACnet Who-Is/I-Am discovery or cross-VLAN routing/BBMDs.
+
 ## Wiring
 
 Each input is configured input-only with an internal pull-down. Open is
@@ -135,6 +143,7 @@ python3 tools/bacnet_hil_test.py \
   --local-address 192.168.75.191/24 \
   --device-address 192.168.75.152 \
   --device-instance 599152 \
+  --mdns-hostname esp32-p4-bacnet \
   --expect-inputs-off \
   --token-file secrets/ota_token.txt \
   --report hardware-report.json
@@ -144,6 +153,17 @@ The report contains no bearer token or private key. The suite never drives a
 GPIO or changes device configuration. Release validation should also provide
 `--expected-version`, `--expected-source`, and `--expected-image-sha256` from
 the exact OTA artifact and its verified running status.
+
+To test only multicast hostname and service discovery without BACpypes, run:
+
+```sh
+python3 tools/mdns_probe.py \
+  --interface 192.168.75.191 \
+  --hostname esp32-p4-bacnet \
+  --address 192.168.75.152 \
+  --device-instance 599152 \
+  --firmware-version 1.14.0
+```
 
 For an endurance run after the finite suite, use the append-only soak monitor.
 It samples pinned HTTPS status/configuration and a raw directed BACnet I-Am,
@@ -231,7 +251,8 @@ The HTTPS server provides nine bearer-authenticated operations:
   reason, exact running-image SHA-256, uptime, temperature, heap, watchdog
   health, Ethernet negotiation, DHCP/address state, BACnet counters, input
   pad/raw/debounced/transition data, self-test results, and the persistent fault
-  log.
+  log. It also reports mDNS readiness, the active `.local` name, hostname
+  conflicts, advertised ports, and initialization errors.
 - `POST /diagnostics/input-self-test` — weak-pull line classification. It does
   not enable GPIO output drivers and may be run with field wiring connected.
 - `GET /config` — export the complete saved BACnet/input configuration and show
@@ -377,6 +398,8 @@ loss, OTA accepted/failed/validated, input-test failures, temperature setup
 failure, BACnet socket failure, HTTPS server startup failure, task-watchdog
 registration failure, and authenticated remote-reboot requests. Entries include
 sequence, boot count, boot-relative time, type, and error code.
+An mDNS initialization or service-advertisement failure is also persisted; a
+runtime hostname conflict is counted in authenticated status.
 
 The switch-input and BACnet tasks are registered with ESP-IDF's task watchdog.
 The status endpoint reports their registration, most recent heartbeat, and
@@ -398,7 +421,8 @@ The host suite compiles with warnings-as-errors plus AddressSanitizer and
 UndefinedBehaviorSanitizer. It covers reference discovery vectors,
 ReadProperty, ReadPropertyMultiple, COV, error/reject/abort paths, bounded
 output buffers, malformed/truncated/random frames, constant-time bearer
-authentication, and secure credential tooling:
+authentication, DNS packet parsing/advertisement validation, and secure
+credential tooling:
 
 ```sh
 cmake -S tests -B build-tests
