@@ -89,6 +89,7 @@ clock GPIO50. See the [Waveshare schematic](https://files.waveshare.com/wiki/ESP
 | Analog Value | 1007 | BACnet Protocol Errors | Malformed/error transaction count |
 | Analog Value | 1008 | Last Reset Reason | Numeric ESP-IDF reset reason |
 | Analog Value | 1009 | Active COV Subscriptions | Current subscription count |
+| Network Port | 1 | BACnet/IP Ethernet | Live IPv4, BACnet port, DHCP, DNS, link, and fault state |
 
 Supported services:
 
@@ -99,6 +100,12 @@ Supported services:
 - confirmed ReadPropertyMultiple, including All/Required/Optional selectors
 - confirmed SubscribeCOV for the three Binary Inputs
 - confirmed and unconfirmed COV notifications
+
+The read-only Network Port object follows BACnet protocol revision 17. Its
+`MAC_Address` is the BACnet/IP address (four IPv4 octets plus the two-byte UDP
+port), as required by BACnet; the hardware Ethernet MAC remains available in
+the authenticated diagnostics endpoint. Network configuration changes continue
+to use the guarded HTTPS API, not BACnet WriteProperty.
 
 COV supports eight simultaneous subscriptions, lifetimes up to seven days,
 initial notification, value/reliability change notifications, confirmed
