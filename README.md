@@ -225,7 +225,7 @@ the board schematic.
 
 ## Authenticated Ethernet management
 
-The HTTPS server provides eight bearer-authenticated operations:
+The HTTPS server provides nine bearer-authenticated operations:
 
 - `GET /ota/status` — firmware/partition/rollback state, Git revision, reset
   reason, exact running-image SHA-256, uptime, temperature, heap, watchdog
@@ -246,6 +246,8 @@ The HTTPS server provides eight bearer-authenticated operations:
 - `POST /network/config/confirm` — confirm a reachable trial configuration.
   An unconfirmed trial is discarded automatically after 60 seconds and the
   device reboots to its last confirmed network configuration.
+- `POST /system/reboot` — restart only from a validated image. The request body
+  must be empty, and reboot requests are rejected while OTA is active.
 - `POST /ota` — validated application-image upload and reboot.
 
 DHCP's public ESP-IDF API does not expose lease expiry. Status therefore reports
@@ -257,9 +259,14 @@ Check status or classify the connected input lines:
 ```sh
 python3 tools/ota_client.py status --host 192.168.75.152
 python3 tools/ota_client.py input-self-test --host 192.168.75.152
+python3 tools/ota_client.py reboot --host 192.168.75.152
 python3 tools/ota_client.py config-get \
   --host 192.168.75.152 --output device-config.json
 ```
+
+If a staged static configuration changes the address, pass its new address as
+`--post-host`. The client verifies an exact one-count boot increment, unchanged
+OTA partition and firmware hash, and a `valid` image before reporting success.
 
 To commission the BACnet identity or inputs, save the `config-get` JSON object
 to a file, edit it, and send the complete object back. Read-only result fields
@@ -271,7 +278,7 @@ python3 tools/ota_client.py config-put --host 192.168.75.152 device-config.json
 ```
 
 The accepted response reports `restart_required: true`. A normal OTA update or
-the later authenticated reboot command activates it. Sending the active values
+the authenticated reboot command activates it. Sending the active values
 again cancels a pending configuration. Each effective change increments the
 BACnet Device `Database_Revision`; the configured Device and Binary Input
 instances and object names must be unique and within BACnet limits.
@@ -367,9 +374,9 @@ are provisioned separately.
 The NVS-backed 16-entry fault log survives reboot and records boot/reset,
 abnormal reset (panic, brownout, watchdog, power glitch, or CPU lockup), link/IP
 loss, OTA accepted/failed/validated, input-test failures, temperature setup
-failure, BACnet socket failure, HTTPS server startup failure, and task-watchdog
-registration failure. Entries include sequence, boot count, boot-relative time,
-type, and error code.
+failure, BACnet socket failure, HTTPS server startup failure, task-watchdog
+registration failure, and authenticated remote-reboot requests. Entries include
+sequence, boot count, boot-relative time, type, and error code.
 
 The switch-input and BACnet tasks are registered with ESP-IDF's task watchdog.
 The status endpoint reports their registration, most recent heartbeat, and
