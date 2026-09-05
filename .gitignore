@@ -10,3 +10,4 @@
 /release/SHA256SUMS
 __pycache__/
 *.py[cod]
+/hardware-report*.json

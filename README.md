@@ -123,6 +123,27 @@ read-only and rejects WriteProperty. It is not a BBMD, foreign device, BACnet
 router, or BACnet/SC node; discovery requires the local subnet or an existing
 BACnet/IP router.
 
+For repeatable commissioning and release acceptance, install the pinned
+independent client and run the non-actuating hardware suite. Supplying the
+ignored token file also checks the exact running image, watchdogs, persistent
+configuration state, COV cleanup, and HTTPS authentication boundary:
+
+```sh
+python3 -m pip install -r requirements-hil.txt
+python3 tools/bacnet_hil_test.py \
+  --local-address 192.168.75.191/24 \
+  --device-address 192.168.75.152 \
+  --device-instance 599152 \
+  --expect-inputs-off \
+  --token-file secrets/ota_token.txt \
+  --report hardware-report.json
+```
+
+The report contains no bearer token or private key. The suite never drives a
+GPIO or changes device configuration. Release validation should also provide
+`--expected-version`, `--expected-source`, and `--expected-image-sha256` from
+the exact OTA artifact and its verified running status.
+
 The input debounce default is 50 ms. Per-input polarity can be reversed in
 `menuconfig`. The electrical test classifies each line as `floating-open`,
 `externally-high`, `externally-low`, or `unstable`. The first three are valid
