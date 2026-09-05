@@ -9,6 +9,7 @@
 #include "config_model.h"
 #include "cov_retry_cache.h"
 #include "diagnostics_time.h"
+#include "diagnostics_metrics.h"
 #include "hardware_profile.h"
 #include "input_line_classifier.h"
 #include "input_debounce.h"
@@ -2500,6 +2501,55 @@ static void test_hardware_profile(void)
     CHECK(strcmp(hardware_profile_binary_state(true, true), "inactive") == 0);
 }
 
+static void test_diagnostics_metrics(void)
+{
+    diagnostics_temperature_metrics_t temperature = {0};
+    diagnostics_temperature_metrics_record(
+        &temperature, true, 35.5F, 0);
+    CHECK(temperature.has_sample);
+    CHECK(temperature.minimum_c == 35.5F);
+    CHECK(temperature.maximum_c == 35.5F);
+    CHECK(temperature.sample_count == 1U);
+    CHECK(temperature.error_count == 0U);
+    CHECK(temperature.last_result == 0);
+
+    diagnostics_temperature_metrics_record(
+        &temperature, true, 31.25F, 0);
+    diagnostics_temperature_metrics_record(
+        &temperature, true, 42.75F, 0);
+    diagnostics_temperature_metrics_record(
+        &temperature, false, 0.0F, -7);
+    CHECK(temperature.minimum_c == 31.25F);
+    CHECK(temperature.maximum_c == 42.75F);
+    CHECK(temperature.sample_count == 3U);
+    CHECK(temperature.error_count == 1U);
+    CHECK(temperature.last_result == -7);
+
+    temperature.sample_count = UINT32_MAX;
+    temperature.error_count = UINT32_MAX;
+    diagnostics_temperature_metrics_record(
+        &temperature, true, 36.0F, 0);
+    diagnostics_temperature_metrics_record(
+        &temperature, false, 0.0F, -1);
+    CHECK(temperature.sample_count == UINT32_MAX);
+    CHECK(temperature.error_count == UINT32_MAX);
+    diagnostics_temperature_metrics_record(NULL, true, 1.0F, 0);
+
+    diagnostics_fault_log_metrics_t fault_log =
+        diagnostics_fault_log_metrics(1U, 0U);
+    CHECK(fault_log.total_event_count == 0U);
+    CHECK(fault_log.overwritten_event_count == 0U);
+    fault_log = diagnostics_fault_log_metrics(97U, 16U);
+    CHECK(fault_log.total_event_count == 96U);
+    CHECK(fault_log.overwritten_event_count == 80U);
+    fault_log = diagnostics_fault_log_metrics(4U, 16U);
+    CHECK(fault_log.total_event_count == 3U);
+    CHECK(fault_log.overwritten_event_count == 0U);
+    fault_log = diagnostics_fault_log_metrics(0U, 16U);
+    CHECK(fault_log.total_event_count == UINT32_MAX);
+    CHECK(fault_log.overwritten_event_count == UINT32_MAX - 16U);
+}
+
 static void test_subscribe_cov_capacity_error(void)
 {
     uint8_t response[32];
@@ -2536,6 +2586,7 @@ int main(void)
     test_config_model();
     test_network_config_model();
     test_hardware_profile();
+    test_diagnostics_metrics();
     printf("bacnet_codec_tests: %u checks passed\n", tests_run);
     return EXIT_SUCCESS;
 }

@@ -308,6 +308,108 @@ def nested_counter(container: dict[str, Any], section: str, key: str) -> int | N
         return None
 
 
+def firmware_diagnostics_healthy(status: dict[str, Any]) -> bool:
+    firmware = status.get("firmware")
+    if not isinstance(firmware, dict):
+        return False
+    running = firmware.get("running_partition")
+    boot = firmware.get("boot_partition")
+    update = firmware.get("next_update_partition")
+    if not all(isinstance(value, dict) for value in (running, boot, update)):
+        return False
+    assert isinstance(running, dict) and isinstance(boot, dict)
+    assert isinstance(update, dict)
+    elf_sha = firmware.get("elf_sha256")
+    return (
+        isinstance(firmware.get("build_date"), str)
+        and bool(firmware["build_date"])
+        and isinstance(firmware.get("build_time"), str)
+        and bool(firmware["build_time"])
+        and isinstance(firmware.get("secure_version"), int)
+        and firmware["secure_version"] >= 0
+        and isinstance(elf_sha, str)
+        and len(elf_sha) == 64
+        and all(character in "0123456789abcdef" for character in elf_sha)
+        and firmware.get("rollback_enabled") is True
+        and running.get("label") == status.get("partition")
+        and running.get("state") == status.get("state")
+        and running.get("image_sha256") == status.get("image_sha256")
+        and isinstance(running.get("address"), int)
+        and running["address"] > 0
+        and isinstance(running.get("size_bytes"), int)
+        and running["size_bytes"] > 0
+        and boot.get("matches_running") is True
+        and boot.get("label") == running.get("label")
+        and boot.get("address") == running.get("address")
+        and boot.get("size_bytes") == running.get("size_bytes")
+        and update.get("available") is True
+        and update.get("label") != running.get("label")
+        and isinstance(update.get("address"), int)
+        and update["address"] > 0
+        and update.get("address") != running.get("address")
+        and update.get("size_bytes") == running.get("size_bytes")
+    )
+
+
+def runtime_diagnostics_healthy(status: dict[str, Any]) -> bool:
+    system = status.get("system")
+    fault_log = status.get("fault_log")
+    health = status.get("fault_log_health")
+    if (
+        not isinstance(system, dict)
+        or not isinstance(fault_log, list)
+        or not isinstance(health, dict)
+    ):
+        return False
+    temperature = system.get("temperature")
+    if not isinstance(temperature, dict):
+        return False
+    current = temperature.get("current_c")
+    minimum = temperature.get("minimum_c")
+    maximum = temperature.get("maximum_c")
+    uptime = system.get("uptime_ms")
+    last_sample = temperature.get("last_sample_uptime_ms")
+    sample_age = temperature.get("sample_age_ms")
+    sequences = [
+        event.get("sequence")
+        for event in fault_log
+        if isinstance(event, dict)
+    ]
+    return (
+        temperature.get("valid") is True
+        and isinstance(current, (int, float))
+        and not isinstance(current, bool)
+        and current == system.get("chip_temperature_c")
+        and isinstance(minimum, (int, float))
+        and isinstance(maximum, (int, float))
+        and minimum <= current <= maximum
+        and isinstance(temperature.get("sample_count_since_boot"), int)
+        and temperature["sample_count_since_boot"] > 0
+        and temperature.get("error_count_since_boot") == 0
+        and temperature.get("sample_interval_ms") == 1000
+        and isinstance(uptime, int)
+        and isinstance(last_sample, int)
+        and isinstance(sample_age, int)
+        and 0 <= last_sample <= uptime
+        and sample_age == uptime - last_sample
+        and sample_age <= 2000
+        and temperature.get("last_result") == {"code": 0, "name": "ESP_OK"}
+        and len(sequences) == len(fault_log)
+        and sequences == sorted(sequences)
+        and health.get("capacity") == 16
+        and health.get("count") == len(fault_log)
+        and isinstance(health.get("total_event_count"), int)
+        and health["total_event_count"] >= len(fault_log)
+        and health.get("overwritten_event_count")
+        == health["total_event_count"] - len(fault_log)
+        and health.get("persistence_ready") is True
+        and health.get("write_failure_count_since_boot") == 0
+        and health.get("last_write_error") == {"code": 0, "name": "ESP_OK"}
+        and health.get("oldest_sequence") == (sequences[0] if sequences else None)
+        and health.get("newest_sequence") == (sequences[-1] if sequences else None)
+    )
+
+
 def evaluate_sample(
     baseline: Baseline,
     previous_status: dict[str, Any] | None,
@@ -341,6 +443,10 @@ def evaluate_sample(
             alerts.append(f"{key}-changed:{status.get(key)!r}!={expected!r}")
     if status.get("state") != "valid":
         alerts.append(f"ota-state:{status.get('state')!r}")
+    if not firmware_diagnostics_healthy(status):
+        alerts.append("firmware-diagnostics-unhealthy")
+    if not runtime_diagnostics_healthy(status):
+        alerts.append("runtime-diagnostics-unhealthy")
     if system.get("boot_count") != baseline.boot_count:
         alerts.append(f"boot-count-changed:{system.get('boot_count')!r}!={baseline.boot_count}")
     reset = system.get("reset_reason", {})
@@ -451,6 +557,28 @@ def evaluate_sample(
         if current_uptime is not None and previous_uptime is not None:
             if current_uptime < previous_uptime:
                 alerts.append("uptime-decreased")
+        current_temperature = system.get("temperature", {})
+        previous_temperature = previous_system.get("temperature", {})
+        if isinstance(current_temperature, dict) and isinstance(
+            previous_temperature, dict
+        ):
+            for key in ("sample_count_since_boot", "error_count_since_boot"):
+                current = current_temperature.get(key)
+                previous = previous_temperature.get(key)
+                if not isinstance(current, int) or not isinstance(previous, int):
+                    alerts.append(f"temperature-{key}-missing")
+                elif current < previous:
+                    alerts.append(
+                        f"temperature-{key}-decreased:{current}<{previous}"
+                    )
+            current_errors = current_temperature.get("error_count_since_boot")
+            previous_errors = previous_temperature.get("error_count_since_boot")
+            if (
+                isinstance(current_errors, int)
+                and isinstance(previous_errors, int)
+                and current_errors > previous_errors
+            ):
+                alerts.append("temperature-error-count-increased")
         for key in MONOTONIC_BACNET_COUNTERS:
             current = nested_counter(status, "bacnet", key)
             previous = nested_counter(previous_status, "bacnet", key)
