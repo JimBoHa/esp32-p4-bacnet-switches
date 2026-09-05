@@ -143,6 +143,8 @@ th, td { padding: 10px 12px; border-bottom: 1px solid rgb(42 74 64 / 70%); text-
 th { color: var(--muted); font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; }
 tbody tr:last-child td { border-bottom: 0; }
 .number { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-variant-numeric: tabular-nums; }
+.pin-high { color: var(--warn); font-weight: 750; }
+.pin-note { min-width: 180px; max-width: 320px; white-space: normal; }
 
 .noscript { width: min(760px, calc(100% - 32px)); margin: 30px auto; color: var(--bad); }
 footer { padding: 14px 0 34px; color: var(--muted); font-size: 0.76rem; text-align: center; }

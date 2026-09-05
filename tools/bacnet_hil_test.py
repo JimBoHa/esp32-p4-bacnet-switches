@@ -176,6 +176,57 @@ def hardware_profile_valid(value: object) -> bool:
     return value == EXPECTED_HARDWARE_PROFILE
 
 
+P1_GPIO_MAP = (
+    54, 19, None, 18, 17, 16, 15, None, 14, 6, 5, 4, None, 3, 2, 8, 7, None,
+    24, 25, 48, 47, None, 46, 33, 32, 27, None, 26, None, 23, 22, None, 21,
+    20, None, None, None, None, None,
+)
+
+
+def header_diagnostics_valid(value: object) -> bool:
+    """Require complete P1 mapping, safe nulls, and 25 working input buffers."""
+    if not isinstance(value, dict):
+        return False
+    pins = value.get("pins")
+    if (value.get("header") != "P1" or value.get("position_count") != 40
+        or value.get("gpio_count") != 27 or value.get("readable_count") != 25
+        or value.get("initialized") is not True or value.get("initialization_ok") is not True
+        or value.get("sample_mode") != "sequential-on-request"
+        or not isinstance(pins, list) or len(pins) != 40
+        or any(type(value.get(key)) is not int or value[key] < 0
+               for key in ("captured_uptime_ms", "completed_uptime_ms"))
+        or value["completed_uptime_ms"] < value["captured_uptime_ms"]):
+        return False
+    for position, (pin, gpio) in enumerate(zip(pins, P1_GPIO_MAP), 1):
+        if (not isinstance(pin, dict) or type(pin.get("position")) is not int
+            or pin["position"] != position or pin.get("gpio") != gpio
+            or (gpio is not None and type(pin.get("gpio")) is not int)
+            or not isinstance(pin.get("label"), str) or not pin["label"]
+            or not isinstance(pin.get("usage"), str) or not pin["usage"]
+            or type(pin.get("input_enabled_by_diagnostics")) is not bool):
+            return False
+        if gpio is None or gpio in (24, 25):
+            expected_kind = ("gpio" if gpio is not None else "control" if position in (30, 37)
+                             else "supply" if position in (36, 39, 40) else "ground")
+            if (pin.get("status") != ("non-gpio" if gpio is None else "reserved-usb")
+                or pin.get("kind") != expected_kind or "raw_level" not in pin
+                or pin["raw_level"] is not None or pin.get("pad") is not None
+                or pin["input_enabled_by_diagnostics"] is not False
+                or pin.get("initialization_preserved_config") is not None):
+                return False
+        else:
+            pad = pin.get("pad")
+            if (pin.get("status") != "readable" or pin.get("kind") != "gpio"
+                or type(pin.get("raw_level")) is not bool
+                or pin.get("initialization_preserved_config") is not True
+                or not isinstance(pad, dict) or pad.get("input_enabled") is not True
+                or any(type(pad.get(key)) is not bool for key in
+                       ("output_enabled", "output_enable_controlled_by_peripheral", "pull_up", "pull_down"))
+                or type(pad.get("function_select")) is not int):
+                return False
+    return True
+
+
 def input_transition_age_valid(item: object, uptime_ms: object) -> bool:
     if not isinstance(item, dict) or type(uptime_ms) is not int:
         return False
@@ -1229,6 +1280,12 @@ class HilRunner:
             "firmware identity, OTA state, network, configuration, COV cleanup, watchdog, security/recovery posture, wiring, image, temperature, or fault-log health failed",
         )
         self.report.require(
+            "Complete P1 header diagnostics",
+            header_diagnostics_valid(status.get("header_diagnostics")),
+            "40 positions mapped; 25 GPIO inputs readable; USB and non-GPIO pins null; startup configuration preserved",
+            "P1 mapping, pin safety, input buffer, or snapshot metadata invalid",
+        )
+        self.report.require(
             "Input event history",
             input_history_valid(status),
             "bounded chronological input events with boot-relative timing",
@@ -1350,6 +1407,7 @@ class HilRunner:
                 and report_status.get("image_sha256") == image_sha
                 and input_history_valid(report_status)
                 and hardware_profile_valid(report_status.get("hardware"))
+                and header_diagnostics_valid(report_status.get("header_diagnostics"))
                 and report["active_configuration"].get("device_instance") == self.args.device_instance,
                 f"{len(payload)} bytes; configuration, hardware, history, identity; no credentials",
                 "report metadata, authentication, contents, or download headers invalid",
