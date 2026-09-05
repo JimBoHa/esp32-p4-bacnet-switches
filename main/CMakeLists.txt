@@ -1,5 +1,6 @@
 set(private_dependencies
     app_update
+    bootloader_support
     esp_app_format
     esp_driver_gpio
     esp_driver_tsens
@@ -24,8 +25,30 @@ if(DEFINED IDF_VERSION_MAJOR AND IDF_VERSION_MAJOR GREATER_EQUAL 6)
 endif()
 
 get_filename_component(project_root "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
+# This repository intentionally supports software-only signing, never irreversible
+# hardware security provisioning. Stop before producing an unsafe recovery build.
+if(CONFIG_SECURE_BOOT OR CONFIG_SECURE_FLASH_ENC_ENABLED OR
+   CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK OR CONFIG_SECURE_DISABLE_ROM_DL_MODE OR
+   CONFIG_SECURE_ENABLE_SECURE_ROM_DL_MODE)
+    message(FATAL_ERROR "Hardware security/eFuse provisioning is outside this project's recovery policy")
+endif()
+if(NOT CMAKE_BUILD_EARLY_EXPANSION AND
+   (NOT CONFIG_SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT OR
+   NOT CONFIG_SECURE_SIGNED_APPS_RSA_SCHEME OR
+   NOT CONFIG_SECURE_BOOT_BUILD_SIGNED_BINARIES))
+    message(FATAL_ERROR "RSA-3072 software-signed OTA and signed build output are required")
+endif()
 set(ota_embed_files)
 if(CONFIG_OTA_HTTPS_ENABLED)
+    get_filename_component(signing_private_key "${CONFIG_SECURE_BOOT_SIGNING_KEY}"
+                           ABSOLUTE BASE_DIR "${project_root}")
+    add_custom_target(validate_signing_key ALL
+        COMMAND "${PYTHON}" "${project_root}/tools/firmware_signing.py" check-key
+            --private-key "${signing_private_key}"
+            --public-key "${CMAKE_CURRENT_LIST_DIR}/ota_signing_public_key.pem"
+        COMMENT "Checking host signing key against pinned public key"
+        VERBATIM
+    )
     list(APPEND ota_embed_files
         "diagnostics_dashboard.html"
         "diagnostics_dashboard.css"
@@ -100,7 +123,7 @@ idf_component_register(
 )
 
 if(CONFIG_OTA_HTTPS_ENABLED)
-    add_dependencies(${COMPONENT_LIB} validate_ota_credentials)
+    add_dependencies(${COMPONENT_LIB} validate_ota_credentials validate_signing_key)
 endif()
 
 execute_process(

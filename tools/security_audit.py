@@ -12,6 +12,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 FORBIDDEN_PATHS = (
+    re.compile(r"(?:^|/)(?:firmware_signing_key|secure_boot_signing_key)\.pem$", re.IGNORECASE),
     re.compile(r"(^|/)secrets(/|$)", re.IGNORECASE),
     re.compile(r"(^|/)release/private(/|$)", re.IGNORECASE),
     re.compile(r"(^|/)sdkconfig(?:\.old)?$", re.IGNORECASE),
@@ -112,6 +113,7 @@ def audit_tracked_files() -> list[str]:
         if path.is_file():
             findings.extend(_content_findings(relative, path.read_bytes()))
     ignored_examples = (
+        "secrets/firmware_signing_key.pem",
         "secrets/ota_token.txt",
         "secrets/ota_viewer_token.txt",
         "secrets/ota_server_key.pem",

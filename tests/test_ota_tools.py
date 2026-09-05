@@ -22,6 +22,7 @@ from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT / "tools"))
 GENERATOR = PROJECT_ROOT / "tools" / "generate_ota_credentials.py"
 CLIENT = PROJECT_ROOT / "tools" / "ota_client.py"
 REJECTION_TEST = PROJECT_ROOT / "tools" / "ota_rejection_test.py"
@@ -586,6 +587,7 @@ class OtaToolTests(unittest.TestCase):
                     "cert": Path("certificate.pem"),
                     "no_wait": True,
                     "allow_same_image": False,
+                    "allow_unsigned_legacy": True,
                     "post_token_file": None,
                     "host": "192.0.2.1",
                     "port": 443,

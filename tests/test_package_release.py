@@ -212,6 +212,27 @@ class PackageReleaseTests(unittest.TestCase):
                     expected_mode = 0o700 if path.is_dir() else 0o600
                     self.assertEqual(stat.S_IMODE(path.stat().st_mode), expected_mode)
 
+    def test_rejects_unsigned_enforcing_build_and_irreversible_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            build, output_root = self._fixture(Path(temporary))
+            path = build / "config/sdkconfig.json"
+            config = json.loads(path.read_text())
+            config["SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT"] = True
+            config["ESPTOOLPY_FLASHSIZE"] = "32MB"
+            path.write_text(json.dumps(config))
+            flasher_path = build / "flasher_args.json"
+            flasher = json.loads(flasher_path.read_text())
+            flasher["flash_settings"]["flash_size"] = "keep"
+            flasher_path.write_text(json.dumps(flasher))
+            with self.assertRaisesRegex(ValueError, "must be signed"):
+                self.packager.package_release(build, output_root)
+            for forbidden in ("SECURE_BOOT", "SECURE_FLASH_ENC_ENABLED",
+                              "BOOTLOADER_APP_ANTI_ROLLBACK", "SECURE_DISABLE_ROM_DL_MODE",
+                              "SECURE_ENABLE_SECURE_ROM_DL_MODE"):
+                path.write_text(json.dumps({**config, forbidden: True}))
+                with self.assertRaisesRegex(ValueError, "eFuse provisioning"):
+                    self.packager.package_release(build, output_root)
+
     def test_rejects_build_path_escape_dirty_revision_and_symlink_output(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

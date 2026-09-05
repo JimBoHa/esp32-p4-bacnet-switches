@@ -157,6 +157,11 @@ def _validate_build_policy(build_dir: Path) -> dict[str, Any]:
             "release build is missing required recovery controls: "
             + ", ".join(missing)
         )
+    if any(config.get(name) for name in (
+        "SECURE_BOOT", "SECURE_FLASH_ENC_ENABLED", "BOOTLOADER_APP_ANTI_ROLLBACK",
+        "SECURE_DISABLE_ROM_DL_MODE", "SECURE_ENABLE_SECURE_ROM_DL_MODE",
+    )):
+        raise ValueError("hardware security/eFuse provisioning is outside recovery policy")
     return config
 
 
@@ -256,6 +261,7 @@ def package_release(build_directory: Path, output_directory: Path) -> Path:
     project = _read_json_object(
         build_dir / "project_description.json", "ESP-IDF project description"
     )
+    config = _validate_build_policy(build_dir)
     if project.get("target") != EXPECTED_TARGET:
         raise ValueError(f"release build target is not {EXPECTED_TARGET}")
     if project.get("project_name") != DEFAULT_PROJECT:
@@ -264,7 +270,12 @@ def package_release(build_directory: Path, output_directory: Path) -> Path:
     if not isinstance(extra, dict) or extra.get("chip") != EXPECTED_TARGET:
         raise ValueError(f"flasher target is not {EXPECTED_TARGET}")
     settings = flasher.get("flash_settings")
-    if not isinstance(settings, dict) or settings.get("flash_size") != EXPECTED_FLASH_SIZE:
+    if not isinstance(settings, dict) or not (
+        settings.get("flash_size") == EXPECTED_FLASH_SIZE
+        or (settings.get("flash_size") == "keep"
+            and config.get("SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT") is True
+            and config.get("ESPTOOLPY_FLASHSIZE") == EXPECTED_FLASH_SIZE)
+    ):
         raise ValueError(f"release build is not configured for {EXPECTED_FLASH_SIZE} flash")
 
     app_entry = flasher.get("app")
@@ -283,7 +294,8 @@ def package_release(build_directory: Path, output_directory: Path) -> Path:
     if metadata.size > OTA_PARTITION_BYTES:
         raise ValueError("application exceeds the 4 MiB OTA partition")
     source_revision = _build_revision(build_dir, metadata.image)
-    config = _validate_build_policy(build_dir)
+    if config.get("SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT") and not metadata.signed:
+        raise ValueError("signature-enforcing firmware must be signed before packaging")
     flash_inputs = _validated_flash_inputs(build_dir, flasher)
     if not any(source == application for _offset, source, _destination in flash_inputs):
         raise ValueError("application image is absent from the flash input list")
@@ -329,7 +341,7 @@ def package_release(build_directory: Path, output_directory: Path) -> Path:
             "--flash_mode",
             str(settings.get("flash_mode", "dio")),
             "--flash_size",
-            EXPECTED_FLASH_SIZE,
+            str(settings.get("flash_size", EXPECTED_FLASH_SIZE)),
             "--flash_freq",
             str(settings.get("flash_freq", "80m")),
         ]
@@ -368,6 +380,11 @@ def package_release(build_directory: Path, output_directory: Path) -> Path:
             ROOT / "tools" / "ota_client.py",
             staging / "management" / "ota_client.py",
         )
+        _secure_copy(ROOT / "tools" / "firmware_signing.py",
+                     staging / "management" / "firmware_signing.py")
+        if metadata.signed:
+            _secure_copy(ROOT / "main" / "ota_signing_public_key.pem",
+                         staging / "management" / "ota_signing_public_key.pem")
         _copy_notices(staging, idf_path)
 
         artifacts: dict[str, dict[str, object]] = {}
@@ -397,6 +414,8 @@ def package_release(build_directory: Path, output_directory: Path) -> Path:
                 "bytes": metadata.size,
                 "file_sha256": metadata.file_sha256,
                 "image_sha256": metadata.image_sha256,
+                "signed": metadata.signed,
+                "signing_key_sha256": metadata.signing_key_sha256,
             },
             "security": {
                 "https_ota": bool(config.get("OTA_HTTPS_ENABLED")),
@@ -405,6 +424,8 @@ def package_release(build_directory: Path, output_directory: Path) -> Path:
                 "core_dump_disabled": bool(config.get("ESP_COREDUMP_ENABLE_TO_NONE")),
                 "secure_boot": bool(config.get("SECURE_BOOT")),
                 "flash_encryption": bool(config.get("SECURE_FLASH_ENC_ENABLED")),
+                "software_signature_verification": bool(config.get("SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT")),
+                "signing_private_key_in_package": False,
             },
             "artifacts": artifacts,
         }
