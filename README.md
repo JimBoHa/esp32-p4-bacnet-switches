@@ -264,8 +264,22 @@ All assets are same-origin and carry restrictive CSP, framing, MIME-sniffing,
 referrer, permissions, and caching headers. Verify the self-signed device
 certificate before entering the token.
 
-The HTTPS server provides nine bearer-authenticated operations:
+Use **Download diagnostics** to save a JSON report. It contains the complete
+status (including hardware pin map, firmware identity, input history, and fault
+log), active/saved BACnet configuration, and active/saved/confirmed network
+configuration. Exported fields are explicitly selected; bearer tokens, private
+keys, raw flash, and raw NVS are never included. The report still contains site
+names and network addresses: review it before sharing. Counters can advance
+during capture. The CLI also supports a private, no-overwrite download:
 
+```sh
+python3 tools/ota_client.py diagnostics-report --host DEVICE-IP --output report.json
+```
+
+The HTTPS server provides ten bearer-authenticated operations:
+
+- `GET /diagnostics/report` — schema-versioned diagnostic JSON attachment;
+  no-cache and read-only, with the same authentication as status.
 - `GET /ota/status` — running/boot/update partition and rollback state, source
   and ELF identity, build metadata, exact running-image SHA-256, reset reason,
   enforced OTA size/media-type/deadline/secure-version policy,

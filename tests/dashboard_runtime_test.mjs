@@ -34,6 +34,10 @@ class FakeElement {
 
   focus() {}
 
+  click() { this.clicked = true; }
+
+  remove() { this.removed = true; }
+
   removeChild(child) {
     const index = this.children.indexOf(child);
     assert.notEqual(index, -1);
@@ -49,6 +53,7 @@ const element = (id) => {
   return elements.get(id);
 };
 const document = {
+  body: new FakeElement("body"),
   createElement: (tag) => new FakeElement(tag),
   getElementById: element,
 };
@@ -58,7 +63,13 @@ let fetchImplementation = () => {
 };
 let nextTimer = 1;
 const timers = new Map();
+let downloadedBlob;
+const revokedUrls = [];
 const window = {
+  URL: {
+    createObjectURL: (blob) => { downloadedBlob = blob; return "blob:test-report"; },
+    revokeObjectURL: (url) => revokedUrls.push(url),
+  },
   clearTimeout: (id) => timers.delete(id),
   fetch: (...arguments_) => fetchImplementation(...arguments_),
   setTimeout: (callback, delay) => {
@@ -72,7 +83,7 @@ const source = readFileSync(
   new URL("../main/diagnostics_dashboard.js", import.meta.url),
   "utf8",
 );
-vm.runInNewContext(source, {AbortController, document, window});
+vm.runInNewContext(source, {AbortController, Blob, document, window});
 
 const listener = (id, type) => {
   const value = element(id).listeners.get(type);
@@ -151,6 +162,55 @@ assert.equal(element("inputHistoryRows").children.length, 2);
 assert.equal(element("inputHistoryRows").children[0].children[0].textContent, "2");
 assert.equal(element("inputHistoryRows").children[0].children[5].textContent, "20 ms");
 assert.match(element("inputHistoryStatus").textContent, /2 events shown/);
+
+const diagnosticReport = {schema: 1, report_type: "esp32-p4-diagnostics", status: healthyStatus};
+fetchImplementation = async (url, options) => {
+  assert.equal(url, "/diagnostics/report");
+  assert.equal(options.headers.Authorization, `Bearer ${"B".repeat(32)}`);
+  assert.equal(options.redirect, "error");
+  return {ok: true, status: 200, json: async () => diagnosticReport};
+};
+await listener("downloadReport", "click")();
+assert.equal(downloadedBlob.type, "application/json");
+assert.deepEqual(JSON.parse(await downloadedBlob.text()), diagnosticReport);
+assert.equal((await downloadedBlob.text()).includes("B".repeat(32)), false);
+const downloadLink = document.body.children.at(-1);
+assert.equal(downloadLink.clicked, true);
+assert.equal(downloadLink.removed, true);
+assert.match(downloadLink.download, /^esp32-p4-diagnostics-.*\.json$/);
+for (const [id, timer] of timers) {
+  if (timer.delay === 1000) { timer.callback(); timers.delete(id); }
+}
+assert.deepEqual(revokedUrls, ["blob:test-report"]);
+
+let finishReport;
+let reportOptions;
+fetchImplementation = (_url, options) => {
+  reportOptions = options;
+  return new Promise(resolve => { finishReport = resolve; });
+};
+const cancelledDownload = listener("downloadReport", "click")();
+assert.equal(element("downloadReport").disabled, true);
+listener("disconnect", "click")();
+assert.equal(reportOptions.signal.aborted, true);
+finishReport({ok: true, status: 200, json: async () => diagnosticReport});
+await cancelledDownload;
+assert.equal(document.body.children.length, 1);
+assert.equal(element("downloadReport").disabled, false);
+
+fetchImplementation = async () => ({ok: true, status: 200, json: async () => healthyStatus});
+submit("B".repeat(32));
+await flush();
+await flush();
+fetchImplementation = async () => ({ok: false, status: 401});
+await listener("downloadReport", "click")();
+assert.equal(element("dashboard").hidden, true);
+assert.match(element("reportStatus").textContent, /HTTP 401/);
+
+fetchImplementation = async () => ({ok: true, status: 200, json: async () => healthyStatus});
+submit("B".repeat(32));
+await flush();
+await flush();
 
 fetchImplementation = async () => ({ok: false, status: 401});
 await listener("refresh", "click")();
