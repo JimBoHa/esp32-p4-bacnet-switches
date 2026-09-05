@@ -114,3 +114,7 @@ target_compile_definitions(
     ${COMPONENT_LIB}
     PRIVATE PROJECT_GIT_REVISION="${project_git_revision}"
 )
+file(WRITE
+    "${CMAKE_BINARY_DIR}/project_git_revision.txt"
+    "${project_git_revision}\n"
+)

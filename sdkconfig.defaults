@@ -44,6 +44,14 @@ CONFIG_OTA_HTTPS_PORT=443
 CONFIG_ESP_HTTPS_SERVER_ENABLE=y
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 
+# Credential-bearing core dumps must never be written to unencrypted flash.
+CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y
+# Secure Boot, flash encryption, and eFuse anti-rollback require a separate,
+# device-specific key provisioning and recovery lifecycle.
+# CONFIG_SECURE_BOOT is not set
+# CONFIG_SECURE_FLASH_ENC_ENABLED is not set
+# CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK is not set
+
 # BACnet/IP owns one UDP socket and needs directed-broadcast transmission.
 CONFIG_LWIP_MAX_SOCKETS=10
 CONFIG_LWIP_SO_REUSE=y

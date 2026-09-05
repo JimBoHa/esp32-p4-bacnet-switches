@@ -43,3 +43,11 @@ add_test(
     NAME ota_tool_tests
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_ota_tools.py
 )
+add_test(
+    NAME package_release_tests
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_package_release.py
+)
+add_test(
+    NAME security_audit_tests
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_security_audit.py
+)
