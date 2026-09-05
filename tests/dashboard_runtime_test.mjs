@@ -128,6 +128,13 @@ const healthyStatus = {
     signal: {chattering: false},
   })),
   bacnet: {},
+  input_history: {
+    overwritten_events: 0,
+    events: [
+      {sequence: 1, gpio: 20, uptime_ms: 20, type: "initial-state", active: false, pulse_width_ms: 0},
+      {sequence: 2, gpio: 20, uptime_ms: 70, type: "rejected-pulse", active: false, pulse_width_ms: 20},
+    ],
+  },
   fault_log: [],
 };
 fetchImplementation = async () => ({
@@ -140,6 +147,10 @@ await flush();
 await flush();
 assert.equal(element("dashboard").hidden, false);
 assert.equal(element("overallHealth").textContent, "Healthy");
+assert.equal(element("inputHistoryRows").children.length, 2);
+assert.equal(element("inputHistoryRows").children[0].children[0].textContent, "2");
+assert.equal(element("inputHistoryRows").children[0].children[5].textContent, "20 ms");
+assert.match(element("inputHistoryStatus").textContent, /2 events shown/);
 
 fetchImplementation = async () => ({ok: false, status: 401});
 await listener("refresh", "click")();

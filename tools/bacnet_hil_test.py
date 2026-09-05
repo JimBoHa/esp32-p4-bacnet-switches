@@ -168,6 +168,48 @@ def hardware_profile_valid(value: object) -> bool:
     return value == EXPECTED_HARDWARE_PROFILE
 
 
+def input_history_valid(status: dict[str, Any]) -> bool:
+    """Validate bounded, ordered, boot-relative input event history."""
+    history = status.get("input_history")
+    if not isinstance(history, dict):
+        return False
+    events = history.get("events")
+    integers = ("count", "total_events", "overwritten_events", "captured_uptime_ms")
+    if (
+        not isinstance(events, list)
+        or any(type(history.get(key)) is not int or history[key] < 0 for key in integers)
+        or history.get("capacity") != 64
+        or history.get("persistent") is not False
+        or history.get("sample_interval_ms") != 10
+        or history["count"] != len(events)
+        or len(events) > 64
+        or history["total_events"] < len(events)
+        or history["overwritten_events"] != history["total_events"] - len(events)
+    ):
+        return False
+    previous_uptime = 0
+    first_sequence = history["total_events"] - len(events) + 1
+    for index, event in enumerate(events):
+        if not isinstance(event, dict):
+            return False
+        if (
+            any(type(event.get(key)) is not int for key in
+                ("sequence", "uptime_ms", "gpio", "pulse_width_ms"))
+            or event["sequence"] != first_sequence + index
+            or not previous_uptime <= event["uptime_ms"] <= history["captured_uptime_ms"]
+            or event["gpio"] not in PHYSICAL_INPUT_INSTANCES
+            or event.get("type") not in {
+                "initial-state", "state-changed", "rejected-pulse", "chatter-started"
+            }
+            or type(event.get("active")) is not bool
+            or event["pulse_width_ms"] < 0
+            or (event["type"] != "rejected-pulse" and event["pulse_width_ms"] != 0)
+        ):
+            return False
+        previous_uptime = event["uptime_ms"]
+    return True
+
+
 def firmware_diagnostics_valid(status: dict[str, Any]) -> bool:
     firmware = status.get("firmware")
     ota_policy = status.get("ota_policy")
@@ -1077,6 +1119,12 @@ class HilRunner:
             healthy,
             f"version={status.get('version')}; source={source}; image={image_sha}; firmware/runtime diagnostics healthy",
             "firmware identity, OTA state, network, configuration, COV cleanup, watchdog, security/recovery posture, wiring, image, temperature, or fault-log health failed",
+        )
+        self.report.require(
+            "Input event history",
+            input_history_valid(status),
+            "bounded chronological input events with boot-relative timing",
+            "input history metadata, sequence, timing, or event fields invalid",
         )
         certificate_der = ota_client._certificate_der(self.args.certificate)
         fingerprint = hashlib.sha256(certificate_der).hexdigest()

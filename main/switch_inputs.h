@@ -7,6 +7,7 @@
 #include "esp_err.h"
 #include "config_model.h"
 #include "input_line_classifier.h"
+#include "input_history.h"
 
 #define SWITCH_INPUT_COUNT 3U
 
@@ -66,3 +67,4 @@ esp_err_t switch_inputs_run_self_test(void);
 bool switch_input_diagnostics_get(
     size_t index,
     switch_input_diagnostics_t *diagnostics);
+bool switch_inputs_history_get(input_history_t *history);

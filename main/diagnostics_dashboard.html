@@ -73,6 +73,18 @@
         </div>
       </section>
 
+      <section class="panel" aria-labelledby="inputHistoryTitle">
+        <h2 id="inputHistoryTitle">Recent input events</h2>
+        <p class="muted">Newest first · This boot only · Timing resolution 10 ms</p>
+        <p id="inputHistoryStatus" class="muted"></p>
+        <div class="table-wrap" tabindex="0" role="region" aria-label="Recent input events table">
+          <table>
+            <thead><tr><th>Sequence</th><th>GPIO</th><th>Boot-relative time</th><th>Event</th><th>Stable state</th><th>Rejected pulse</th></tr></thead>
+            <tbody id="inputHistoryRows"></tbody>
+          </table>
+        </div>
+      </section>
+
       <div class="two-column">
         <section class="panel" aria-labelledby="bacnetTitle">
           <h2 id="bacnetTitle">BACnet/IP</h2>
