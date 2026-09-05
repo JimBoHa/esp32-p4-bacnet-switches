@@ -465,6 +465,47 @@ class OtaToolTests(unittest.TestCase):
             client._read_response(response)
         self.assertEqual(response.requested, client.MAX_HTTP_RESPONSE_BYTES + 1)
 
+    def test_diagnostics_report_rejects_credentials_and_malformed_sections(self) -> None:
+        client = _load_client_module()
+        report = {"schema": 1, "report_type": "esp32-p4-diagnostics", **{
+            name: {} for name in ("status", "active_configuration", "saved_configuration",
+                "active_network_configuration", "saved_network_configuration",
+                "confirmed_network_configuration")}}
+        self.assertEqual(client._validate_diagnostics_report(report, "X" * 32), report)
+        for value in (None, [], {**report, "schema": 2}, {**report, "status": []}):
+            with self.assertRaisesRegex(ValueError, "invalid diagnostics"):
+                client._validate_diagnostics_report(value, "X" * 32)
+        for value in ({"viewer_token": "hidden"}, {"nested": ["X" * 32]},
+                      {"key": "-----BEGIN RSA PRIVATE KEY-----"}, {"header": "Bearer abc"}):
+            with self.assertRaisesRegex(ValueError, "credential"):
+                client._validate_diagnostics_report({**report, "status": value}, "X" * 32)
+
+    def test_diagnostics_download_is_private_and_never_overwrites(self) -> None:
+        client = _load_client_module()
+        report = {"schema": 1, "report_type": "esp32-p4-diagnostics", **{
+            name: {} for name in ("status", "active_configuration", "saved_configuration",
+                "active_network_configuration", "saved_network_configuration",
+                "confirmed_network_configuration")}}
+        connection = mock.Mock()
+        response = connection.getresponse.return_value
+        response.status = 200
+        response.read.return_value = json.dumps(report).encode()
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "report.json"
+            arguments = type("Arguments", (), {"host": "192.0.2.1", "port": 443,
+                "cert": Path("cert.pem"), "timeout": 1, "output": output})()
+            with mock.patch.object(client, "_connection", return_value=connection):
+                self.assertEqual(client._diagnostics_report(arguments, "X" * 32), 0)
+                self.assertEqual(stat.S_IMODE(output.stat().st_mode), 0o600)
+                self.assertEqual(json.loads(output.read_text()), report)
+                with self.assertRaises(FileExistsError):
+                    client._diagnostics_report(arguments, "X" * 32)
+                self.assertEqual(json.loads(output.read_text()), report)
+                response.status = 401
+                with self.assertRaisesRegex(http.client.HTTPException, "HTTP 401"):
+                    client._diagnostics_report(arguments, "X" * 32)
+            connection.close.assert_called()
+
     def test_client_uploads_validated_bytes_and_requires_acceptance_hash(self) -> None:
         client = _load_client_module()
         image = _test_firmware_image()
