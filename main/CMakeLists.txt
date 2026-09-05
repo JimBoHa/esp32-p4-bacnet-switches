@@ -108,6 +108,7 @@ idf_component_register(
         "diagnostics_time.c"
         "discovery_service.c"
         "hardware_profile.c"
+        "header_diagnostics.c"
         "input_debounce.c"
         "input_history.c"
         "input_line_classifier.c"

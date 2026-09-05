@@ -323,6 +323,15 @@ referrer, permissions, and caching headers. Verify the self-signed device
 certificate before using the page. Failed status requests hide stale readings
 and retry every five seconds while automatic refresh is enabled.
 
+The **P1 header: all 40 positions** table maps the Waveshare 2x20 connector to
+ESP32-P4 GPIO numbers. It samples 25 GPIOs and explicitly marks the two USB/JTAG
+GPIOs and 13 power/ground/control positions as unavailable, never as LOW.
+The same `header_diagnostics` object appears in status and downloaded reports.
+Only input buffers are enabled once at startup; pulls, output enables, mux,
+Ethernet, and USB settings are preserved. Refresh is strictly read-only.
+Floating pins and shared I2C lines can be HIGH without an active switch.
+See [full pin map and reading limitations](docs/HEADER_DIAGNOSTICS.md).
+
 All four read-only API routes (`/ota/status`, `/diagnostics/report`, `/config`,
 and `/network/config`) are accessible without credentials. Status identifies
 these requests as `access_role: "anonymous"` and reports

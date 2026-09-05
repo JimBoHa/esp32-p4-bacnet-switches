@@ -14,6 +14,7 @@
 #include "esp_idf_version.h"
 #include "esp_log.h"
 #include "esp_netif.h"
+#include "header_diagnostics.h"
 #include "network_config_store.h"
 #include "ota_server.h"
 #include "sdkconfig.h"
@@ -232,6 +233,9 @@ void app_main(void)
     esp_eth_handle_t eth_handle = NULL;
     ESP_ERROR_CHECK(install_waveshare_ethernet(&eth_handle));
     diagnostics_set_ethernet_handle(eth_handle);
+    if (!header_diagnostics_init()) {
+        ESP_LOGW(TAG, "some P1 header inputs unavailable; see header diagnostics");
+    }
 
     const esp_netif_config_t netif_config = ESP_NETIF_DEFAULT_ETH();
     esp_netif_t *netif = esp_netif_new(&netif_config);
