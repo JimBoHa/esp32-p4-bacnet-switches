@@ -1,6 +1,7 @@
 #include <stdint.h>
 
 #include "bacnet_server.h"
+#include "config_store.h"
 #include "diagnostics.h"
 #include "esp_check.h"
 #include "esp_eth.h"
@@ -154,9 +155,12 @@ static void lost_ip_event_handler(
 void app_main(void)
 {
     ESP_ERROR_CHECK(diagnostics_init());
+    ESP_ERROR_CHECK(config_store_init());
+    firmware_config_t active_config;
+    config_store_get_active(&active_config);
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
-    switch_inputs_init();
+    switch_inputs_init(&active_config);
 
     esp_eth_handle_t eth_handle = NULL;
     ESP_ERROR_CHECK(install_waveshare_ethernet(&eth_handle));
@@ -196,8 +200,9 @@ void app_main(void)
         CONFIG_TOGGLE_INPUT_3_GPIO);
     ESP_LOGI(
         TAG,
-        "starting BACnet Device %d with DHCP hostname %s",
-        CONFIG_BACNET_DEVICE_INSTANCE,
+        "starting BACnet Device %u on UDP %u with DHCP hostname %s",
+        (unsigned)active_config.device_instance,
+        (unsigned)active_config.bacnet_port,
         CONFIG_BACNET_HOSTNAME);
 #if CONFIG_OTA_HTTPS_ENABLED
     const esp_err_t ota_result = ota_server_start();

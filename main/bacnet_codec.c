@@ -999,7 +999,7 @@ static property_result_t encode_device_property(
         encode_application_character_string(writer, state->description);
         break;
     case PROP_LOCATION:
-        encode_application_character_string(writer, "");
+        encode_application_character_string(writer, state->location);
         break;
     case PROP_PROPERTY_LIST:
         return encode_array(

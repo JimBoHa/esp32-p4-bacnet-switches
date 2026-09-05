@@ -9,8 +9,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 
 #include "bacnet_server.h"
+#include "cJSON.h"
+#include "config_store.h"
 #include "diagnostics.h"
 #include "diagnostics_time.h"
 #include "esp_app_desc.h"
@@ -40,6 +43,7 @@
 #define OTA_STATUS_RESPONSE_BYTES 12288U
 #define OTA_SHA256_BYTES 32U
 #define OTA_SHA256_HEX_BYTES (OTA_SHA256_BYTES * 2U)
+#define CONFIG_JSON_MAX_BYTES 4096U
 
 static const char *TAG = "https_ota";
 
@@ -332,6 +336,382 @@ static const char *ota_state_name(esp_ota_img_states_t state)
     }
 }
 
+static bool json_required_unsigned(
+    const cJSON *object,
+    const char *name,
+    uint32_t maximum,
+    uint32_t *value,
+    char *reason,
+    size_t reason_capacity)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, name);
+    if (!cJSON_IsNumber(item) || item->valuedouble < 0.0 ||
+        item->valuedouble > (double)maximum ||
+        (double)(uint32_t)item->valuedouble != item->valuedouble) {
+        (void)snprintf(
+            reason, reason_capacity, "%s must be an integer 0..%u", name,
+            (unsigned)maximum);
+        return false;
+    }
+    *value = (uint32_t)item->valuedouble;
+    return true;
+}
+
+static bool json_required_string(
+    const cJSON *object,
+    const char *name,
+    char *value,
+    size_t value_capacity,
+    char *reason,
+    size_t reason_capacity)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, name);
+    if (!cJSON_IsString(item) || item->valuestring == NULL ||
+        strlen(item->valuestring) >= value_capacity) {
+        (void)snprintf(
+            reason,
+            reason_capacity,
+            "%s must be a string shorter than %u bytes",
+            name,
+            (unsigned)value_capacity);
+        return false;
+    }
+    memset(value, 0, value_capacity);
+    memcpy(value, item->valuestring, strlen(item->valuestring));
+    return true;
+}
+
+static bool parse_config_json(
+    const cJSON *root,
+    firmware_config_t *config,
+    char *reason,
+    size_t reason_capacity)
+{
+    uint32_t value = 0U;
+    if (!cJSON_IsObject(root) || config == NULL) {
+        (void)snprintf(reason, reason_capacity, "configuration must be an object");
+        return false;
+    }
+    memset(config, 0, sizeof(*config));
+    if (!json_required_unsigned(
+            root,
+            "schema",
+            FIRMWARE_CONFIG_SCHEMA,
+            &value,
+            reason,
+            reason_capacity) ||
+        value != FIRMWARE_CONFIG_SCHEMA) {
+        (void)snprintf(
+            reason,
+            reason_capacity,
+            "schema must be %u",
+            (unsigned)FIRMWARE_CONFIG_SCHEMA);
+        return false;
+    }
+    if (!json_required_unsigned(
+            root,
+            "device_instance",
+            4194302U,
+            &config->device_instance,
+            reason,
+            reason_capacity) ||
+        !json_required_unsigned(
+            root, "bacnet_port", UINT16_MAX, &value, reason, reason_capacity)) {
+        return false;
+    }
+    config->bacnet_port = (uint16_t)value;
+    if (config->bacnet_port == 0U) {
+        (void)snprintf(reason, reason_capacity, "bacnet_port must be 1..65535");
+        return false;
+    }
+    if (!json_required_unsigned(
+            root,
+            "vendor_identifier",
+            UINT16_MAX,
+            &value,
+            reason,
+            reason_capacity)) {
+        return false;
+    }
+    config->vendor_identifier = (uint16_t)value;
+    if (!json_required_unsigned(
+            root, "debounce_ms", 500U, &value, reason, reason_capacity)) {
+        return false;
+    }
+    config->debounce_ms = (uint16_t)value;
+    if (!json_required_string(
+            root,
+            "device_name",
+            config->device_name,
+            sizeof(config->device_name),
+            reason,
+            reason_capacity) ||
+        !json_required_string(
+            root,
+            "vendor_name",
+            config->vendor_name,
+            sizeof(config->vendor_name),
+            reason,
+            reason_capacity) ||
+        !json_required_string(
+            root,
+            "location",
+            config->location,
+            sizeof(config->location),
+            reason,
+            reason_capacity)) {
+        return false;
+    }
+
+    const cJSON *inputs = cJSON_GetObjectItemCaseSensitive(root, "inputs");
+    if (!cJSON_IsArray(inputs) ||
+        cJSON_GetArraySize(inputs) != FIRMWARE_CONFIG_INPUT_COUNT) {
+        (void)snprintf(
+            reason,
+            reason_capacity,
+            "inputs must contain exactly %u entries",
+            (unsigned)FIRMWARE_CONFIG_INPUT_COUNT);
+        return false;
+    }
+    static const uint32_t INPUT_GPIOS[FIRMWARE_CONFIG_INPUT_COUNT] = {
+        CONFIG_TOGGLE_INPUT_1_GPIO,
+        CONFIG_TOGGLE_INPUT_2_GPIO,
+        CONFIG_TOGGLE_INPUT_3_GPIO,
+    };
+    for (size_t index = 0U;
+         index < FIRMWARE_CONFIG_INPUT_COUNT;
+         ++index) {
+        const cJSON *input = cJSON_GetArrayItem(inputs, (int)index);
+        uint32_t gpio = 0U;
+        if (!cJSON_IsObject(input) ||
+            !json_required_unsigned(
+                input, "gpio", 54U, &gpio, reason, reason_capacity) ||
+            gpio != INPUT_GPIOS[index] ||
+            !json_required_unsigned(
+                input,
+                "object_instance",
+                4194302U,
+                &config->input_instances[index],
+                reason,
+                reason_capacity) ||
+            !json_required_string(
+                input,
+                "name",
+                config->input_names[index],
+                sizeof(config->input_names[index]),
+                reason,
+                reason_capacity)) {
+            if (gpio != INPUT_GPIOS[index]) {
+                (void)snprintf(
+                    reason,
+                    reason_capacity,
+                    "input %u gpio is fixed at %u",
+                    (unsigned)(index + 1U),
+                    (unsigned)INPUT_GPIOS[index]);
+            }
+            return false;
+        }
+        const cJSON *active_low =
+            cJSON_GetObjectItemCaseSensitive(input, "active_low");
+        if (!cJSON_IsBool(active_low)) {
+            (void)snprintf(
+                reason,
+                reason_capacity,
+                "input %u active_low must be boolean",
+                (unsigned)(index + 1U));
+            return false;
+        }
+        if (cJSON_IsTrue(active_low)) {
+            config->input_active_low_mask |= (uint8_t)(1U << index);
+        }
+    }
+    return config_model_validate(config, reason, reason_capacity);
+}
+
+static cJSON *config_json(
+    const firmware_config_t *saved,
+    const firmware_config_t *active,
+    bool include_result,
+    bool changed)
+{
+    static const int INPUT_GPIOS[FIRMWARE_CONFIG_INPUT_COUNT] = {
+        CONFIG_TOGGLE_INPUT_1_GPIO,
+        CONFIG_TOGGLE_INPUT_2_GPIO,
+        CONFIG_TOGGLE_INPUT_3_GPIO,
+    };
+    cJSON *root = cJSON_CreateObject();
+    cJSON *inputs = cJSON_CreateArray();
+    if (root == NULL || inputs == NULL ||
+        cJSON_AddNumberToObject(root, "schema", FIRMWARE_CONFIG_SCHEMA) == NULL ||
+        cJSON_AddNumberToObject(
+            root, "database_revision", saved->database_revision) == NULL ||
+        cJSON_AddNumberToObject(
+            root,
+            "active_database_revision",
+            active->database_revision) == NULL ||
+        cJSON_AddBoolToObject(
+            root, "restart_required", config_store_restart_required()) == NULL ||
+        cJSON_AddNumberToObject(
+            root, "device_instance", saved->device_instance) == NULL ||
+        cJSON_AddStringToObject(root, "device_name", saved->device_name) == NULL ||
+        cJSON_AddNumberToObject(root, "bacnet_port", saved->bacnet_port) == NULL ||
+        cJSON_AddNumberToObject(
+            root, "vendor_identifier", saved->vendor_identifier) == NULL ||
+        cJSON_AddStringToObject(root, "vendor_name", saved->vendor_name) == NULL ||
+        cJSON_AddStringToObject(root, "location", saved->location) == NULL ||
+        cJSON_AddNumberToObject(root, "debounce_ms", saved->debounce_ms) == NULL) {
+        cJSON_Delete(root);
+        cJSON_Delete(inputs);
+        return NULL;
+    }
+    if (include_result &&
+        (cJSON_AddBoolToObject(root, "accepted", true) == NULL ||
+         cJSON_AddBoolToObject(root, "changed", changed) == NULL)) {
+        cJSON_Delete(root);
+        cJSON_Delete(inputs);
+        return NULL;
+    }
+    for (size_t index = 0U;
+         index < FIRMWARE_CONFIG_INPUT_COUNT;
+         ++index) {
+        cJSON *input = cJSON_CreateObject();
+        if (input == NULL ||
+            cJSON_AddNumberToObject(input, "gpio", INPUT_GPIOS[index]) == NULL ||
+            cJSON_AddNumberToObject(
+                input,
+                "object_instance",
+                saved->input_instances[index]) == NULL ||
+            cJSON_AddStringToObject(
+                input, "name", saved->input_names[index]) == NULL ||
+            cJSON_AddBoolToObject(
+                input,
+                "active_low",
+                (saved->input_active_low_mask & (1U << index)) != 0U) == NULL ||
+            !cJSON_AddItemToArray(inputs, input)) {
+            cJSON_Delete(input);
+            cJSON_Delete(inputs);
+            cJSON_Delete(root);
+            return NULL;
+        }
+    }
+    if (!cJSON_AddItemToObject(root, "inputs", inputs)) {
+        cJSON_Delete(inputs);
+        cJSON_Delete(root);
+        return NULL;
+    }
+    return root;
+}
+
+static esp_err_t send_config_json(
+    httpd_req_t *request,
+    bool include_result,
+    bool changed)
+{
+    firmware_config_t saved;
+    firmware_config_t active;
+    config_store_get_saved(&saved);
+    config_store_get_active(&active);
+    cJSON *root = config_json(&saved, &active, include_result, changed);
+    if (root == NULL) {
+        return httpd_resp_send_err(
+            request, HTTPD_500_INTERNAL_SERVER_ERROR, "configuration encoding failed");
+    }
+    char *encoded = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (encoded == NULL) {
+        return httpd_resp_send_err(
+            request, HTTPD_500_INTERNAL_SERVER_ERROR, "configuration encoding failed");
+    }
+    httpd_resp_set_type(request, "application/json");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    const esp_err_t result = httpd_resp_sendstr(request, encoded);
+    cJSON_free(encoded);
+    return result;
+}
+
+static esp_err_t config_get_handler(httpd_req_t *request)
+{
+    if (!request_authenticated(request)) {
+        return send_unauthorized(request);
+    }
+    return send_config_json(request, false, false);
+}
+
+static esp_err_t config_put_handler(httpd_req_t *request)
+{
+    if (!request_authenticated(request)) {
+        return send_unauthorized(request);
+    }
+    char content_type[64];
+    const size_t content_type_length =
+        httpd_req_get_hdr_value_len(request, "Content-Type");
+    if (content_type_length == 0U ||
+        content_type_length >= sizeof(content_type) ||
+        httpd_req_get_hdr_value_str(
+            request,
+            "Content-Type",
+            content_type,
+            sizeof(content_type)) != ESP_OK ||
+        strncasecmp(content_type, "application/json", 16U) != 0 ||
+        (content_type[16] != '\0' && content_type[16] != ';' &&
+         content_type[16] != ' ' && content_type[16] != '\t')) {
+        httpd_resp_set_status(request, "415 Unsupported Media Type");
+        return httpd_resp_sendstr(
+            request, "Content-Type must be application/json");
+    }
+    if (request->content_len == 0U ||
+        request->content_len > CONFIG_JSON_MAX_BYTES) {
+        return httpd_resp_send_err(
+            request, HTTPD_400_BAD_REQUEST, "configuration body must be 1..4096 bytes");
+    }
+    char *body = malloc(request->content_len + 1U);
+    if (body == NULL) {
+        return httpd_resp_send_err(
+            request, HTTPD_500_INTERNAL_SERVER_ERROR, "not enough memory");
+    }
+    size_t received_total = 0U;
+    unsigned timeouts = 0U;
+    while (received_total < request->content_len) {
+        const int received = httpd_req_recv(
+            request,
+            body + received_total,
+            request->content_len - received_total);
+        if (received == HTTPD_SOCK_ERR_TIMEOUT && timeouts++ < 5U) {
+            continue;
+        }
+        if (received <= 0) {
+            free(body);
+            return httpd_resp_send_err(
+                request, HTTPD_400_BAD_REQUEST, "incomplete configuration body");
+        }
+        received_total += (size_t)received;
+    }
+    body[received_total] = '\0';
+
+    cJSON *root = cJSON_ParseWithLengthOpts(
+        body, received_total + 1U, NULL, true);
+    free(body);
+    char reason[160] = "invalid JSON";
+    firmware_config_t candidate;
+    if (root == NULL || !parse_config_json(
+            root, &candidate, reason, sizeof(reason))) {
+        cJSON_Delete(root);
+        return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, reason);
+    }
+    cJSON_Delete(root);
+
+    bool changed = false;
+    const esp_err_t result = config_store_update(&candidate, &changed);
+    if (result != ESP_OK) {
+        return httpd_resp_send_err(
+            request,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "failed to persist configuration");
+    }
+    httpd_resp_set_status(request, "202 Accepted");
+    return send_config_json(request, true, changed);
+}
+
 static const char *dhcp_status_name(uint32_t status)
 {
     switch ((esp_netif_dhcp_status_t)status) {
@@ -364,6 +744,10 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             HTTPD_500_INTERNAL_SERVER_ERROR,
             "diagnostics snapshot failed");
     }
+    firmware_config_t active_config;
+    firmware_config_t saved_config;
+    config_store_get_active(&active_config);
+    config_store_get_saved(&saved_config);
 
     char *response = malloc(OTA_STATUS_RESPONSE_BYTES);
     if (response == NULL) {
@@ -424,6 +808,17 @@ static esp_err_t status_get_handler(httpd_req_t *request)
                 DIAGNOSTICS_TASK_BACNET]),
             json_bool(snapshot.task_healthy[DIAGNOSTICS_TASK_BACNET]),
             snapshot.task_last_heartbeat_ms[DIAGNOSTICS_TASK_BACNET])) {
+        goto encoding_failed;
+    }
+    if (!response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            "\"configuration\":{\"active_database_revision\":%u,"
+            "\"saved_database_revision\":%u,\"restart_required\":%s},",
+            (unsigned)active_config.database_revision,
+            (unsigned)saved_config.database_revision,
+            json_bool(config_store_restart_required()))) {
         goto encoding_failed;
     }
 
@@ -877,7 +1272,7 @@ esp_err_t ota_server_start(void)
 
     httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
     config.port_secure = CONFIG_OTA_HTTPS_PORT;
-    config.httpd.max_uri_handlers = 3;
+    config.httpd.max_uri_handlers = 5;
     config.httpd.max_open_sockets = 2;
     config.httpd.lru_purge_enable = true;
     config.httpd.stack_size = 12288;
@@ -909,6 +1304,16 @@ esp_err_t ota_server_start(void)
         .method = HTTP_POST,
         .handler = input_self_test_post_handler,
     };
+    const httpd_uri_t config_get_uri = {
+        .uri = "/config",
+        .method = HTTP_GET,
+        .handler = config_get_handler,
+    };
+    const httpd_uri_t config_put_uri = {
+        .uri = "/config",
+        .method = HTTP_PUT,
+        .handler = config_put_handler,
+    };
     esp_err_t result =
         httpd_register_uri_handler(created_server, &status_uri);
     if (result == ESP_OK) {
@@ -917,6 +1322,14 @@ esp_err_t ota_server_start(void)
     if (result == ESP_OK) {
         result = httpd_register_uri_handler(
             created_server, &input_self_test_uri);
+    }
+    if (result == ESP_OK) {
+        result = httpd_register_uri_handler(
+            created_server, &config_get_uri);
+    }
+    if (result == ESP_OK) {
+        result = httpd_register_uri_handler(
+            created_server, &config_put_uri);
     }
     if (result != ESP_OK) {
         (void)httpd_ssl_stop(created_server);
