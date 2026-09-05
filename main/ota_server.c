@@ -1,5 +1,6 @@
 #include "ota_server.h"
 
+#include <inttypes.h>
 #include <stdarg.h>
 #include <stdatomic.h>
 #include <stdbool.h>
@@ -11,6 +12,7 @@
 
 #include "bacnet_server.h"
 #include "diagnostics.h"
+#include "diagnostics_time.h"
 #include "esp_app_desc.h"
 #include "esp_check.h"
 #include "esp_https_server.h"
@@ -377,7 +379,8 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             "\"idf_version\":\"%.31s\",\"partition\":\"%.15s\","
             "\"state\":\"%s\",\"port\":%u,\"git_revision\":\"%.31s\","
             "\"image_sha256\":\"%s\","
-            "\"system\":{\"uptime_ms\":%u,\"chip_temperature_c\":",
+            "\"system\":{\"uptime_ms\":%" PRIu64
+            ",\"chip_temperature_c\":",
             app != NULL ? app->project_name : "unknown",
             app != NULL ? app->version : "unknown",
             esp_get_idf_version(),
@@ -386,7 +389,7 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             (unsigned)CONFIG_OTA_HTTPS_PORT,
             diagnostics_git_revision(),
             running_image_sha256,
-            (unsigned)snapshot.uptime_ms)) {
+            snapshot.uptime_ms)) {
         goto encoding_failed;
     }
     if (!response_append(
@@ -404,9 +407,9 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             "\"boot_count\":%u,\"last_ota_result\":\"%s\","
             "\"task_watchdog\":{"
             "\"switch_inputs\":{\"subscribed\":%s,\"healthy\":%s,"
-            "\"last_heartbeat_ms\":%u},"
+            "\"last_heartbeat_ms\":%" PRIu64 "},"
             "\"bacnet\":{\"subscribed\":%s,\"healthy\":%s,"
-            "\"last_heartbeat_ms\":%u}}},",
+            "\"last_heartbeat_ms\":%" PRIu64 "}}},",
             (unsigned)snapshot.free_heap_bytes,
             (unsigned)snapshot.minimum_free_heap_bytes,
             (unsigned)snapshot.reset_reason,
@@ -416,21 +419,20 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             json_bool(snapshot.task_watchdog_subscribed[
                 DIAGNOSTICS_TASK_SWITCH_INPUTS]),
             json_bool(snapshot.task_healthy[DIAGNOSTICS_TASK_SWITCH_INPUTS]),
-            (unsigned)snapshot.task_last_heartbeat_ms[
-                DIAGNOSTICS_TASK_SWITCH_INPUTS],
+            snapshot.task_last_heartbeat_ms[DIAGNOSTICS_TASK_SWITCH_INPUTS],
             json_bool(snapshot.task_watchdog_subscribed[
                 DIAGNOSTICS_TASK_BACNET]),
             json_bool(snapshot.task_healthy[DIAGNOSTICS_TASK_BACNET]),
-            (unsigned)snapshot.task_last_heartbeat_ms[
-                DIAGNOSTICS_TASK_BACNET])) {
+            snapshot.task_last_heartbeat_ms[DIAGNOSTICS_TASK_BACNET])) {
         goto encoding_failed;
     }
 
     const esp_ip4_addr_t ipv4 = {.addr = snapshot.network.ipv4_address};
     const esp_ip4_addr_t netmask = {.addr = snapshot.network.ipv4_netmask};
     const esp_ip4_addr_t gateway = {.addr = snapshot.network.ipv4_gateway};
-    const uint32_t address_age_ms = snapshot.network.ipv4_address != 0U
-        ? snapshot.uptime_ms - snapshot.network.ip_acquired_uptime_ms
+    const uint64_t address_age_ms = snapshot.network.ipv4_address != 0U
+        ? diagnostics_elapsed_milliseconds(
+              snapshot.uptime_ms, snapshot.network.ip_acquired_uptime_ms)
         : 0U;
     if (!response_append(
             response,
@@ -443,8 +445,8 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             "\"reconnect_count\":%u,\"ip_acquisition_count\":%u,"
             "\"ip_changed_count\":%u,\"ipv4\":\"" IPSTR "\","
             "\"netmask\":\"" IPSTR "\",\"gateway\":\"" IPSTR "\","
-            "\"dhcp_status\":\"%s\",\"ip_acquired_uptime_ms\":%u,"
-            "\"address_age_ms\":%u},",
+            "\"dhcp_status\":\"%s\",\"ip_acquired_uptime_ms\":%" PRIu64
+            ",\"address_age_ms\":%" PRIu64 "},",
             json_bool(snapshot.network.link_up),
             (unsigned)snapshot.network.speed_mbps,
             json_bool(snapshot.network.full_duplex),
@@ -464,8 +466,8 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             IP2STR(&netmask),
             IP2STR(&gateway),
             dhcp_status_name(snapshot.network.dhcp_status),
-            (unsigned)snapshot.network.ip_acquired_uptime_ms,
-            (unsigned)address_age_ms) ||
+            snapshot.network.ip_acquired_uptime_ms,
+            address_age_ms) ||
         !response_append(
             response,
             OTA_STATUS_RESPONSE_BYTES,
@@ -502,7 +504,8 @@ static esp_err_t status_get_handler(httpd_req_t *request)
                 OTA_STATUS_RESPONSE_BYTES,
                 &response_length,
                 "%s{\"gpio\":%d,\"active_low\":%s,\"debounce_ms\":%u,"
-                "\"transition_count\":%u,\"last_transition_uptime_ms\":%u,"
+                "\"transition_count\":%u,"
+                "\"last_transition_uptime_ms\":%" PRIu64 ","
                 "\"fault\":%s,\"self_test\":{\"run\":%s,"
                 "\"passed\":%s,\"pull_down_level\":%s,"
                 "\"pull_up_level\":%s},\"startup\":{"
@@ -512,7 +515,7 @@ static esp_err_t status_get_handler(httpd_req_t *request)
                 json_bool(input.active_low),
                 (unsigned)input.debounce_ms,
                 (unsigned)input.transition_count,
-                (unsigned)input.last_transition_uptime_ms,
+                input.last_transition_uptime_ms,
                 json_bool(switch_input_faulted(index)),
                 json_bool(input.self_test_run),
                 json_bool(input.self_test_passed),
@@ -569,11 +572,12 @@ static esp_err_t status_get_handler(httpd_req_t *request)
                 OTA_STATUS_RESPONSE_BYTES,
                 &response_length,
                 "%s{\"sequence\":%u,\"boot_count\":%u,"
-                "\"uptime_ms\":%u,\"type\":\"%s\",\"code\":%d}",
+                "\"uptime_ms\":%" PRIu64
+                ",\"type\":\"%s\",\"code\":%d}",
                 index == 0 ? "" : ",",
                 (unsigned)event->sequence,
                 (unsigned)event->boot_count,
-                (unsigned)event->uptime_ms,
+                event->uptime_ms,
                 diagnostics_event_name(
                     (diagnostics_event_type_t)event->type),
                 (int)event->code)) {

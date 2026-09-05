@@ -35,7 +35,7 @@ typedef struct {
     bool current_raw;
     bool stable;
     uint32_t transition_count;
-    uint32_t last_transition_uptime_ms;
+    uint64_t last_transition_uptime_ms;
     bool self_test_run;
     bool self_test_passed;
     bool self_test_pull_down_level;
