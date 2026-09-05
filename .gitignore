@@ -11,3 +11,4 @@
 __pycache__/
 *.py[cod]
 /hardware-report*.json
+/soak-*.jsonl
