@@ -18,7 +18,42 @@ static size_t bounded_length(const char *value, size_t maximum)
 bool ota_token_configuration_valid(const char *token)
 {
     const size_t length = bounded_length(token, OTA_TOKEN_MAX_LENGTH + 1U);
-    return length >= OTA_TOKEN_MIN_LENGTH && length <= OTA_TOKEN_MAX_LENGTH;
+    if (length < OTA_TOKEN_MIN_LENGTH || length > OTA_TOKEN_MAX_LENGTH) {
+        return false;
+    }
+    for (size_t index = 0; index < length; ++index) {
+        if ((unsigned char)token[index] < 0x21U ||
+            (unsigned char)token[index] > 0x7EU) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool ota_role_tokens_valid(const char *admin_token, const char *viewer_token)
+{
+    return ota_token_configuration_valid(admin_token) &&
+        ota_token_configuration_valid(viewer_token) &&
+        strcmp(admin_token, viewer_token) != 0;
+}
+
+ota_role_t ota_authorization_role(
+    const char *authorization, size_t authorization_length,
+    const char *admin_token, const char *viewer_token)
+{
+    if (!ota_role_tokens_valid(admin_token, viewer_token)) {
+        return OTA_ROLE_NONE;
+    }
+    const bool admin = ota_authorization_valid(
+        authorization, authorization_length, admin_token);
+    const bool viewer = ota_authorization_valid(
+        authorization, authorization_length, viewer_token);
+    return admin ? OTA_ROLE_ADMIN : viewer ? OTA_ROLE_VIEWER : OTA_ROLE_NONE;
+}
+
+bool ota_role_allows(ota_role_t role, bool read_only)
+{
+    return role == OTA_ROLE_ADMIN || (role == OTA_ROLE_VIEWER && read_only);
 }
 
 bool ota_copy_embedded_token(

@@ -218,19 +218,19 @@ Use ESP-IDF **5.5.4**. The defaults target ESP32-P4 revision 0.x/1.x, matching
 this Waveshare board; do not use the binary on revision 3.x silicon.
 
 Private OTA material is never tracked. For a new device, generate its
-certificate/key/token before building:
+certificate/key/admin-token/viewer-token before building:
 
 ```sh
-python3 tools/generate_ota_credentials.py --force
+python3 tools/generate_ota_credentials.py
 ```
 
 This writes the public certificate to `main/ota_server_cert.pem` and writes the
-private key and bearer token to ignored, permission-restricted files under
+private key and both bearer tokens to ignored, permission-restricted files under
 `secrets/`. Back up `secrets/` in an approved secret store. A later clone cannot
 manage the device without that token and key. To build with a securely supplied
 directory instead, set `ESP32_P4_OTA_SECRETS_DIR`; it must contain
-`ota_server_key.pem` and `ota_token.txt`. Every OTA-enabled build validates the
-token, certificate lifetime and server-auth purpose, P-256 PKCS#8 key format,
+`ota_server_key.pem`, `ota_token.txt`, and `ota_viewer_token.txt`. Every OTA-enabled build validates
+both distinct tokens, certificate lifetime and server-auth purpose, P-256 PKCS#8 key format,
 private file permissions, and certificate/key match before compiling.
 
 Perform the first installation over USB. The project uses a dual-slot
@@ -263,6 +263,23 @@ is held only in page memory, never placed in a URL, cookie, or browser storage.
 All assets are same-origin and carry restrictive CSP, framing, MIME-sniffing,
 referrer, permissions, and caching headers. Verify the self-signed device
 certificate before entering the token.
+
+The dashboard accepts either a viewer or admin token and shows its role.
+Viewer access is read-only across the HTTPS API: status, report, `/config`, and
+`/network/config` reads are allowed; all uploads, configuration writes, network
+confirmation, input self-tests, and reboot requests return HTTP 403. Absent or
+invalid credentials return 401. The existing `ota_token.txt` remains the admin
+credential. To add a viewer credential without changing admin or TLS identity:
+
+```sh
+python3 tools/generate_ota_credentials.py --viewer-only
+```
+
+The new `secrets/ota_viewer_token.txt` must be backed up privately and included
+in the next firmware build. Both role tokens must be distinct. Use the viewer
+file with `--token-file` for read-only CLI operations; mutations require the
+admin file. Viewer-token rotation uses `--viewer-only --force` and a new
+admin-authorized firmware deployment.
 
 Use **Download diagnostics** to save a JSON report. It contains the complete
 status (including hardware pin map, firmware identity, input history, and fault
@@ -398,7 +415,7 @@ The client pins the exact certificate in `main/ota_server_cert.pem` before it
 sends any HTTP data. CA and hostname checking are replaced by exact DER
 certificate pinning because the device uses a self-signed leaf certificate and
 DHCP. The server additionally requires a 32–128
-character bearer token, validates its embedded certificate/key pair and running
+character admin bearer token for uploads, validates its embedded certificate/key pair and running
 image at startup, requires an application/octet-stream body with a bounded size
 and five-minute whole-transfer deadline, verifies each uploaded ESP image,
 project name, and nondecreasing secure version, writes only an inactive OTA
@@ -447,7 +464,7 @@ before destroying the temporary copy. Credential generation stages and
 validates the complete replacement set before replacing existing files and
 refuses symbolic-link outputs. Token files must have mode 0600 on POSIX hosts.
 
-The private key and token are embedded in each device image, so generated
+The TLS private key and both role tokens are embedded in each device image, so generated
 application or merged binaries are also secrets and must not be committed or
 attached to a public release. Secure Boot and flash encryption are not enabled
 because eFuse provisioning is irreversible and device-specific. Someone with

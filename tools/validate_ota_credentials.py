@@ -19,6 +19,8 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument("--certificate", type=Path, required=True)
     parser.add_argument("--private-key", type=Path, required=True)
     parser.add_argument("--token-file", type=Path, required=True)
+    parser.add_argument("--viewer-token-file", type=Path,
+                        help="require a distinct, private viewer token")
     parser.add_argument(
         "--minimum-valid-days",
         type=int,
@@ -54,11 +56,28 @@ def _parse_openssl_time(value: str) -> dt.datetime:
     return parsed.replace(tzinfo=dt.timezone.utc)
 
 
+def validate_tokens(token_file: Path, viewer_token_file: Path | None = None) -> None:
+    paths = [token_file] if viewer_token_file is None else [token_file, viewer_token_file]
+    values = []
+    for path in paths:
+        if not path.is_file() or path.is_symlink():
+            raise ValueError(f"token must be a regular, non-symlink file: {path}")
+        _require_private_permissions(path.parent)
+        _require_private_permissions(path)
+        token = path.read_bytes()
+        if not 32 <= len(token) <= 128 or any(not 0x21 <= byte <= 0x7E for byte in token):
+            raise ValueError("OTA token must be exactly 32-128 printable ASCII bytes")
+        values.append(token)
+    if len(values) == 2 and hmac.compare_digest(values[0], values[1]):
+        raise ValueError("admin and viewer tokens must be distinct")
+
+
 def validate(
     certificate: Path,
     private_key: Path,
     token_file: Path,
     minimum_valid_days: int,
+    viewer_token_file: Path | None = None,
 ) -> None:
     if minimum_valid_days < 0:
         raise ValueError("minimum-valid-days cannot be negative")
@@ -68,11 +87,7 @@ def validate(
 
     _require_private_permissions(private_key.parent)
     _require_private_permissions(private_key)
-    _require_private_permissions(token_file)
-
-    token = token_file.read_bytes()
-    if not 32 <= len(token) <= 128 or any(not 0x21 <= byte <= 0x7E for byte in token):
-        raise ValueError("OTA token must be exactly 32-128 printable ASCII bytes")
+    validate_tokens(token_file, viewer_token_file)
 
     certificate_pem = certificate.read_text(encoding="ascii")
     if certificate_pem.count("-----BEGIN CERTIFICATE-----") != 1:
@@ -140,6 +155,7 @@ def main() -> int:
             args.private_key,
             args.token_file,
             args.minimum_valid_days,
+            args.viewer_token_file,
         )
     except (OSError, RuntimeError, UnicodeError, ValueError, ssl.SSLError) as error:
         print(f"OTA credential validation failed: {error}")

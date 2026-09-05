@@ -12,6 +12,18 @@
 
 bool ota_token_configuration_valid(const char *token);
 
+typedef enum {
+    OTA_ROLE_NONE = 0,
+    OTA_ROLE_VIEWER,
+    OTA_ROLE_ADMIN,
+} ota_role_t;
+
+bool ota_role_tokens_valid(const char *admin_token, const char *viewer_token);
+ota_role_t ota_authorization_role(
+    const char *authorization, size_t authorization_length,
+    const char *admin_token, const char *viewer_token);
+bool ota_role_allows(ota_role_t role, bool read_only);
+
 bool ota_copy_embedded_token(
     const uint8_t *embedded,
     size_t embedded_length,

@@ -31,6 +31,7 @@ class SecurityAuditTests(unittest.TestCase):
     def test_forbidden_paths(self) -> None:
         for path in (
             "secrets/ota_token.txt",
+            "other/ota_viewer_token.txt",
             "release/private/v1/firmware.bin",
             "sdkconfig",
             "build/app.elf",

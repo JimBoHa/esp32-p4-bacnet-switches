@@ -19,10 +19,14 @@ idf.py build
 idf.py size
 ```
 
-An OTA-enabled build requires the ignored private key/token. Generate them for
+An OTA-enabled build requires the ignored TLS private key and distinct admin/viewer tokens. Generate them for
 a new device with `tools/generate_ota_credentials.py`, or point
 `ESP32_P4_OTA_SECRETS_DIR` at a protected directory. Never use production
 credentials in CI.
+
+Existing deployments can add only the missing viewer token with
+`python3 tools/generate_ota_credentials.py --viewer-only`; this preserves the
+admin token and TLS identity. Rebuild and upload using the admin credential.
 
 ## Tests
 

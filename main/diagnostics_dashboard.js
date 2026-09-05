@@ -287,7 +287,9 @@
       }
       render(status);
       connectedControls.hidden = false;
-      connectionStatus.textContent = "Authenticated. Device data is read-only.";
+      connectionStatus.textContent = status.access_role === "viewer"
+        ? "Authenticated as viewer. Read-only access."
+        : "Authenticated as admin. This dashboard is read-only.";
     } catch (error) {
       if (activeRequest !== controller) return;
       if (controller.signal.aborted && !requestTimedOut) return;
