@@ -43,6 +43,7 @@ static atomic_uint_fast32_t stable_input_bits;
 static atomic_uint_fast32_t input_fault_bits;
 static atomic_bool self_test_active;
 static input_debounce_state_t debounce_states[SWITCH_INPUT_COUNT];
+static input_history_t recent_input_history;
 static portMUX_TYPE debounce_state_lock = portMUX_INITIALIZER_UNLOCKED;
 static atomic_bool self_test_run[SWITCH_INPUT_COUNT];
 static atomic_bool self_test_passed[SWITCH_INPUT_COUNT];
@@ -147,6 +148,10 @@ static void switch_poll_task(void *argument)
         const bool initial = (initial_bits & (1U << index)) != 0;
         portENTER_CRITICAL(&debounce_state_lock);
         input_debounce_init(&debounce_states[index], initial);
+        (void)input_history_record(
+            &recent_input_history, (int)INPUT_GPIOS[index],
+            INPUT_HISTORY_INITIAL, initial, 0U,
+            (uint64_t)esp_timer_get_time() / 1000U);
         portEXIT_CRITICAL(&debounce_state_lock);
         store_input(index, initial);
         ESP_LOGI(
@@ -176,6 +181,23 @@ static void switch_poll_task(void *argument)
                 INPUT_POLL_MS,
                 input_debounce_ms,
                 uptime_ms);
+            if (result.accepted_transition) {
+                (void)input_history_record(
+                    &recent_input_history, (int)INPUT_GPIOS[index],
+                    INPUT_HISTORY_TRANSITION, result.stable, 0U, uptime_ms);
+            }
+            if (result.rejected_pulse) {
+                (void)input_history_record(
+                    &recent_input_history, (int)INPUT_GPIOS[index],
+                    INPUT_HISTORY_REJECTED_PULSE, result.stable,
+                    debounce_states[index].last_rejected_pulse_width_ms,
+                    uptime_ms);
+            }
+            if (result.chatter_started) {
+                (void)input_history_record(
+                    &recent_input_history, (int)INPUT_GPIOS[index],
+                    INPUT_HISTORY_CHATTER_STARTED, result.stable, 0U, uptime_ms);
+            }
             portEXIT_CRITICAL(&debounce_state_lock);
             if (result.accepted_transition) {
                 store_input(index, result.stable);
@@ -202,6 +224,7 @@ void switch_inputs_init(const firmware_config_t *config)
         abort();
     }
     input_debounce_ms = config->debounce_ms;
+    input_history_init(&recent_input_history);
     for (size_t index = 0U; index < SWITCH_INPUT_COUNT; ++index) {
         input_active_low[index] =
             (config->input_active_low_mask & (1U << index)) != 0U;
@@ -287,6 +310,17 @@ void switch_inputs_init(const firmware_config_t *config)
         ESP_LOGE(TAG, "failed to create switch input task");
         abort();
     }
+}
+
+bool switch_inputs_history_get(input_history_t *history)
+{
+    if (history == NULL) {
+        return false;
+    }
+    portENTER_CRITICAL(&debounce_state_lock);
+    *history = recent_input_history;
+    portEXIT_CRITICAL(&debounce_state_lock);
+    return true;
 }
 
 bool switch_input_get(size_t index)

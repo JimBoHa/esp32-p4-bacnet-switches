@@ -79,6 +79,7 @@ idf_component_register(
         "discovery_service.c"
         "hardware_profile.c"
         "input_debounce.c"
+        "input_history.c"
         "input_line_classifier.c"
         "network_config_model.c"
         "network_config_store.c"

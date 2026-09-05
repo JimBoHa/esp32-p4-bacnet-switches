@@ -203,6 +203,15 @@ these signal counters.
 Four rejected pulses inside two seconds start one chatter episode; the live
 `chattering` flag remains set until the line has been quiet for five seconds.
 
+The dashboard and authenticated status retain the latest 64 initial-state,
+accepted-transition, rejected-pulse, and chatter-start events in a bounded RAM
+ring. Each event carries its GPIO, stable logical state, sequence, 64-bit
+boot-relative time, and rejected-pulse width when applicable. History is ordered
+oldest-first in JSON and newest-first on the dashboard; overwrite counts show
+when older evidence has been lost. It resets on boot and never writes flash per
+input event. Timing is sampled at 10 ms resolution, not an oscilloscope capture.
+Internal weak-pull self-tests are excluded from the history.
+
 ## Build and initial flash
 
 Use ESP-IDF **5.5.4**. The defaults target ESP32-P4 revision 0.x/1.x, matching

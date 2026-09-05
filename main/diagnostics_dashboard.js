@@ -142,6 +142,34 @@
     });
   };
 
+  const renderInputHistory = (history) => {
+    const body = element("inputHistoryRows");
+    clearChildren(body);
+    const events = history && Array.isArray(history.events)
+      ? history.events.slice(-64).reverse() : [];
+    text("inputHistoryStatus", `${events.length} events shown · ${formatInteger(history && history.overwritten_events)} older events overwritten`);
+    if (events.length === 0) {
+      const row = document.createElement("tr");
+      const cell = document.createElement("td");
+      cell.colSpan = 6;
+      cell.textContent = "No input events recorded for this boot.";
+      row.appendChild(cell);
+      body.appendChild(row);
+      return;
+    }
+    events.forEach((event) => {
+      const item = event && typeof event === "object" ? event : {};
+      const row = document.createElement("tr");
+      appendCell(row, formatInteger(item.sequence), "number");
+      appendCell(row, item.gpio ?? "—", "number");
+      appendCell(row, `${formatDuration(item.uptime_ms)} + ${formatInteger(finiteNumber(item.uptime_ms) === null ? null : item.uptime_ms % 1000)} ms`, "number");
+      appendCell(row, item.type ?? "unknown");
+      appendCell(row, onOff(item.active));
+      appendCell(row, item.type === "rejected-pulse" ? `${formatInteger(item.pulse_width_ms)} ms` : "—");
+      body.appendChild(row);
+    });
+  };
+
   const render = (status) => {
     const system = status.system && typeof status.system === "object" ? status.system : {};
     const network = status.network && typeof status.network === "object" ? status.network : {};
@@ -203,6 +231,7 @@
       ["Rate limited", formatInteger(bacnet.rate_limited)],
     ]);
     renderInputs(inputs);
+    renderInputHistory(status.input_history);
     renderWatchdogs(watchdogs);
     renderFaultLog(status.fault_log);
     text("lastUpdated", `Updated ${new Date().toLocaleTimeString()}`);
