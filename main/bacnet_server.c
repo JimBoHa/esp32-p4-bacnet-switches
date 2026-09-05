@@ -10,6 +10,7 @@
 #include <string.h>
 
 #include "bacnet_codec.h"
+#include "cov_retry_cache.h"
 #include "diagnostics.h"
 #include "esp_app_desc.h"
 #include "esp_check.h"
@@ -101,6 +102,7 @@ typedef struct {
     uint8_t invoke_id;
     unsigned retry_count;
     int64_t next_retry_us;
+    cov_retry_cache_t retry_payload;
 } cov_subscription_t;
 
 static TaskHandle_t server_task_handle;
@@ -374,6 +376,7 @@ static void apply_cov_subscription(
             subscription->dirty = true;
             subscription->awaiting_ack = false;
             subscription->retry_count = 0U;
+            cov_retry_cache_clear(&subscription->retry_payload);
             return;
         }
     }
@@ -431,6 +434,7 @@ static void handle_cov_ack(
         }
         subscription->awaiting_ack = false;
         subscription->retry_count = 0U;
+        cov_retry_cache_clear(&subscription->retry_payload);
         if (packet->cov_ack_error) {
             diagnostics_bacnet_increment(DIAGNOSTICS_BACNET_ERRORS);
             memset(subscription, 0, sizeof(*subscription));
@@ -518,19 +522,37 @@ static void service_cov_subscriptions(
             }
             subscription->retry_count = 0U;
         }
-        const size_t length = bacnet_encode_cov_notification(
-            state,
-            subscription->input_index,
-            subscription->process_id,
-            cov_time_remaining_seconds(subscription, now_us),
-            subscription->confirmed,
-            subscription->invoke_id,
-            notification,
-            sizeof(notification));
+        const uint8_t *payload = notification;
+        size_t length = 0U;
+        if (subscription->confirmed && retry) {
+            payload = cov_retry_cache_data(&subscription->retry_payload);
+            length = cov_retry_cache_length(&subscription->retry_payload);
+            if (payload == NULL || length == 0U) {
+                diagnostics_bacnet_increment(DIAGNOSTICS_BACNET_ERRORS);
+                memset(subscription, 0, sizeof(*subscription));
+                continue;
+            }
+        } else {
+            length = bacnet_encode_cov_notification(
+                state,
+                subscription->input_index,
+                subscription->process_id,
+                cov_time_remaining_seconds(subscription, now_us),
+                subscription->confirmed,
+                subscription->invoke_id,
+                notification,
+                sizeof(notification));
+            if (subscription->confirmed && length > 0U &&
+                !cov_retry_cache_capture(
+                    &subscription->retry_payload, notification, length)) {
+                diagnostics_bacnet_increment(DIAGNOSTICS_BACNET_ERRORS);
+                continue;
+            }
+        }
         if (length == 0U ||
             sendto(
                 socket_fd,
-                notification,
+                payload,
                 length,
                 0,
                 (const struct sockaddr *)&subscription->recipient,
@@ -543,7 +565,9 @@ static void service_cov_subscriptions(
             continue;
         }
         diagnostics_bacnet_increment(DIAGNOSTICS_BACNET_COV_SENT);
-        subscription->dirty = false;
+        if (!retry) {
+            subscription->dirty = false;
+        }
         if (subscription->confirmed) {
             subscription->awaiting_ack = true;
             subscription->next_retry_us =
