@@ -355,6 +355,128 @@ def _network_confirm(args: argparse.Namespace, token: str) -> int:
         connection.close()
 
 
+def _wait_for_reboot(
+    args: argparse.Namespace,
+    token: str,
+    before: dict[str, object],
+) -> int:
+    before_boot = _nested_integer(before.get("system"), "boot_count")
+    before_hash = before.get("image_sha256")
+    before_partition = before.get("partition")
+    if (
+        before_boot is None
+        or not isinstance(before_hash, str)
+        or not isinstance(before_partition, str)
+    ):
+        raise ValueError(
+            "pre-reboot status lacks boot count, image identity, or partition"
+        )
+    expected_boot = (before_boot + 1) & 0xFFFFFFFF
+
+    post_host = args.post_host or args.host
+    deadline = time.monotonic() + args.reboot_timeout
+    last_error = "device did not return"
+    while time.monotonic() < deadline:
+        time.sleep(args.poll_interval)
+        try:
+            status = _fetch_status(
+                post_host,
+                args.port,
+                args.cert,
+                min(args.timeout, 10.0),
+                token,
+            )
+        except (
+            OSError,
+            UnicodeError,
+            ValueError,
+            ssl.SSLError,
+            http.client.HTTPException,
+        ) as error:
+            last_error = str(error)
+            continue
+
+        current_boot = _nested_integer(status.get("system"), "boot_count")
+        if current_boot == before_boot:
+            last_error = "device has not rebooted yet"
+            continue
+        if current_boot is None:
+            last_error = "post-reboot status lacks a boot count"
+            continue
+        if current_boot != expected_boot:
+            raise ValueError(
+                f"unexpected post-reboot boot count {current_boot}; "
+                f"expected {expected_boot}"
+            )
+        if status.get("image_sha256") != before_hash:
+            raise ValueError("device rebooted into a different firmware image")
+        if status.get("partition") != before_partition:
+            raise ValueError("device rebooted into a different OTA partition")
+        if status.get("state") != "valid":
+            last_error = f"rebooted image state is {status.get('state')!r}"
+            continue
+        print(
+            f"Reboot verified: boot count {before_boot} -> {current_boot}, "
+            f"version {status.get('version')}, image SHA-256 {before_hash}"
+        )
+        return 0
+    raise TimeoutError(
+        f"reboot was not verified within {args.reboot_timeout:.0f} seconds: {last_error}"
+    )
+
+
+def _reboot(args: argparse.Namespace, token: str) -> int:
+    before = _fetch_status(args.host, args.port, args.cert, args.timeout, token)
+    before_boot = _nested_integer(before.get("system"), "boot_count")
+    before_hash = before.get("image_sha256")
+    before_partition = before.get("partition")
+    if (
+        before_boot is None
+        or not isinstance(before_hash, str)
+        or not isinstance(before_partition, str)
+    ):
+        raise ValueError(
+            "pre-reboot status lacks boot count, image identity, or partition"
+        )
+
+    connection = _connection(args.host, args.port, args.cert, args.timeout)
+    accepted: object | None = None
+    request_result = 2
+    try:
+        connection.request(
+            "POST",
+            "/system/reboot",
+            body=b"",
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Content-Length": "0",
+                "Accept": "application/json",
+            },
+        )
+        request_result, accepted = _show_response(connection.getresponse())
+    except (OSError, ssl.SSLError, http.client.HTTPException):
+        print("Reboot response was interrupted; checking the device")
+    finally:
+        connection.close()
+
+    if request_result == 1:
+        return 1
+    accepted_boot = (
+        accepted.get("boot_count") if isinstance(accepted, dict) else None
+    )
+    if request_result == 0 and (
+        not isinstance(accepted, dict)
+        or accepted.get("accepted") is not True
+        or accepted.get("rebooting") is not True
+        or not isinstance(accepted_boot, int)
+        or isinstance(accepted_boot, bool)
+        or accepted_boot != before_boot
+        or accepted.get("image_sha256") != before_hash
+    ):
+        raise ValueError("device returned an invalid reboot acceptance record")
+    return _wait_for_reboot(args, token, before)
+
+
 def _upload(args: argparse.Namespace, token: str) -> int:
     firmware: Path = args.firmware
     metadata = _inspect_firmware(firmware)
@@ -574,6 +696,28 @@ def _arguments() -> argparse.Namespace:
     )
     _add_connection_arguments(self_test)
 
+    reboot = commands.add_parser(
+        "reboot",
+        help="restart the controller and verify the same image returns",
+    )
+    _add_connection_arguments(reboot)
+    reboot.add_argument(
+        "--post-host",
+        help="address or hostname expected after reboot (default: current host)",
+    )
+    reboot.add_argument(
+        "--reboot-timeout",
+        type=float,
+        default=120.0,
+        help="seconds to wait for the restarted device (default: 120)",
+    )
+    reboot.add_argument(
+        "--poll-interval",
+        type=float,
+        default=2.0,
+        help="seconds between post-reboot checks (default: 2)",
+    )
+
     upload = commands.add_parser("upload", help="upload an ESP-IDF application image")
     _add_connection_arguments(upload)
     upload.add_argument("firmware", type=Path, help="application .bin from idf.py build")
@@ -644,6 +788,10 @@ def main() -> int:
             return _network_confirm(args, token)
         if args.command == "input-self-test":
             return _input_self_test(args, token)
+        if args.command == "reboot":
+            if args.reboot_timeout <= 0 or args.poll_interval <= 0:
+                raise ValueError("reboot-timeout and poll-interval must be positive")
+            return _reboot(args, token)
         if not args.firmware.is_file():
             raise FileNotFoundError(f"firmware not found: {args.firmware}")
         if args.reboot_timeout <= 0 or args.poll_interval <= 0:
