@@ -1,6 +1,7 @@
 #include <stdint.h>
 
 #include "bacnet_server.h"
+#include "clock_service.h"
 #include "config_store.h"
 #include "diagnostics.h"
 #include "discovery_service.h"
@@ -188,6 +189,7 @@ static void got_ip_event_handler(
     const esp_netif_ip_info_t *ip = &event->ip_info;
 
     diagnostics_ip_acquired(netif, ip);
+    ESP_ERROR_CHECK_WITHOUT_ABORT(clock_service_start());
     ESP_LOGI(TAG, "IPv4 address: " IPSTR, IP2STR(&ip->ip));
     ESP_LOGI(TAG, "IPv4 netmask: " IPSTR, IP2STR(&ip->netmask));
     ESP_LOGI(TAG, "IPv4 gateway: " IPSTR, IP2STR(&ip->gw));
@@ -224,6 +226,7 @@ void app_main(void)
     network_config_get_active(&network_config);
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    ESP_ERROR_CHECK_WITHOUT_ABORT(clock_service_init());
     switch_inputs_init(&active_config);
 
     esp_eth_handle_t eth_handle = NULL;
