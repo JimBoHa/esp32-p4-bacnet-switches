@@ -37,7 +37,8 @@ if(CONFIG_OTA_HTTPS_ENABLED)
     endif()
     set(ota_private_key "${ota_secrets_dir}/ota_server_key.pem")
     set(ota_token_file "${ota_secrets_dir}/ota_token.txt")
-    foreach(secret_file IN ITEMS "${ota_private_key}" "${ota_token_file}")
+    set(ota_viewer_token_file "${ota_secrets_dir}/ota_viewer_token.txt")
+    foreach(secret_file IN ITEMS "${ota_private_key}" "${ota_token_file}" "${ota_viewer_token_file}")
         if(NOT EXISTS "${secret_file}")
             message(FATAL_ERROR
                 "Missing OTA secret ${secret_file}. Run tools/generate_ota_credentials.py "
@@ -50,11 +51,13 @@ if(CONFIG_OTA_HTTPS_ENABLED)
             --certificate "${CMAKE_CURRENT_LIST_DIR}/ota_server_cert.pem"
             --private-key "${ota_private_key}"
             --token-file "${ota_token_file}"
+            --viewer-token-file "${ota_viewer_token_file}"
         DEPENDS
             "${project_root}/tools/validate_ota_credentials.py"
             "${CMAKE_CURRENT_LIST_DIR}/ota_server_cert.pem"
             "${ota_private_key}"
             "${ota_token_file}"
+            "${ota_viewer_token_file}"
         COMMENT "Validating HTTPS OTA credentials"
         VERBATIM
     )
@@ -62,6 +65,7 @@ if(CONFIG_OTA_HTTPS_ENABLED)
         "ota_server_cert.pem"
         "${ota_private_key}"
         "${ota_token_file}"
+        "${ota_viewer_token_file}"
     )
 endif()
 

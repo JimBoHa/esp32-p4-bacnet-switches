@@ -2035,6 +2035,26 @@ static void test_ota_bearer_authentication(void)
     CHECK(!ota_token_configuration_valid(NULL));
     CHECK(!ota_token_configuration_valid(short_token));
     CHECK(!ota_token_configuration_valid(long_token));
+    char non_printable[sizeof(token)];
+    memcpy(non_printable, token, sizeof(token));
+    non_printable[20] = '\n';
+    CHECK(!ota_token_configuration_valid(non_printable));
+    static const char viewer[] = "viewer-0123456789abcdef0123456789abcdef";
+    static const char viewer_auth[] = "Bearer viewer-0123456789abcdef0123456789abcdef";
+    CHECK(ota_role_tokens_valid(token, viewer));
+    CHECK(!ota_role_tokens_valid(token, token));
+    CHECK(!ota_role_tokens_valid(token, NULL));
+    CHECK(ota_authorization_role(authorization, strlen(authorization), token, viewer) == OTA_ROLE_ADMIN);
+    CHECK(ota_authorization_role(viewer_auth, strlen(viewer_auth), token, viewer) == OTA_ROLE_VIEWER);
+    CHECK(ota_authorization_role(viewer_auth, strlen(viewer_auth) - 1U, token, viewer) == OTA_ROLE_NONE);
+    CHECK(ota_authorization_role(authorization, strlen(authorization), token, token) == OTA_ROLE_NONE);
+    CHECK(ota_authorization_role(NULL, 0U, token, viewer) == OTA_ROLE_NONE);
+    CHECK(ota_role_allows(OTA_ROLE_ADMIN, true));
+    CHECK(ota_role_allows(OTA_ROLE_ADMIN, false));
+    CHECK(ota_role_allows(OTA_ROLE_VIEWER, true));
+    CHECK(!ota_role_allows(OTA_ROLE_VIEWER, false));
+    CHECK(!ota_role_allows(OTA_ROLE_NONE, true));
+    CHECK(!ota_role_allows((ota_role_t)99, true));
     CHECK(ota_authorization_valid(
         authorization, strlen(authorization), token));
     CHECK(!ota_authorization_valid(

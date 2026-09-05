@@ -16,7 +16,7 @@ FORBIDDEN_PATHS = (
     re.compile(r"(^|/)release/private(/|$)", re.IGNORECASE),
     re.compile(r"(^|/)sdkconfig(?:\.old)?$", re.IGNORECASE),
     re.compile(r"\.(?:bin|elf|map|key|p12|pfx)$", re.IGNORECASE),
-    re.compile(r"(?:^|/)(?:ota_server_key|ota_token)\.(?:pem|txt)$", re.IGNORECASE),
+    re.compile(r"(?:^|/)(?:ota_server_key|ota_token|ota_viewer_token)\.(?:pem|txt)$", re.IGNORECASE),
     re.compile(r"(?:^|/)(?:hardware-report.*\.json|soak-.*\.jsonl)$", re.IGNORECASE),
 )
 SECRET_PATTERNS = (
@@ -113,6 +113,7 @@ def audit_tracked_files() -> list[str]:
             findings.extend(_content_findings(relative, path.read_bytes()))
     ignored_examples = (
         "secrets/ota_token.txt",
+        "secrets/ota_viewer_token.txt",
         "secrets/ota_server_key.pem",
         "release/private/v0/test.bin",
         "sdkconfig",

@@ -67,6 +67,10 @@ extern const unsigned char ota_token_txt_start[]
     asm("_binary_ota_token_txt_start");
 extern const unsigned char ota_token_txt_end[]
     asm("_binary_ota_token_txt_end");
+extern const unsigned char ota_viewer_token_txt_start[]
+    asm("_binary_ota_viewer_token_txt_start");
+extern const unsigned char ota_viewer_token_txt_end[]
+    asm("_binary_ota_viewer_token_txt_end");
 extern const unsigned char diagnostics_dashboard_html_start[]
     asm("_binary_diagnostics_dashboard_html_start");
 extern const unsigned char diagnostics_dashboard_html_end[]
@@ -85,6 +89,7 @@ static atomic_bool upload_in_progress;
 static atomic_bool reboot_in_progress;
 static atomic_bool server_ready;
 static char bearer_token[OTA_TOKEN_MAX_LENGTH + 1U];
+static char viewer_token[OTA_TOKEN_MAX_LENGTH + 1U];
 static char running_image_sha256[OTA_SHA256_HEX_BYTES + 1U];
 
 static bool load_embedded_token(void)
@@ -93,7 +98,12 @@ static bool load_embedded_token(void)
         ota_token_txt_start,
         (size_t)(ota_token_txt_end - ota_token_txt_start),
         bearer_token,
-        sizeof(bearer_token));
+        sizeof(bearer_token)) &&
+        ota_copy_embedded_token(
+            ota_viewer_token_txt_start,
+            (size_t)(ota_viewer_token_txt_end - ota_viewer_token_txt_start),
+            viewer_token, sizeof(viewer_token)) &&
+        ota_role_tokens_valid(bearer_token, viewer_token);
 }
 
 static void sha256_to_hex(
@@ -247,20 +257,12 @@ static size_t bounded_string_length(const char *value, size_t maximum)
     return length;
 }
 
-static esp_err_t send_unauthorized(httpd_req_t *request)
-{
-    httpd_resp_set_hdr(
-        request, "WWW-Authenticate", "Bearer realm=\"ESP32 OTA\"");
-    return httpd_resp_send_err(
-        request, HTTPD_401_UNAUTHORIZED, "valid bearer token required");
-}
-
-static bool request_authenticated(httpd_req_t *request)
+static ota_role_t request_role(httpd_req_t *request)
 {
     const size_t length =
         httpd_req_get_hdr_value_len(request, "Authorization");
     if (length == 0U || length > OTA_AUTHORIZATION_MAX_LENGTH) {
-        return false;
+        return OTA_ROLE_NONE;
     }
 
     char authorization[OTA_AUTHORIZATION_MAX_LENGTH + 1U];
@@ -269,10 +271,29 @@ static bool request_authenticated(httpd_req_t *request)
             "Authorization",
             authorization,
             sizeof(authorization)) != ESP_OK) {
-        return false;
+        return OTA_ROLE_NONE;
     }
-    return ota_authorization_valid(
-        authorization, length, bearer_token);
+    return ota_authorization_role(
+        authorization, length, bearer_token, viewer_token);
+}
+
+static bool request_authenticated(httpd_req_t *request)
+{
+    /* All registered GET handlers are read-only; all mutations require admin. */
+    return ota_role_allows(request_role(request), request->method == HTTP_GET);
+}
+
+static esp_err_t send_unauthorized(httpd_req_t *request)
+{
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    if (request_role(request) == OTA_ROLE_VIEWER) {
+        httpd_resp_set_status(request, "403 Forbidden");
+        return httpd_resp_sendstr(request, "admin token required; viewer access is read-only");
+    }
+    httpd_resp_set_hdr(
+        request, "WWW-Authenticate", "Bearer realm=\"ESP32 Management\"");
+    return httpd_resp_send_err(
+        request, HTTPD_401_UNAUTHORIZED, "valid bearer token required");
 }
 
 static bool project_header_matches(httpd_req_t *request)
@@ -1262,7 +1283,7 @@ static esp_err_t send_status_json(httpd_req_t *request, bool report)
             "{\"ota\":true,\"project\":\"%.31s\",\"version\":\"%.31s\","
             "\"idf_version\":\"%.31s\",\"partition\":\"%.15s\","
             "\"state\":\"%s\",\"port\":%u,\"git_revision\":\"%.31s\","
-            "\"image_sha256\":\"%s\","
+            "\"image_sha256\":\"%s\",\"access_role\":\"%s\","
             "\"system\":{\"uptime_ms\":%" PRIu64
             ",\"chip_temperature_c\":",
             app != NULL ? app->project_name : "unknown",
@@ -1273,6 +1294,7 @@ static esp_err_t send_status_json(httpd_req_t *request, bool report)
             (unsigned)CONFIG_OTA_HTTPS_PORT,
             diagnostics_git_revision(),
             running_image_sha256,
+            request_role(request) == OTA_ROLE_ADMIN ? "admin" : "viewer",
             snapshot.uptime_ms)) {
         goto encoding_failed;
     }
@@ -1419,6 +1441,7 @@ static esp_err_t send_status_json(httpd_req_t *request, bool report)
             &response_length,
             "\"security\":{\"https_management\":true,"
             "\"bearer_authentication\":true,"
+            "\"viewer_admin_separation\":true,\"mutations_require_admin\":true,"
             "\"tls_private_key_embedded\":true,"
             "\"secure_boot_enabled\":%s,"
             "\"flash_encryption_enabled\":%s,"
@@ -2318,7 +2341,7 @@ esp_err_t ota_server_start(void)
         load_embedded_token(),
         ESP_ERR_INVALID_ARG,
         TAG,
-        "embedded OTA token must contain 32-128 printable characters");
+        "embedded admin/viewer tokens must be distinct and contain 32-128 printable characters");
     ESP_RETURN_ON_ERROR(
         validate_embedded_tls_credentials(),
         TAG,

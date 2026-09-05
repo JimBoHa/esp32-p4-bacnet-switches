@@ -25,6 +25,7 @@ def args(**overrides: object) -> argparse.Namespace:
         "expected_source": None,
         "expected_image_sha256": None,
         "token_file": None,
+        "viewer_token_file": None,
         "certificate": Path("main/ota_server_cert.pem"),
         "mdns_hostname": None,
     }
@@ -207,6 +208,8 @@ class BacnetHilTests(unittest.TestCase):
             "security": {
                 "https_management": True,
                 "bearer_authentication": True,
+                "viewer_admin_separation": True,
+                "mutations_require_admin": True,
                 "tls_private_key_embedded": True,
                 "secure_boot_enabled": False,
                 "flash_encryption_enabled": False,

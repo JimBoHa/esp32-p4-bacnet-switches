@@ -1,6 +1,6 @@
 # Private firmware artifacts
 
-Every OTA-enabled binary embeds that device's bearer token and TLS private key.
+Every OTA-enabled binary embeds that device's admin/viewer tokens and TLS private key.
 Never commit or attach one to a public release.
 
 After a clean production build, create a verified private package:
