@@ -176,6 +176,7 @@ class PackageReleaseTests(unittest.TestCase):
                 "management/ota_client.py",
                 "management/ota_server_cert.pem",
                 "docs/COMMISSIONING.md",
+                "docs/HEADER_DIAGNOSTICS.md",
                 "docs/SECURITY.md",
                 "THIRD_PARTY_NOTICES.md",
                 "licenses/ESP-IDF-Apache-2.0.txt",
