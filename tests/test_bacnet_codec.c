@@ -68,6 +68,7 @@ static const bacnet_device_state_t STATE = {
     .binary_input_active_low = {false, true, false, false, false},
     .analog_value_instances = {
         1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010,
+        1011, 1012, 1013, 1014, 1015, 1016, 1017, 1018, 1019,
     },
     .analog_value_names = {
         "Chip Temperature",
@@ -81,6 +82,9 @@ static const bacnet_device_state_t STATE = {
         "Last Reset Reason",
         "Active COV Subscriptions",
         "Boot Count",
+        "GPIO20 Chatter", "GPIO20 Rejected Pulses", "GPIO20 Transition Age",
+        "GPIO21 Chatter", "GPIO21 Rejected Pulses", "GPIO21 Transition Age",
+        "GPIO22 Chatter", "GPIO22 Rejected Pulses", "GPIO22 Transition Age",
     },
     .analog_value_descriptions = {
         "Internal die temperature",
@@ -94,12 +98,17 @@ static const bacnet_device_state_t STATE = {
         "Reset reason code",
         "Active subscriptions",
         "Persistent boot counter",
+        "Sampled chatter", "Rejected pulses", "Transition age seconds",
+        "Sampled chatter", "Rejected pulses", "Transition age seconds",
+        "Sampled chatter", "Rejected pulses", "Transition age seconds",
     },
     .analog_value_values = {
         42.5F, 123.0F, 500000.0F, 450000.0F, 1.0F,
         2.0F, 300.0F, 4.0F, 1.0F, 2.0F, 31.0F,
+        1.0F, 4.0F, 0.25F, 0.0F, 7.0F, 123.0F, 1.0F, 20.0F, 9876.5F,
     },
-    .analog_value_units = {62, 73, 95, 95, 95, 95, 95, 95, 95, 95, 95},
+    .analog_value_units = {62, 73, 95, 95, 95, 95, 95, 95, 95, 95, 95,
+                          95, 95, 73, 95, 95, 73, 95, 95, 73},
     .analog_value_reliability = {0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0},
     .network_port_instance = 1U,
     .network_port_name = "BACnet/IP Ethernet",
@@ -748,7 +757,7 @@ static void test_device_and_binary_input_properties(void)
         &STATE,
         response,
         sizeof(response));
-    static const uint8_t object_count_tail[] = {0x21, 0x12, 0x3F};
+    static const uint8_t object_count_tail[] = {0x21, 0x1B, 0x3F};
     CHECK(result.response_length >= sizeof(object_count_tail));
     CHECK(memcmp(
         response + result.response_length - sizeof(object_count_tail),
@@ -1315,6 +1324,72 @@ static void test_boot_count_analog_value(void)
         strlen("Boot Count")));
 }
 
+static void test_input_diagnostic_analog_values(void)
+{
+    for (size_t index = BACNET_INPUT_DIAGNOSTIC_START;
+         index < BACNET_ANALOG_VALUE_COUNT; ++index) {
+        const uint32_t instance = STATE.analog_value_instances[index];
+        const uint32_t object_id = (2U << 22U) | instance;
+        const uint8_t object_tail[] = {
+            0xC4U, (uint8_t)(object_id >> 24U), (uint8_t)(object_id >> 16U),
+            (uint8_t)(object_id >> 8U), (uint8_t)object_id, 0x3FU,
+        };
+        /* BACnet array indexes are 1-based: new points start at index 19. */
+        check_read_property_tail(&STATE, 8U, STATE.device_instance, 76U, true,
+                                 (uint32_t)index + 8U, object_tail, sizeof(object_tail));
+        uint32_t bits;
+        memcpy(&bits, &STATE.analog_value_values[index], sizeof(bits));
+        const uint8_t value_tail[] = {
+            0x44U, (uint8_t)(bits >> 24U), (uint8_t)(bits >> 16U),
+            (uint8_t)(bits >> 8U), (uint8_t)bits, 0x3FU,
+        };
+        check_read_property_tail(&STATE, 2U, instance, 85U, false, 0U,
+                                 value_tail, sizeof(value_tail));
+        const uint8_t units[] = {0x91U, (uint8_t)STATE.analog_value_units[index], 0x3FU};
+        check_read_property_tail(&STATE, 2U, instance, 117U, false, 0U, units, sizeof(units));
+        bacnet_device_state_t unavailable = STATE;
+        unavailable.analog_value_reliability[index] = 7U;
+        const uint8_t fault[] = {0x91U, 7U, 0x3FU};
+        check_read_property_tail(&unavailable, 2U, instance, 103U, false, 0U,
+                                 fault, sizeof(fault));
+        uint8_t request[BACNET_MAX_REQUEST_BYTES], response[1500];
+        const size_t length = read_property_request(request, 2U, instance, 77U, false, 0U);
+        const bacnet_packet_result_t result = bacnet_handle_packet(
+            request, length, &STATE, response, sizeof(response));
+        CHECK(result.kind == BACNET_PACKET_READ_PROPERTY);
+        CHECK(contains_bytes(response, result.response_length,
+              (const uint8_t *)STATE.analog_value_names[index],
+              strlen(STATE.analog_value_names[index])));
+    }
+}
+
+static void test_transition_age(void)
+{
+    input_debounce_state_t state = {0};
+    CHECK(input_debounce_transition_age_ms(NULL, 100U) == 0U);
+    CHECK(input_debounce_transition_age_ms(&state, 100U) == 0U);
+    const uint64_t start = (uint64_t)UINT32_MAX + 500U;
+    (void)input_debounce_sample(&state, false, 10U, 50U, start);
+    CHECK(state.initial_observation_uptime_ms == start);
+    CHECK(state.last_accepted_transition_uptime_ms == 0U);
+    CHECK(input_debounce_transition_age_ms(&state, start + 5000U) == 5000U);
+    CHECK(input_debounce_transition_age_ms(&state, start - 1U) == 0U);
+    (void)input_debounce_sample(&state, true, 10U, 50U, start + 5010U);
+    (void)input_debounce_sample(&state, false, 10U, 50U, start + 5020U);
+    CHECK(state.rejected_pulse_count == 1U);
+    CHECK(input_debounce_transition_age_ms(&state, start + 5020U) == 5020U);
+    (void)input_debounce_sample(&state, true, 10U, 10U, start + 6000U);
+    CHECK(state.accepted_transition_count == 1U);
+    CHECK(input_debounce_transition_age_ms(&state, start + 6000U) == 0U);
+    CHECK(input_debounce_transition_age_ms(&state, start + 6250U) == 250U);
+    CHECK(input_debounce_transition_age_ms(&state, start + 5999U) == 0U);
+    state.accepted_transition_count = UINT32_MAX;
+    (void)input_debounce_sample(&state, false, 10U, 10U, start + 7000U);
+    CHECK(state.accepted_transition_count == UINT32_MAX);
+    CHECK(input_debounce_transition_age_ms(&state, start + 7100U) == 100U);
+    CHECK(input_debounce_transition_age_ms(&state, UINT64_MAX) == UINT64_MAX - start - 7000U);
+}
+
 static void test_read_property_multiple(void)
 {
     uint8_t request[BACNET_MAX_REQUEST_BYTES];
@@ -1786,7 +1861,7 @@ static void test_errors_and_malformed_input(void)
         sizeof(unknown_property_tail)) == 0);
 
     request_length = read_property_request(
-        request, 8, STATE.device_instance, 76, true, 19);
+        request, 8, STATE.device_instance, 76, true, 28);
     result = bacnet_handle_packet(
         request,
         request_length,
@@ -2233,7 +2308,7 @@ static void test_input_line_classifier(void)
 static void test_input_debounce_diagnostics(void)
 {
     input_debounce_state_t state;
-    input_debounce_init(&state, false);
+    input_debounce_init(&state, false, 0U);
     CHECK(state.initialized);
     CHECK(!state.stable);
 
@@ -2264,7 +2339,7 @@ static void test_input_debounce_diagnostics(void)
     CHECK(state.last_rejected_pulse_width_ms == 20U);
     CHECK(state.last_rejected_pulse_uptime_ms == 80U);
 
-    input_debounce_init(&state, false);
+    input_debounce_init(&state, false, 0U);
     for (unsigned pulse = 0U;
          pulse < INPUT_CHATTER_REJECTION_THRESHOLD;
          ++pulse) {
@@ -2284,7 +2359,7 @@ static void test_input_debounce_diagnostics(void)
     CHECK(!input_debounce_is_chattering(
         &state, state.chattering_until_uptime_ms));
 
-    input_debounce_init(&state, false);
+    input_debounce_init(&state, false, 0U);
     for (unsigned pulse = 0U;
          pulse < INPUT_CHATTER_REJECTION_THRESHOLD;
          ++pulse) {
@@ -2297,7 +2372,7 @@ static void test_input_debounce_diagnostics(void)
     }
     CHECK(state.chatter_event_count == 0U);
 
-    input_debounce_init(&state, false);
+    input_debounce_init(&state, false, 0U);
     for (unsigned pulse = 0U; pulse < 3U; ++pulse) {
         const uint64_t start = 100U + pulse * 100U;
         (void)input_debounce_sample(
@@ -2316,7 +2391,7 @@ static void test_input_debounce_diagnostics(void)
     CHECK(!result.chatter_started);
     CHECK(state.rejection_window_count == 1U);
 
-    input_debounce_init(&state, false);
+    input_debounce_init(&state, false, 0U);
     result = input_debounce_sample(&state, true, 10U, 0U, 10U);
     CHECK(result.accepted_transition);
     CHECK(state.stable);
@@ -2325,7 +2400,7 @@ static void test_input_debounce_diagnostics(void)
     CHECK(result.accepted_transition);
     CHECK(state.raw_edge_count == UINT32_MAX);
     CHECK(!input_debounce_is_chattering(NULL, 0U));
-    input_debounce_init(NULL, false);
+    input_debounce_init(NULL, false, 0U);
     result = input_debounce_sample(NULL, false, 10U, 50U, 0U);
     CHECK(!result.accepted_transition);
 }
@@ -2420,6 +2495,15 @@ static void test_config_model(void)
         BACNET_LAST_RESET_REASON_VALUE_NAME,
         BACNET_ACTIVE_COV_SUBSCRIPTIONS_VALUE_NAME,
         BACNET_BOOT_COUNT_VALUE_NAME,
+        BACNET_GPIO20_CHATTER_VALUE_NAME,
+        BACNET_GPIO20_REJECTED_PULSES_VALUE_NAME,
+        BACNET_GPIO20_TRANSITION_AGE_VALUE_NAME,
+        BACNET_GPIO21_CHATTER_VALUE_NAME,
+        BACNET_GPIO21_REJECTED_PULSES_VALUE_NAME,
+        BACNET_GPIO21_TRANSITION_AGE_VALUE_NAME,
+        BACNET_GPIO22_CHATTER_VALUE_NAME,
+        BACNET_GPIO22_REJECTED_PULSES_VALUE_NAME,
+        BACNET_GPIO22_TRANSITION_AGE_VALUE_NAME,
         BACNET_NETWORK_PORT_NAME,
     };
     for (size_t index = 0U;
@@ -2783,6 +2867,8 @@ int main(void)
     test_network_port_object();
     test_network_status_inputs();
     test_boot_count_analog_value();
+    test_input_diagnostic_analog_values();
+    test_transition_age();
     test_read_property_multiple();
     test_subscribe_cov_and_notifications();
     test_subscribe_cov_capacity_error();
