@@ -411,7 +411,7 @@ def _arguments() -> argparse.Namespace:
 
     self_test = commands.add_parser(
         "input-self-test",
-        help="test GPIO weak-pull response with all field wiring disconnected",
+        help="classify GPIO lines using safe internal weak pulls",
     )
     _add_connection_arguments(self_test)
 

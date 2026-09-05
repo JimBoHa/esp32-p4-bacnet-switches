@@ -8,6 +8,7 @@
 #include "bacnet_codec.h"
 #include "cov_retry_cache.h"
 #include "diagnostics_time.h"
+#include "input_line_classifier.h"
 #include "ota_auth.h"
 #include "ota_health.h"
 
@@ -1457,6 +1458,48 @@ static void test_cov_retry_payload_cache(void)
     cov_retry_cache_clear(NULL);
 }
 
+static void test_input_line_classifier(void)
+{
+    CHECK(input_line_classify(true, false, true, true) ==
+        INPUT_LINE_FLOATING_OPEN);
+    CHECK(input_line_classify(true, false, true, false) ==
+        INPUT_LINE_EXTERNALLY_LOW);
+    CHECK(input_line_classify(true, true, true, true) ==
+        INPUT_LINE_EXTERNALLY_HIGH);
+    CHECK(input_line_classify(true, true, true, false) ==
+        INPUT_LINE_UNSTABLE);
+    CHECK(input_line_classify(false, false, true, true) ==
+        INPUT_LINE_UNSTABLE);
+    CHECK(input_line_classify(true, false, false, true) ==
+        INPUT_LINE_UNSTABLE);
+
+    CHECK(input_line_classification_valid(INPUT_LINE_FLOATING_OPEN));
+    CHECK(input_line_classification_valid(INPUT_LINE_EXTERNALLY_LOW));
+    CHECK(input_line_classification_valid(INPUT_LINE_EXTERNALLY_HIGH));
+    CHECK(!input_line_classification_valid(INPUT_LINE_NOT_TESTED));
+    CHECK(!input_line_classification_valid(INPUT_LINE_UNSTABLE));
+
+    CHECK(strcmp(
+              input_line_classification_name(INPUT_LINE_FLOATING_OPEN),
+              "floating-open") == 0);
+    CHECK(strcmp(
+              input_line_classification_name(INPUT_LINE_EXTERNALLY_LOW),
+              "externally-low") == 0);
+    CHECK(strcmp(
+              input_line_classification_name(INPUT_LINE_EXTERNALLY_HIGH),
+              "externally-high") == 0);
+    CHECK(strcmp(
+              input_line_classification_name(INPUT_LINE_UNSTABLE),
+              "unstable") == 0);
+    CHECK(strcmp(
+              input_line_classification_name(INPUT_LINE_NOT_TESTED),
+              "not-tested") == 0);
+    CHECK(strcmp(
+              input_line_classification_name(
+                  (input_line_classification_t)99),
+              "not-tested") == 0);
+}
+
 int main(void)
 {
     test_reference_vectors();
@@ -1469,6 +1512,7 @@ int main(void)
     test_ota_rollback_health_gate();
     test_diagnostics_time_rollover();
     test_cov_retry_payload_cache();
+    test_input_line_classifier();
     printf("bacnet_codec_tests: %u checks passed\n", tests_run);
     return EXIT_SUCCESS;
 }
