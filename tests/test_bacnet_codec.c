@@ -260,6 +260,10 @@ static void test_reference_vectors(void)
         0x81, 0x0B, 0x00, 0x0C, 0x01, 0x20, 0xFF, 0xFF,
         0x00, 0xFF, 0x10, 0x08,
     };
+    static const uint8_t unicast_global_who_is[] = {
+        0x81, 0x0A, 0x00, 0x0C, 0x01, 0x20, 0xFF, 0xFF,
+        0x00, 0xFF, 0x10, 0x08,
+    };
     static const uint8_t metasys_filtered_who_is[] = {
         0x81, 0x0B, 0x00, 0x14, 0x01, 0x20, 0xFF, 0xFF,
         0x00, 0xFF, 0x10, 0x08, 0x0B, 0x1E, 0x84, 0xCB,
@@ -314,6 +318,20 @@ static void test_reference_vectors(void)
         response,
         sizeof(response));
     CHECK(result.kind == BACNET_PACKET_WHO_IS);
+    CHECK(!result.broadcast_response);
+    CHECK(bytes_equal(
+        response,
+        result.response_length,
+        expected_i_am,
+        ARRAY_LENGTH(expected_i_am)));
+
+    result = bacnet_handle_packet(
+        metasys_global_who_is,
+        sizeof(metasys_global_who_is),
+        &STATE,
+        response,
+        sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_WHO_IS);
     CHECK(result.broadcast_response);
     CHECK(bytes_equal(
         response,
@@ -322,8 +340,8 @@ static void test_reference_vectors(void)
         ARRAY_LENGTH(expected_broadcast_i_am)));
 
     result = bacnet_handle_packet(
-        metasys_global_who_is,
-        sizeof(metasys_global_who_is),
+        unicast_global_who_is,
+        sizeof(unicast_global_who_is),
         &STATE,
         response,
         sizeof(response));
