@@ -79,6 +79,8 @@ clock GPIO50. See the [Waveshare schematic](https://files.waveshare.com/wiki/ESP
 | Binary Input | 20 | GPIO20 Toggle | Debounced GPIO20 state |
 | Binary Input | 21 | GPIO21 Toggle | Debounced GPIO21 state |
 | Binary Input | 22 | GPIO22 Toggle | Debounced GPIO22 state |
+| Binary Input | 1001 | Status Ethernet Link | Physical Ethernet link state |
+| Binary Input | 1002 | Status IPv4 Assigned | IPv4 address availability |
 | Analog Value | 1000 | Chip Temperature | ESP32-P4 die temperature, °C |
 | Analog Value | 1001 | System Uptime | Current boot uptime, seconds |
 | Analog Value | 1002 | Free Heap | Current free heap, bytes |
@@ -91,6 +93,10 @@ clock GPIO50. See the [Waveshare schematic](https://files.waveshare.com/wiki/ESP
 | Analog Value | 1009 | Active COV Subscriptions | Current subscription count |
 | Network Port | 1 | BACnet/IP Ethernet | Live IPv4, BACnet port, DHCP, DNS, link, and fault state |
 
+The BACnet `Database_Revision` includes a firmware object-model offset so
+clients can detect fixed objects added by a firmware upgrade as well as later
+commissioning changes.
+
 Supported services:
 
 - Who-Is / I-Am and Who-Has / I-Have, with unicast replies for direct requests
@@ -98,7 +104,7 @@ Supported services:
   for subnet/global discovery, including the routed form used by Metasys
 - confirmed ReadProperty
 - confirmed ReadPropertyMultiple, including All/Required/Optional selectors
-- confirmed SubscribeCOV for the three Binary Inputs
+- confirmed SubscribeCOV for all physical and network-status Binary Inputs
 - confirmed and unconfirmed COV notifications
 
 The read-only Network Port object follows BACnet protocol revision 17. Its

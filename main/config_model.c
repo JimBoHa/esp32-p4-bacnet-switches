@@ -1,5 +1,7 @@
 #include "config_model.h"
 
+#include "bacnet_object_ids.h"
+
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -58,11 +60,14 @@ static bool printable_text(
 
 static bool object_names_unique(const firmware_config_t *config)
 {
-    const char *names[1U + FIRMWARE_CONFIG_INPUT_COUNT] = {
+    const char *names[
+        1U + FIRMWARE_CONFIG_INPUT_COUNT + BACNET_STATUS_BINARY_INPUT_COUNT] = {
         config->device_name,
         config->input_names[0],
         config->input_names[1],
         config->input_names[2],
+        BACNET_ETHERNET_LINK_INPUT_NAME,
+        BACNET_IPV4_READY_INPUT_NAME,
     };
     for (size_t left = 0U;
          left < sizeof(names) / sizeof(names[0]);
@@ -120,6 +125,16 @@ bool config_model_validate(
         return false;
     }
     for (size_t index = 0U; index < FIRMWARE_CONFIG_INPUT_COUNT; ++index) {
+        if (config->input_instances[index] ==
+                BACNET_ETHERNET_LINK_INPUT_INSTANCE ||
+            config->input_instances[index] ==
+                BACNET_IPV4_READY_INPUT_INSTANCE) {
+            set_reason(
+                reason,
+                reason_capacity,
+                "input instance is reserved for network status");
+            return false;
+        }
         if (config->input_instances[index] >= 4194303U) {
             set_reason(reason, reason_capacity, "input instance must be 0..4194302");
             return false;
