@@ -2,6 +2,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #define OTA_BEARER_PREFIX "Bearer "
 #define OTA_TOKEN_MIN_LENGTH 32U
@@ -10,6 +11,12 @@
     ((sizeof(OTA_BEARER_PREFIX) - 1U) + OTA_TOKEN_MAX_LENGTH)
 
 bool ota_token_configuration_valid(const char *token);
+
+bool ota_copy_embedded_token(
+    const uint8_t *embedded,
+    size_t embedded_length,
+    char *token,
+    size_t token_capacity);
 
 bool ota_authorization_valid(
     const char *authorization,

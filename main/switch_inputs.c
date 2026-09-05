@@ -5,11 +5,23 @@
 #include <stdint.h>
 
 #include "driver/gpio.h"
+#include "diagnostics.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
+
+#ifndef CONFIG_TOGGLE_INPUT_1_ACTIVE_LOW
+#define CONFIG_TOGGLE_INPUT_1_ACTIVE_LOW 0
+#endif
+#ifndef CONFIG_TOGGLE_INPUT_2_ACTIVE_LOW
+#define CONFIG_TOGGLE_INPUT_2_ACTIVE_LOW 0
+#endif
+#ifndef CONFIG_TOGGLE_INPUT_3_ACTIVE_LOW
+#define CONFIG_TOGGLE_INPUT_3_ACTIVE_LOW 0
+#endif
 
 #define INPUT_POLL_MS 10U
 
@@ -17,9 +29,23 @@ static const char *TAG = "switch_inputs";
 static const gpio_num_t INPUT_GPIOS[SWITCH_INPUT_COUNT] = {
     (gpio_num_t)CONFIG_TOGGLE_INPUT_1_GPIO,
     (gpio_num_t)CONFIG_TOGGLE_INPUT_2_GPIO,
+    (gpio_num_t)CONFIG_TOGGLE_INPUT_3_GPIO,
+};
+static const bool INPUT_ACTIVE_LOW[SWITCH_INPUT_COUNT] = {
+    CONFIG_TOGGLE_INPUT_1_ACTIVE_LOW,
+    CONFIG_TOGGLE_INPUT_2_ACTIVE_LOW,
+    CONFIG_TOGGLE_INPUT_3_ACTIVE_LOW,
 };
 
 static atomic_uint_fast32_t stable_input_bits;
+static atomic_uint_fast32_t input_fault_bits;
+static atomic_bool self_test_active;
+static atomic_uint_fast32_t transition_counts[SWITCH_INPUT_COUNT];
+static atomic_uint_fast32_t last_transition_ms[SWITCH_INPUT_COUNT];
+static atomic_bool self_test_run[SWITCH_INPUT_COUNT];
+static atomic_bool self_test_passed[SWITCH_INPUT_COUNT];
+static atomic_bool self_test_pull_down_levels[SWITCH_INPUT_COUNT];
+static atomic_bool self_test_pull_up_levels[SWITCH_INPUT_COUNT];
 static switch_input_pad_config_t startup_pad_configs[SWITCH_INPUT_COUNT];
 static bool startup_raw_levels[SWITCH_INPUT_COUNT];
 static switch_input_pad_config_t configured_pad_configs[SWITCH_INPUT_COUNT];
@@ -78,7 +104,9 @@ static uint32_t read_input_bits(void)
     uint32_t bits = 0;
 
     for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
-        if (gpio_get_level(INPUT_GPIOS[index]) != 0) {
+        const bool raw = gpio_get_level(INPUT_GPIOS[index]) != 0;
+        const bool active = raw != INPUT_ACTIVE_LOW[index];
+        if (active) {
             bits |= (1U << index);
         }
     }
@@ -105,6 +133,9 @@ static void store_input(size_t index, bool active)
 static void switch_poll_task(void *argument)
 {
     (void)argument;
+    ESP_ERROR_CHECK_WITHOUT_ABORT(
+        diagnostics_task_watchdog_subscribe(
+            DIAGNOSTICS_TASK_SWITCH_INPUTS));
     bool stable[SWITCH_INPUT_COUNT];
     bool candidate[SWITCH_INPUT_COUNT];
     uint32_t candidate_time_ms[SWITCH_INPUT_COUNT] = {0};
@@ -123,6 +154,11 @@ static void switch_poll_task(void *argument)
 
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(INPUT_POLL_MS));
+        diagnostics_task_heartbeat(DIAGNOSTICS_TASK_SWITCH_INPUTS);
+        if (atomic_load_explicit(
+                &self_test_active, memory_order_acquire)) {
+            continue;
+        }
         const uint32_t sampled_bits = read_input_bits();
 
         for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
@@ -146,6 +182,12 @@ static void switch_poll_task(void *argument)
                 stable[index] = sampled;
                 candidate_time_ms[index] = 0;
                 store_input(index, stable[index]);
+                atomic_fetch_add_explicit(
+                    &transition_counts[index], 1U, memory_order_relaxed);
+                atomic_store_explicit(
+                    &last_transition_ms[index],
+                    (uint32_t)(esp_timer_get_time() / 1000LL),
+                    memory_order_release);
                 ESP_LOGI(
                     TAG,
                     "GPIO%d changed to %s",
@@ -158,27 +200,46 @@ static void switch_poll_task(void *argument)
 
 void switch_inputs_init(void)
 {
-    if (CONFIG_TOGGLE_INPUT_1_GPIO == CONFIG_TOGGLE_INPUT_2_GPIO) {
-        ESP_LOGE(TAG, "toggle inputs must use different GPIOs");
-        abort();
-    }
-    if (gpio_reserved_for_board_ethernet(CONFIG_TOGGLE_INPUT_1_GPIO) ||
-        gpio_reserved_for_board_ethernet(CONFIG_TOGGLE_INPUT_2_GPIO)) {
-        ESP_LOGE(TAG, "toggle input conflicts with board Ethernet wiring");
-        abort();
-    }
+    uint64_t pin_bit_mask = 0;
 
     for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
+        if (gpio_reserved_for_board_ethernet((int)INPUT_GPIOS[index])) {
+            ESP_LOGE(
+                TAG,
+                "GPIO%d conflicts with board Ethernet wiring",
+                (int)INPUT_GPIOS[index]);
+            abort();
+        }
+        for (size_t prior = 0; prior < index; ++prior) {
+            if (INPUT_GPIOS[index] == INPUT_GPIOS[prior]) {
+                ESP_LOGE(
+                    TAG,
+                    "toggle inputs must use different GPIOs (GPIO%d repeats)",
+                    (int)INPUT_GPIOS[index]);
+                abort();
+            }
+        }
+        pin_bit_mask |= 1ULL << (unsigned)INPUT_GPIOS[index];
+    }
+
+    atomic_init(&input_fault_bits, 0U);
+    atomic_init(&self_test_active, false);
+    for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
+        atomic_init(&transition_counts[index], 0U);
+        atomic_init(&last_transition_ms[index], 0U);
+        atomic_init(&self_test_run[index], false);
+        atomic_init(&self_test_passed[index], false);
+        atomic_init(&self_test_pull_down_levels[index], false);
+        atomic_init(&self_test_pull_up_levels[index], false);
         startup_pad_configs[index] = read_pad_config(INPUT_GPIOS[index]);
-        ESP_ERROR_CHECK(gpio_input_enable(INPUT_GPIOS[index]));
+        ESP_ERROR_CHECK(
+            gpio_set_direction(INPUT_GPIOS[index], GPIO_MODE_INPUT));
         startup_raw_levels[index] =
             gpio_get_level(INPUT_GPIOS[index]) != 0;
     }
 
     const gpio_config_t config = {
-        .pin_bit_mask =
-            (1ULL << CONFIG_TOGGLE_INPUT_1_GPIO) |
-            (1ULL << CONFIG_TOGGLE_INPUT_2_GPIO),
+        .pin_bit_mask = pin_bit_mask,
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_ENABLE,
@@ -228,6 +289,86 @@ bool switch_input_get(size_t index)
     return (bits & ((uint_fast32_t)1U << index)) != 0;
 }
 
+bool switch_input_faulted(size_t index)
+{
+    if (index >= SWITCH_INPUT_COUNT) {
+        return true;
+    }
+    const uint_fast32_t bits =
+        atomic_load_explicit(&input_fault_bits, memory_order_acquire);
+    return (bits & ((uint_fast32_t)1U << index)) != 0U;
+}
+
+bool switch_input_active_low(size_t index)
+{
+    return index < SWITCH_INPUT_COUNT && INPUT_ACTIVE_LOW[index];
+}
+
+static bool sample_gpio_level(gpio_num_t gpio)
+{
+    unsigned high_samples = 0U;
+    for (unsigned sample = 0; sample < 8U; ++sample) {
+        if (gpio_get_level(gpio) != 0) {
+            high_samples++;
+        }
+        vTaskDelay(pdMS_TO_TICKS(1));
+    }
+    return high_samples >= 6U;
+}
+
+esp_err_t switch_inputs_run_self_test(void)
+{
+    if (atomic_exchange_explicit(
+            &self_test_active, true, memory_order_acq_rel)) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    uint_fast32_t fault_bits = 0U;
+    for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
+        const gpio_num_t gpio = INPUT_GPIOS[index];
+        esp_err_t result = gpio_set_direction(gpio, GPIO_MODE_INPUT);
+        if (result == ESP_OK) {
+            result = gpio_set_pull_mode(gpio, GPIO_PULLDOWN_ONLY);
+        }
+        vTaskDelay(pdMS_TO_TICKS(3));
+        const bool pull_down_level =
+            result == ESP_OK ? sample_gpio_level(gpio) : true;
+        if (result == ESP_OK) {
+            result = gpio_set_pull_mode(gpio, GPIO_PULLUP_ONLY);
+        }
+        vTaskDelay(pdMS_TO_TICKS(3));
+        const bool pull_up_level =
+            result == ESP_OK ? sample_gpio_level(gpio) : false;
+        const esp_err_t restore_result =
+            gpio_set_pull_mode(gpio, GPIO_PULLDOWN_ONLY);
+        if (result == ESP_OK) {
+            result = restore_result;
+        }
+
+        const bool passed =
+            result == ESP_OK && !pull_down_level && pull_up_level;
+        atomic_store_explicit(
+            &self_test_pull_down_levels[index],
+            pull_down_level,
+            memory_order_release);
+        atomic_store_explicit(
+            &self_test_pull_up_levels[index],
+            pull_up_level,
+            memory_order_release);
+        atomic_store_explicit(
+            &self_test_passed[index], passed, memory_order_release);
+        atomic_store_explicit(
+            &self_test_run[index], true, memory_order_release);
+        if (!passed) {
+            fault_bits |= (uint_fast32_t)1U << index;
+        }
+    }
+    atomic_store_explicit(
+        &input_fault_bits, fault_bits, memory_order_release);
+    atomic_store_explicit(&self_test_active, false, memory_order_release);
+    return ESP_OK;
+}
+
 bool switch_input_diagnostics_get(
     size_t index,
     switch_input_diagnostics_t *diagnostics)
@@ -238,6 +379,8 @@ bool switch_input_diagnostics_get(
 
     *diagnostics = (switch_input_diagnostics_t){
         .gpio = (int)INPUT_GPIOS[index],
+        .active_low = INPUT_ACTIVE_LOW[index],
+        .debounce_ms = CONFIG_TOGGLE_DEBOUNCE_MS,
         .startup_config = startup_pad_configs[index],
         .startup_raw_after_input_enable = startup_raw_levels[index],
         .configured_config = configured_pad_configs[index],
@@ -245,6 +388,18 @@ bool switch_input_diagnostics_get(
         .current_config = read_pad_config(INPUT_GPIOS[index]),
         .current_raw = gpio_get_level(INPUT_GPIOS[index]) != 0,
         .stable = switch_input_get(index),
+        .transition_count = (uint32_t)atomic_load_explicit(
+            &transition_counts[index], memory_order_relaxed),
+        .last_transition_uptime_ms = (uint32_t)atomic_load_explicit(
+            &last_transition_ms[index], memory_order_acquire),
+        .self_test_run = atomic_load_explicit(
+            &self_test_run[index], memory_order_acquire),
+        .self_test_passed = atomic_load_explicit(
+            &self_test_passed[index], memory_order_acquire),
+        .self_test_pull_down_level = atomic_load_explicit(
+            &self_test_pull_down_levels[index], memory_order_acquire),
+        .self_test_pull_up_level = atomic_load_explicit(
+            &self_test_pull_up_levels[index], memory_order_acquire),
     };
     return true;
 }
