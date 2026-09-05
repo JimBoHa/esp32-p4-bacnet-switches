@@ -60,14 +60,25 @@ static bool printable_text(
 
 static bool object_names_unique(const firmware_config_t *config)
 {
-    const char *names[
-        1U + FIRMWARE_CONFIG_INPUT_COUNT + BACNET_STATUS_BINARY_INPUT_COUNT] = {
+    const char *names[] = {
         config->device_name,
         config->input_names[0],
         config->input_names[1],
         config->input_names[2],
         BACNET_ETHERNET_LINK_INPUT_NAME,
         BACNET_IPV4_READY_INPUT_NAME,
+        BACNET_CHIP_TEMPERATURE_VALUE_NAME,
+        BACNET_SYSTEM_UPTIME_VALUE_NAME,
+        BACNET_FREE_HEAP_VALUE_NAME,
+        BACNET_MINIMUM_FREE_HEAP_VALUE_NAME,
+        BACNET_ETHERNET_LINK_LOSSES_VALUE_NAME,
+        BACNET_ETHERNET_RECONNECTS_VALUE_NAME,
+        BACNET_RX_PACKETS_VALUE_NAME,
+        BACNET_PROTOCOL_ERRORS_VALUE_NAME,
+        BACNET_LAST_RESET_REASON_VALUE_NAME,
+        BACNET_ACTIVE_COV_SUBSCRIPTIONS_VALUE_NAME,
+        BACNET_BOOT_COUNT_VALUE_NAME,
+        BACNET_NETWORK_PORT_NAME,
     };
     for (size_t left = 0U;
          left < sizeof(names) / sizeof(names[0]);
