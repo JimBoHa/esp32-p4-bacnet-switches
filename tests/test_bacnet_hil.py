@@ -179,6 +179,35 @@ class BacnetHilTests(unittest.TestCase):
         status["system"]["temperature"]["maximum_c"] = 30.0
         self.assertFalse(bacnet_hil_test.runtime_diagnostics_valid(status))
 
+    def test_security_recovery_posture_validation(self) -> None:
+        status = {
+            "security": {
+                "https_management": True,
+                "bearer_authentication": True,
+                "tls_private_key_embedded": True,
+                "secure_boot_enabled": False,
+                "flash_encryption_enabled": False,
+                "application_anti_rollback_enabled": False,
+            },
+            "recovery": {
+                "ota_rollback_enabled": True,
+                "task_watchdog_enabled": True,
+                "task_watchdog_timeout_seconds": 5,
+                "task_watchdog_panics": True,
+                "interrupt_watchdog_enabled": True,
+                "panic_reboots": True,
+                "brownout_detection_enabled": True,
+                "core_dump_destination": "disabled",
+            },
+        }
+        self.assertTrue(
+            bacnet_hil_test.security_recovery_posture_valid(status)
+        )
+        status["recovery"]["task_watchdog_panics"] = False
+        self.assertFalse(
+            bacnet_hil_test.security_recovery_posture_valid(status)
+        )
+
     def test_report_is_machine_readable(self) -> None:
         report = bacnet_hil_test.TestReport(
             started_at="2026-01-01T00:00:00Z",

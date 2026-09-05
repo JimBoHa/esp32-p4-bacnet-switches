@@ -7,6 +7,7 @@
 #include "diagnostics_time.h"
 #include "esp_check.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "esp_task_wdt.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
@@ -227,6 +228,40 @@ static void record_event_locked(diagnostics_event_type_t type, int code)
     save_persistent_locked();
 }
 
+static bool previous_ota_rolled_back(esp_ota_img_states_t *failed_state)
+{
+#if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
+    if (persistent.last_ota_result != DIAGNOSTICS_OTA_ACCEPTED) {
+        return false;
+    }
+
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    esp_ota_img_states_t running_state = ESP_OTA_IMG_UNDEFINED;
+    if (running == NULL ||
+        esp_ota_get_state_partition(running, &running_state) != ESP_OK ||
+        running_state == ESP_OTA_IMG_NEW ||
+        running_state == ESP_OTA_IMG_PENDING_VERIFY) {
+        return false;
+    }
+
+    const esp_partition_t *invalid = esp_ota_get_last_invalid_partition();
+    esp_ota_img_states_t invalid_state = ESP_OTA_IMG_UNDEFINED;
+    if (invalid == NULL || invalid == running ||
+        esp_ota_get_state_partition(invalid, &invalid_state) != ESP_OK ||
+        (invalid_state != ESP_OTA_IMG_INVALID &&
+         invalid_state != ESP_OTA_IMG_ABORTED)) {
+        return false;
+    }
+    if (failed_state != NULL) {
+        *failed_state = invalid_state;
+    }
+    return true;
+#else
+    (void)failed_state;
+    return false;
+#endif
+}
+
 static esp_err_t initialize_temperature_sensor(void)
 {
     const temperature_sensor_config_t config =
@@ -286,6 +321,16 @@ esp_err_t diagnostics_init(void)
     if (abnormal_reset(startup_reset_reason)) {
         record_event_locked(
             DIAGNOSTICS_EVENT_ABNORMAL_RESET, startup_reset_reason);
+    }
+    esp_ota_img_states_t failed_ota_state = ESP_OTA_IMG_UNDEFINED;
+    if (previous_ota_rolled_back(&failed_ota_state)) {
+        persistent.last_ota_result = DIAGNOSTICS_OTA_ROLLED_BACK;
+        record_event_locked(
+            DIAGNOSTICS_EVENT_OTA_ROLLED_BACK, failed_ota_state);
+        ESP_LOGW(
+            TAG,
+            "previous OTA image rolled back (image state %d)",
+            (int)failed_ota_state);
     }
 
     memset(&network_state, 0, sizeof(network_state));
@@ -394,6 +439,8 @@ const char *diagnostics_event_name(diagnostics_event_type_t event)
         return "remote-reboot-requested";
     case DIAGNOSTICS_EVENT_MDNS_FAILED:
         return "mdns-failed";
+    case DIAGNOSTICS_EVENT_OTA_ROLLED_BACK:
+        return "ota-rolled-back";
     default:
         return "unknown";
     }
@@ -408,6 +455,8 @@ const char *diagnostics_ota_result_name(diagnostics_ota_result_t result)
         return "failed";
     case DIAGNOSTICS_OTA_VALIDATED:
         return "validated";
+    case DIAGNOSTICS_OTA_ROLLED_BACK:
+        return "rolled-back";
     case DIAGNOSTICS_OTA_NONE:
     default:
         return "none";
@@ -436,6 +485,8 @@ void diagnostics_record_ota_result(diagnostics_ota_result_t result, int code)
         event = DIAGNOSTICS_EVENT_OTA_ACCEPTED;
     } else if (result == DIAGNOSTICS_OTA_VALIDATED) {
         event = DIAGNOSTICS_EVENT_OTA_VALIDATED;
+    } else if (result == DIAGNOSTICS_OTA_ROLLED_BACK) {
+        event = DIAGNOSTICS_EVENT_OTA_ROLLED_BACK;
     }
     record_event_locked(event, code);
     xSemaphoreGive(state_mutex);
