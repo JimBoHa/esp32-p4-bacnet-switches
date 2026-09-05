@@ -10,7 +10,9 @@ import hashlib
 import hmac
 import http.client
 import json
+import os
 import ssl
+import stat
 import struct
 import sys
 import time
@@ -28,6 +30,7 @@ ESP_IMAGE_HEADER_BYTES = 24
 ESP_SEGMENT_HEADER_BYTES = 8
 ESP_APP_DESC_BYTES = 256
 MAX_OTA_IMAGE_BYTES = 0x400000
+MAX_HTTP_RESPONSE_BYTES = 1024 * 1024
 MAX_ESP_IMAGE_SEGMENTS = 16
 ESP_IMAGE_CHECKSUM_MAGIC = 0xEF
 EXPECTED_FLASH_SIZE_CODE = 0x50  # 32 MB
@@ -129,6 +132,13 @@ def _inspect_firmware(path: Path) -> FirmwareMetadata:
 def _read_token(path: Path | None) -> str:
     if path is not None:
         try:
+            if os.name == "posix":
+                mode = stat.S_IMODE(path.stat().st_mode)
+                if mode & 0o077:
+                    raise ValueError(
+                        f"OTA token file has group/other permissions: {path} "
+                        f"({mode:04o}); require mode 0600"
+                    )
             token = path.read_text(encoding="ascii").strip()
         except FileNotFoundError:
             token = ""
@@ -176,7 +186,7 @@ def _connection(
 
 
 def _show_response(response: http.client.HTTPResponse) -> tuple[int, object | None]:
-    payload = response.read().decode("utf-8", errors="replace")
+    payload = _read_response(response).decode("utf-8", errors="replace")
     print(f"HTTP {response.status} {response.reason}")
     decoded: object | None = None
     try:
@@ -186,6 +196,13 @@ def _show_response(response: http.client.HTTPResponse) -> tuple[int, object | No
         if payload:
             print(payload)
     return (0 if 200 <= response.status < 300 else 1), decoded
+
+
+def _read_response(response: http.client.HTTPResponse) -> bytes:
+    payload = response.read(MAX_HTTP_RESPONSE_BYTES + 1)
+    if len(payload) > MAX_HTTP_RESPONSE_BYTES:
+        raise ValueError("device response exceeds the 1 MiB safety limit")
+    return payload
 
 
 def _fetch_status(
@@ -203,7 +220,7 @@ def _fetch_status(
             headers={"Authorization": f"Bearer {token}", "Accept": "application/json"},
         )
         response = connection.getresponse()
-        payload = response.read()
+        payload = _read_response(response)
         if not 200 <= response.status < 300:
             raise http.client.HTTPException(
                 f"status check returned HTTP {response.status} {response.reason}"
@@ -492,9 +509,24 @@ def _upload(args: argparse.Namespace, token: str) -> int:
     if not args.no_wait and args.post_token_file is not None:
         post_token = _read_token(args.post_token_file)
 
-    before = None
-    if not args.no_wait:
-        before = _fetch_status(args.host, args.port, args.cert, args.timeout, token)
+    before = _fetch_status(args.host, args.port, args.cert, args.timeout, token)
+    if before.get("project") != metadata.project:
+        raise ValueError(
+            f"connected device project is {before.get('project')!r}, "
+            f"expected {metadata.project!r}"
+        )
+    if before.get("state") != "valid":
+        raise ValueError(
+            f"running firmware state is {before.get('state')!r}, expected 'valid'"
+        )
+    if (
+        before.get("image_sha256") == metadata.image_sha256
+        and not args.allow_same_image
+    ):
+        raise ValueError(
+            "device already runs this exact firmware image; "
+            "use --allow-same-image to reflash intentionally"
+        )
     print(
         f"Uploading {firmware} ({metadata.size} bytes, version {metadata.version}, "
         f"file SHA-256 {metadata.file_sha256}, image SHA-256 {metadata.image_sha256})"
@@ -524,10 +556,23 @@ def _upload(args: argparse.Namespace, token: str) -> int:
     if upload_result == 1:
         return 1
     if upload_result == 0:
-        if not isinstance(accepted, dict) or accepted.get("accepted") is not True:
+        accepted_partition = (
+            accepted.get("partition") if isinstance(accepted, dict) else None
+        )
+        if (
+            not isinstance(accepted, dict)
+            or accepted.get("accepted") is not True
+            or accepted.get("rebooting") is not True
+            or accepted.get("version") != metadata.version
+            or accepted_partition not in {"ota_0", "ota_1"}
+        ):
             raise ValueError("device returned success without an OTA acceptance record")
         if accepted.get("image_sha256") != metadata.image_sha256:
             raise ValueError("device accepted image hash does not match uploaded firmware")
+        if accepted_partition == before.get("partition"):
+            raise ValueError("device accepted firmware into its running OTA partition")
+    else:
+        accepted_partition = None
     if args.no_wait:
         return upload_result
 
@@ -537,6 +582,7 @@ def _upload(args: argparse.Namespace, token: str) -> int:
         post_token,
         metadata,
         before,
+        accepted_partition,
     )
 
 
@@ -553,6 +599,7 @@ def _wait_for_deployment(
     token: str,
     metadata: FirmwareMetadata,
     before: dict[str, object] | None,
+    expected_partition: str | None = None,
 ) -> int:
     before_boot = (
         _nested_integer(before.get("system"), "boot_count")
@@ -592,6 +639,15 @@ def _wait_for_deployment(
         current_hash = status.get("image_sha256")
         state = status.get("state")
         if rebooted and current_hash == metadata.image_sha256 and state == "valid":
+            if status.get("project") != metadata.project:
+                raise ValueError("deployed firmware reports a different project")
+            if status.get("version") != metadata.version:
+                raise ValueError("deployed firmware reports a different version")
+            if (
+                expected_partition is not None
+                and status.get("partition") != expected_partition
+            ):
+                raise ValueError("deployed firmware is running from an unexpected partition")
             print(
                 f"Deployment verified: version {status.get('version')}, "
                 f"partition {status.get('partition')}, image SHA-256 {current_hash}"
@@ -730,6 +786,11 @@ def _arguments() -> argparse.Namespace:
         "--no-wait",
         action="store_true",
         help="return after upload acceptance without verifying reboot and rollback state",
+    )
+    upload.add_argument(
+        "--allow-same-image",
+        action="store_true",
+        help="permit reflashing the exact image already running",
     )
     upload.add_argument(
         "--post-cert",

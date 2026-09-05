@@ -164,7 +164,7 @@ python3 tools/mdns_probe.py \
   --hostname esp32-p4-bacnet \
   --address 192.168.75.152 \
   --device-instance 599152 \
-  --firmware-version 1.17.0
+  --firmware-version 1.18.0
 ```
 
 For an endurance run after the finite suite, use the append-only soak monitor.
@@ -251,6 +251,7 @@ The HTTPS server provides nine bearer-authenticated operations:
 
 - `GET /ota/status` — running/boot/update partition and rollback state, source
   and ELF identity, build metadata, exact running-image SHA-256, reset reason,
+  enforced OTA size/media-type/deadline/secure-version policy,
   uptime, temperature current/minimum/maximum/error counters, heap, watchdog
   health, Ethernet negotiation, DHCP/address state, BACnet counters, input
   pad/raw/debounced/transition data, self-test results, and the persistent fault
@@ -365,21 +366,43 @@ sends any HTTP data. CA and hostname checking are replaced by exact DER
 certificate pinning because the device uses a self-signed leaf certificate and
 DHCP. The server additionally requires a 32–128
 character bearer token, validates its embedded certificate/key pair and running
-image at startup, verifies each uploaded ESP image and project name, writes only
-an inactive OTA slot, and uses bootloader rollback. Uploads are blocked while a
-new image is pending so the known-good rollback slot cannot be overwritten.
+image at startup, requires an application/octet-stream body with a bounded size
+and five-minute whole-transfer deadline, verifies each uploaded ESP image,
+project name, and nondecreasing secure version, writes only an inactive OTA
+slot, and uses bootloader rollback. Uploads are blocked while a new image is
+pending so the known-good rollback slot cannot be overwritten.
 Health validation begins after ten seconds; the image must establish Ethernet,
 DHCP, HTTPS OTA, BACnet, and healthy monitored tasks for five consecutive
 samples within 60 seconds or it is marked invalid and rolled back automatically.
 
 Before uploading, the client validates the ESP segment layout, ROM checksum,
-appended SHA-256, 32 MB flash header, chip target, and project name. After
-acceptance it requires the device to echo the exact accepted-image hash, waits
-through reboot, and reports success only when that same image is running in the
-`valid` state.
+appended SHA-256, 32 MB flash header, chip target, and project name. It also
+requires a validated matching device, rejects an accidental no-op reflash, and
+bounds every device response to 1 MiB. After acceptance it requires the device
+to echo the expected version, inactive partition, exact image hash, and reboot
+intent, then reports success only when that same project/version/image is
+running from the accepted partition in the `valid` state. Use
+`--allow-same-image` only for an intentional identical-image recovery test.
 Use `--no-wait` only when another system will perform that verification. For a
 credential rotation, supply `--post-cert` and `--post-token-file` so the same
 command verifies the replacement credentials after reboot.
+
+Before a release deployment, the opt-in rejection suite can exercise wrong
+media type/project, empty/tiny/oversized/invalid images, an interrupted upload,
+and a structurally valid image with a foreign project identity:
+
+```sh
+python3 tools/ota_rejection_test.py \
+  --host 192.168.75.152 \
+  --firmware build/esp32_p4_bacnet_switches.bin \
+  --confirm-inactive-slot-overwrite
+```
+
+ESP-IDF erases and invalidates the inactive slot when these tests begin. They
+never select it for boot, and they require the running image identity to remain
+unchanged, but rollback redundancy is temporarily reduced. Immediately install
+a fully tested valid update after the suite; do not run it when power is
+unstable or recovery access is unavailable.
 
 ### Credential rotation and security boundary
 
@@ -387,7 +410,9 @@ To rotate remotely, first preserve the currently deployed certificate/token in
 a secure temporary location. Generate replacement credentials, build the new
 application, upload it using the old client credentials, then verify status
 using the replacements. Confirm the former certificate/token are rejected
-before destroying the temporary copy.
+before destroying the temporary copy. Credential generation stages and
+validates the complete replacement set before replacing existing files and
+refuses symbolic-link outputs. Token files must have mode 0600 on POSIX hosts.
 
 The private key and token are embedded in each device image, so generated
 application or merged binaries are also secrets and must not be committed or

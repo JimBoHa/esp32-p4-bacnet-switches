@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib.util
 import hashlib
+import http.client
 import http.server
 import json
 import os
@@ -23,6 +24,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 GENERATOR = PROJECT_ROOT / "tools" / "generate_ota_credentials.py"
 CLIENT = PROJECT_ROOT / "tools" / "ota_client.py"
+REJECTION_TEST = PROJECT_ROOT / "tools" / "ota_rejection_test.py"
 VALIDATOR = PROJECT_ROOT / "tools" / "validate_ota_credentials.py"
 
 
@@ -30,6 +32,19 @@ def _load_client_module():
     specification = importlib.util.spec_from_file_location("ota_client", CLIENT)
     if specification is None or specification.loader is None:
         raise RuntimeError("could not load ota_client.py")
+    module = importlib.util.module_from_spec(specification)
+    sys.modules[specification.name] = module
+    specification.loader.exec_module(module)
+    return module
+
+
+def _load_rejection_module():
+    _load_client_module()
+    specification = importlib.util.spec_from_file_location(
+        "ota_rejection_test", REJECTION_TEST
+    )
+    if specification is None or specification.loader is None:
+        raise RuntimeError("could not load ota_rejection_test.py")
     module = importlib.util.module_from_spec(specification)
     sys.modules[specification.name] = module
     specification.loader.exec_module(module)
@@ -133,6 +148,47 @@ class OtaToolTests(unittest.TestCase):
             self.assertNotIn(replacement_token, replaced.stdout)
             self.assertNotIn(replacement_token, replaced.stderr)
 
+    def test_generator_refuses_aliased_and_symbolic_link_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            secrets_directory = root / "credentials"
+            aliased = subprocess.run(
+                [
+                    sys.executable,
+                    str(GENERATOR),
+                    "--secrets-dir",
+                    str(secrets_directory),
+                    "--certificate",
+                    str(secrets_directory / "ota_server_key.pem"),
+                    "--force",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(aliased.returncode, 0)
+            self.assertIn("outputs must be distinct", aliased.stderr)
+
+            target = root / "do-not-replace.pem"
+            target.write_text("preserve me", encoding="ascii")
+            linked_certificate = root / "linked.pem"
+            linked_certificate.symlink_to(target)
+            linked = subprocess.run(
+                [
+                    sys.executable,
+                    str(GENERATOR),
+                    "--secrets-dir",
+                    str(secrets_directory),
+                    "--certificate",
+                    str(linked_certificate),
+                    "--force",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            self.assertNotEqual(linked.returncode, 0)
+            self.assertIn("symbolic link", linked.stderr)
+            self.assertEqual(target.read_text(encoding="ascii"), "preserve me")
+
     def test_validator_rejects_mismatch_bad_format_and_bad_token(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -230,13 +286,20 @@ class OtaToolTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             token_file = Path(temporary) / "token.txt"
             token_file.write_text("x" * 64, encoding="ascii")
+            token_file.chmod(0o600)
             self.assertEqual(client._read_token(token_file), "x" * 64)
 
             token_file.write_text("x" * 32 + "\n" + "y" * 32, encoding="ascii")
             with self.assertRaises(ValueError):
                 client._read_token(token_file)
 
+            token_file.write_text("x" * 64, encoding="ascii")
+            token_file.chmod(0o644)
+            with self.assertRaisesRegex(ValueError, "require mode 0600"):
+                client._read_token(token_file)
+
             token_file.write_text("x" * 31, encoding="ascii")
+            token_file.chmod(0o600)
             with self.assertRaises(ValueError):
                 client._read_token(token_file)
 
@@ -281,6 +344,46 @@ class OtaToolTests(unittest.TestCase):
             firmware.write_bytes(malformed_segment)
             with self.assertRaisesRegex(ValueError, "segment data is truncated"):
                 client._inspect_firmware(firmware)
+
+    def test_rejection_tool_builds_valid_wrong_project_image(self) -> None:
+        client = _load_client_module()
+        rejection = _load_rejection_module()
+        original = bytes(_test_firmware_image())
+        rewritten = rejection._rewrite_project(original, "wrong_project")
+        self.assertEqual(len(rewritten), len(original))
+        self.assertTrue(
+            original[80:112].startswith(b"esp32_p4_bacnet_switches")
+        )
+
+        with tempfile.TemporaryDirectory() as temporary:
+            firmware = Path(temporary) / "rewritten.bin"
+            firmware.write_bytes(rewritten)
+            metadata = client._inspect_firmware(firmware)
+        self.assertEqual(metadata.project, "wrong_project")
+        self.assertNotEqual(rewritten[-32:], original[-32:])
+        with self.assertRaisesRegex(ValueError, "1-31 ASCII"):
+            rejection._rewrite_project(original, "")
+        with self.assertRaisesRegex(ValueError, "must be ASCII"):
+            rejection._rewrite_project(original, "not-ascii-\N{SNOWMAN}")
+
+        arguments = type(
+            "Arguments", (), {"confirm_inactive_slot_overwrite": False}
+        )()
+        with self.assertRaisesRegex(ValueError, "refusing to erase"):
+            rejection.run(arguments)
+
+        with mock.patch("builtins.print"):
+            rejection._expect_rejection_or_close(
+                "oversized declaration",
+                413,
+                mock.Mock(side_effect=http.client.RemoteDisconnected()),
+            )
+        with self.assertRaises(ConnectionRefusedError):
+            rejection._expect_rejection_or_close(
+                "unreachable device",
+                413,
+                mock.Mock(side_effect=ConnectionRefusedError()),
+            )
 
     def test_client_completes_tls_handshake_and_rejects_wrong_pin(self) -> None:
         client = _load_client_module()
@@ -349,6 +452,19 @@ class OtaToolTests(unittest.TestCase):
                 server.server_close()
                 thread.join(timeout=5.0)
 
+    def test_client_bounds_device_responses(self) -> None:
+        client = _load_client_module()
+
+        class OversizedResponse:
+            def read(self, amount: int) -> bytes:
+                self.requested = amount
+                return b"x" * amount
+
+        response = OversizedResponse()
+        with self.assertRaisesRegex(ValueError, "1 MiB safety limit"):
+            client._read_response(response)
+        self.assertEqual(response.requested, client.MAX_HTTP_RESPONSE_BYTES + 1)
+
     def test_client_uploads_validated_bytes_and_requires_acceptance_hash(self) -> None:
         client = _load_client_module()
         image = _test_firmware_image()
@@ -391,6 +507,7 @@ class OtaToolTests(unittest.TestCase):
                     "post_cert": None,
                     "cert": Path("certificate.pem"),
                     "no_wait": True,
+                    "allow_same_image": False,
                     "post_token_file": None,
                     "host": "192.0.2.1",
                     "port": 443,
@@ -400,22 +517,51 @@ class OtaToolTests(unittest.TestCase):
             connection = Connection()
             accepted = {
                 "accepted": True,
+                "rebooting": True,
+                "version": metadata.version,
+                "partition": "ota_1",
                 "image_sha256": metadata.image_sha256,
             }
-            with mock.patch.object(client, "_connection", return_value=connection), \
+            before = {
+                "project": metadata.project,
+                "state": "valid",
+                "partition": "ota_0",
+                "image_sha256": "0" * 64,
+                "system": {"boot_count": 1},
+            }
+            with mock.patch.object(client, "_fetch_status", return_value=before), \
+                    mock.patch.object(client, "_connection", return_value=connection), \
                     mock.patch.object(client, "_show_response", return_value=(0, accepted)):
                 self.assertEqual(client._upload(arguments, "x" * 64), 0)
             self.assertEqual(connection.sent, image)
 
             firmware.write_bytes(image)
-            with mock.patch.object(client, "_connection", return_value=Connection()), \
+            with mock.patch.object(client, "_fetch_status", return_value=before), \
+                    mock.patch.object(client, "_connection", return_value=Connection()), \
                     mock.patch.object(
                         client,
                         "_show_response",
-                        return_value=(0, {"accepted": True}),
+                        return_value=(0, {**accepted, "image_sha256": None}),
                     ):
                 with self.assertRaisesRegex(ValueError, "accepted image hash"):
                     client._upload(arguments, "x" * 64)
+
+            firmware.write_bytes(image)
+            same_image = {**before, "image_sha256": metadata.image_sha256}
+            with mock.patch.object(
+                client, "_fetch_status", return_value=same_image
+            ), mock.patch.object(client, "_connection") as unused_connection:
+                with self.assertRaisesRegex(ValueError, "already runs this exact"):
+                    client._upload(arguments, "x" * 64)
+            unused_connection.assert_not_called()
+
+            wrong_device = {**before, "project": "another_project"}
+            with mock.patch.object(
+                client, "_fetch_status", return_value=wrong_device
+            ), mock.patch.object(client, "_connection") as unused_connection:
+                with self.assertRaisesRegex(ValueError, "connected device project"):
+                    client._upload(arguments, "x" * 64)
+            unused_connection.assert_not_called()
 
     def test_client_gets_and_puts_persistent_configuration(self) -> None:
         client = _load_client_module()
@@ -424,7 +570,7 @@ class OtaToolTests(unittest.TestCase):
             status = 202
             reason = "Accepted"
 
-            def read(self) -> bytes:
+            def read(self, _amount: int | None = None) -> bytes:
                 return b'{"accepted":true,"restart_required":true}'
 
         class Connection:
@@ -502,7 +648,7 @@ class OtaToolTests(unittest.TestCase):
             status = 200
             reason = "OK"
 
-            def read(self) -> bytes:
+            def read(self, _amount: int | None = None) -> bytes:
                 return b'{"mode":"dhcp","trial_active":false}'
 
         class Connection:
@@ -589,7 +735,7 @@ class OtaToolTests(unittest.TestCase):
             status = 202
             reason = "Accepted"
 
-            def read(self) -> bytes:
+            def read(self, _amount: int | None = None) -> bytes:
                 return json.dumps(
                     {
                         "accepted": True,
@@ -746,6 +892,7 @@ class OtaToolTests(unittest.TestCase):
         )()
         before = {"partition": "ota_0", "system": {"boot_count": 7}}
         pending = {
+            "project": metadata.project,
             "partition": "ota_1",
             "state": "pending-verify",
             "image_sha256": "b" * 64,
