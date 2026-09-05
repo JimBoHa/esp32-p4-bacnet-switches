@@ -168,6 +168,116 @@ def hardware_profile_valid(value: object) -> bool:
     return value == EXPECTED_HARDWARE_PROFILE
 
 
+def firmware_diagnostics_valid(status: dict[str, Any]) -> bool:
+    firmware = status.get("firmware")
+    if not isinstance(firmware, dict):
+        return False
+    running = firmware.get("running_partition")
+    boot = firmware.get("boot_partition")
+    update = firmware.get("next_update_partition")
+    if not all(isinstance(item, dict) for item in (running, boot, update)):
+        return False
+    assert isinstance(running, dict) and isinstance(boot, dict)
+    assert isinstance(update, dict)
+    elf_sha = firmware.get("elf_sha256")
+    return (
+        isinstance(firmware.get("build_date"), str)
+        and bool(firmware["build_date"])
+        and isinstance(firmware.get("build_time"), str)
+        and bool(firmware["build_time"])
+        and isinstance(firmware.get("secure_version"), int)
+        and firmware["secure_version"] >= 0
+        and isinstance(elf_sha, str)
+        and re.fullmatch(r"[0-9a-f]{64}", elf_sha) is not None
+        and firmware.get("rollback_enabled") is True
+        and running.get("label") == status.get("partition")
+        and running.get("state") == status.get("state")
+        and running.get("image_sha256") == status.get("image_sha256")
+        and isinstance(running.get("address"), int)
+        and running["address"] > 0
+        and isinstance(running.get("size_bytes"), int)
+        and running["size_bytes"] > 0
+        and boot.get("matches_running") is True
+        and boot.get("label") == running.get("label")
+        and boot.get("address") == running.get("address")
+        and boot.get("size_bytes") == running.get("size_bytes")
+        and update.get("available") is True
+        and isinstance(update.get("label"), str)
+        and update.get("label") != running.get("label")
+        and isinstance(update.get("address"), int)
+        and update["address"] > 0
+        and update.get("address") != running.get("address")
+        and update.get("size_bytes") == running.get("size_bytes")
+    )
+
+
+def runtime_diagnostics_valid(status: dict[str, Any]) -> bool:
+    system = status.get("system")
+    fault_log = status.get("fault_log")
+    fault_health = status.get("fault_log_health")
+    if (
+        not isinstance(system, dict)
+        or not isinstance(fault_log, list)
+        or not isinstance(fault_health, dict)
+    ):
+        return False
+    temperature = system.get("temperature")
+    if not isinstance(temperature, dict):
+        return False
+    current = temperature.get("current_c")
+    minimum = temperature.get("minimum_c")
+    maximum = temperature.get("maximum_c")
+    last_result = temperature.get("last_result")
+    uptime = system.get("uptime_ms")
+    last_sample = temperature.get("last_sample_uptime_ms")
+    sample_age = temperature.get("sample_age_ms")
+    sequences = [
+        event.get("sequence")
+        for event in fault_log
+        if isinstance(event, dict)
+    ]
+    temperature_ok = (
+        temperature.get("valid") is True
+        and isinstance(current, (int, float))
+        and not isinstance(current, bool)
+        and current == system.get("chip_temperature_c")
+        and isinstance(minimum, (int, float))
+        and isinstance(maximum, (int, float))
+        and minimum <= current <= maximum
+        and isinstance(temperature.get("sample_count_since_boot"), int)
+        and temperature["sample_count_since_boot"] > 0
+        and temperature.get("error_count_since_boot") == 0
+        and temperature.get("sample_interval_ms") == 1000
+        and isinstance(uptime, int)
+        and isinstance(last_sample, int)
+        and isinstance(sample_age, int)
+        and 0 <= last_sample <= uptime
+        and sample_age == uptime - last_sample
+        and sample_age <= 2000
+        and last_result == {"code": 0, "name": "ESP_OK"}
+    )
+    fault_ok = (
+        len(sequences) == len(fault_log)
+        and all(isinstance(sequence, int) and sequence > 0 for sequence in sequences)
+        and sequences == sorted(sequences)
+        and fault_health.get("capacity") == 16
+        and fault_health.get("count") == len(fault_log)
+        and isinstance(fault_health.get("total_event_count"), int)
+        and fault_health["total_event_count"] >= len(fault_log)
+        and fault_health.get("overwritten_event_count")
+        == fault_health["total_event_count"] - len(fault_log)
+        and fault_health.get("persistence_ready") is True
+        and fault_health.get("write_failure_count_since_boot") == 0
+        and fault_health.get("last_write_error")
+        == {"code": 0, "name": "ESP_OK"}
+        and fault_health.get("oldest_sequence")
+        == (sequences[0] if sequences else None)
+        and fault_health.get("newest_sequence")
+        == (sequences[-1] if sequences else None)
+    )
+    return temperature_ok and fault_ok
+
+
 def validate_args(args: argparse.Namespace) -> None:
     for label in ("device_instance", "client_instance"):
         value = getattr(args, label)
@@ -906,6 +1016,8 @@ class HilRunner:
             )
             and signal_diagnostics_ok
             and hardware_profile_valid(hardware)
+            and firmware_diagnostics_valid(status)
+            and runtime_diagnostics_valid(status)
             and (
                 self.args.mdns_hostname is None
                 or (
@@ -931,8 +1043,8 @@ class HilRunner:
         self.report.require(
             "Authenticated HTTPS health",
             healthy,
-            f"version={status.get('version')}; source={source}; image={image_sha}; watchdogs and wiring profile healthy",
-            "firmware identity, OTA state, network, configuration, COV cleanup, watchdog health, or wiring profile failed",
+            f"version={status.get('version')}; source={source}; image={image_sha}; firmware/runtime diagnostics healthy",
+            "firmware identity, OTA state, network, configuration, COV cleanup, watchdog, wiring, image, temperature, or fault-log health failed",
         )
         certificate_der = ota_client._certificate_der(self.args.certificate)
         fingerprint = hashlib.sha256(certificate_der).hexdigest()

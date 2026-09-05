@@ -69,7 +69,15 @@ static uint32_t last_acquired_ipv4_address;
 static esp_eth_handle_t ethernet_handle;
 static esp_reset_reason_t startup_reset_reason;
 static temperature_sensor_handle_t temperature_sensor;
+static diagnostics_temperature_metrics_t temperature_metrics;
+static float temperature_current_c;
+static bool temperature_current_valid;
+static bool temperature_read_attempted;
+static uint64_t temperature_last_attempt_uptime_ms;
+static uint64_t temperature_last_sample_uptime_ms;
 static atomic_bool temperature_read_failure_recorded;
+static atomic_uint_fast32_t persistent_write_failure_count;
+static atomic_int_fast32_t persistent_last_write_error;
 static atomic_uint_fast32_t bacnet_counters[DIAGNOSTICS_BACNET_COUNTER_COUNT];
 static atomic_uint_fast32_t active_cov_subscriptions;
 static uint64_t task_last_heartbeat[DIAGNOSTICS_TASK_COUNT];
@@ -102,6 +110,10 @@ static void save_persistent_locked(void)
     const esp_err_t commit_result =
         set_result == ESP_OK ? nvs_commit(diagnostics_nvs_handle) : set_result;
     if (commit_result != ESP_OK) {
+        atomic_fetch_add_explicit(
+            &persistent_write_failure_count, 1U, memory_order_relaxed);
+        atomic_store_explicit(
+            &persistent_last_write_error, commit_result, memory_order_relaxed);
         ESP_LOGE(
             TAG,
             "failed to persist diagnostics: %s",
@@ -112,12 +124,14 @@ static void save_persistent_locked(void)
 static bool persistent_state_header_valid(
     uint32_t magic,
     uint32_t version,
+    uint32_t next_sequence,
     uint32_t event_head,
     uint32_t event_count,
     uint32_t expected_version)
 {
     return magic == DIAGNOSTICS_PERSISTENT_MAGIC &&
         version == expected_version &&
+        next_sequence != 0U &&
         event_head < DIAGNOSTICS_FAULT_LOG_CAPACITY &&
         event_count <= DIAGNOSTICS_FAULT_LOG_CAPACITY;
 }
@@ -141,6 +155,7 @@ static bool load_persistent_state(void)
         if (result == ESP_OK && persistent_state_header_valid(
                 stored.magic,
                 stored.version,
+                stored.next_sequence,
                 stored.event_head,
                 stored.event_count,
                 DIAGNOSTICS_PERSISTENT_VERSION)) {
@@ -162,6 +177,7 @@ static bool load_persistent_state(void)
     if (result != ESP_OK || !persistent_state_header_valid(
             legacy.magic,
             legacy.version,
+            legacy.next_sequence,
             legacy.event_head,
             legacy.event_count,
             DIAGNOSTICS_PERSISTENT_VERSION_LEGACY_32_BIT_TIME)) {
@@ -194,12 +210,15 @@ static void record_event_locked(diagnostics_event_type_t type, int code)
     diagnostics_fault_event_t *event =
         &persistent.events[persistent.event_head];
     *event = (diagnostics_fault_event_t){
-        .sequence = persistent.next_sequence++,
+        .sequence = persistent.next_sequence,
         .boot_count = persistent.boot_count,
         .uptime_ms = uptime_ms(),
         .type = (uint16_t)type,
         .code = (int16_t)code,
     };
+    if (persistent.next_sequence != UINT32_MAX) {
+        persistent.next_sequence++;
+    }
     persistent.event_head =
         (persistent.event_head + 1U) % DIAGNOSTICS_FAULT_LOG_CAPACITY;
     if (persistent.event_count < DIAGNOSTICS_FAULT_LOG_CAPACITY) {
@@ -215,9 +234,17 @@ static esp_err_t initialize_temperature_sensor(void)
     esp_err_t result = temperature_sensor_install(&config, &temperature_sensor);
     if (result == ESP_OK) {
         result = temperature_sensor_enable(temperature_sensor);
+        if (result != ESP_OK) {
+            (void)temperature_sensor_uninstall(temperature_sensor);
+        }
     }
     if (result != ESP_OK) {
         temperature_sensor = NULL;
+        if (xSemaphoreTake(state_mutex, portMAX_DELAY) == pdTRUE) {
+            diagnostics_temperature_metrics_record(
+                &temperature_metrics, false, 0.0F, result);
+            xSemaphoreGive(state_mutex);
+        }
         diagnostics_record_event(
             DIAGNOSTICS_EVENT_TEMPERATURE_SENSOR_FAILED, result);
     }
@@ -243,6 +270,8 @@ esp_err_t diagnostics_init(void)
         TAG,
         "diagnostics NVS open failed");
     nvs_ready = true;
+    atomic_init(&persistent_write_failure_count, 0U);
+    atomic_init(&persistent_last_write_error, ESP_OK);
 
     if (!load_persistent_state()) {
         memset(&persistent, 0, sizeof(persistent));
@@ -266,6 +295,12 @@ esp_err_t diagnostics_init(void)
     }
     atomic_init(&active_cov_subscriptions, 0U);
     atomic_init(&temperature_read_failure_recorded, false);
+    memset(&temperature_metrics, 0, sizeof(temperature_metrics));
+    temperature_current_c = 0.0F;
+    temperature_current_valid = false;
+    temperature_read_attempted = false;
+    temperature_last_attempt_uptime_ms = 0U;
+    temperature_last_sample_uptime_ms = 0U;
     for (size_t index = 0; index < DIAGNOSTICS_TASK_COUNT; ++index) {
         task_last_heartbeat[index] = 0U;
         atomic_init(&task_watchdog_subscribed[index], false);
@@ -573,29 +608,50 @@ bool diagnostics_snapshot_get(diagnostics_snapshot_t *snapshot)
     snapshot->free_heap_bytes = esp_get_free_heap_size();
     snapshot->minimum_free_heap_bytes = esp_get_minimum_free_heap_size();
     snapshot->reset_reason = startup_reset_reason;
-    if (temperature_sensor != NULL) {
-        const esp_err_t temperature_result = temperature_sensor_get_celsius(
-            temperature_sensor, &snapshot->chip_temperature_c);
-        if (temperature_result == ESP_OK) {
-            snapshot->chip_temperature_valid = true;
-        } else if (!atomic_exchange_explicit(
-                       &temperature_read_failure_recorded,
-                       true,
-                       memory_order_acq_rel)) {
-            diagnostics_record_event(
-                DIAGNOSTICS_EVENT_TEMPERATURE_SENSOR_FAILED,
-                temperature_result);
-        }
-    }
-
     if (xSemaphoreTake(state_mutex, portMAX_DELAY) != pdTRUE) {
         return false;
     }
+    esp_err_t temperature_result = ESP_OK;
+    bool temperature_attempted_now = false;
+    if (temperature_sensor != NULL &&
+        (!temperature_read_attempted ||
+         diagnostics_elapsed_milliseconds(
+             snapshot->uptime_ms, temperature_last_attempt_uptime_ms) >=
+             DIAGNOSTICS_TEMPERATURE_SAMPLE_INTERVAL_MS)) {
+        temperature_attempted_now = true;
+        temperature_read_attempted = true;
+        temperature_last_attempt_uptime_ms = snapshot->uptime_ms;
+        float sample_c = 0.0F;
+        temperature_result = temperature_sensor_get_celsius(
+            temperature_sensor, &sample_c);
+        temperature_current_valid = temperature_result == ESP_OK;
+        if (temperature_current_valid) {
+            temperature_current_c = sample_c;
+            temperature_last_sample_uptime_ms = snapshot->uptime_ms;
+        }
+        diagnostics_temperature_metrics_record(
+            &temperature_metrics,
+            temperature_current_valid,
+            sample_c,
+            temperature_result);
+    }
+    snapshot->chip_temperature_c = temperature_current_c;
+    snapshot->chip_temperature_valid = temperature_current_valid;
+    snapshot->temperature_metrics = temperature_metrics;
+    snapshot->temperature_last_sample_uptime_ms =
+        temperature_last_sample_uptime_ms;
     snapshot->boot_count = persistent.boot_count;
     snapshot->last_ota_result =
         (diagnostics_ota_result_t)persistent.last_ota_result;
     snapshot->network = network_state;
     snapshot->fault_log_count = persistent.event_count;
+    snapshot->fault_log_metrics = diagnostics_fault_log_metrics(
+        persistent.next_sequence, persistent.event_count);
+    snapshot->persistent_storage_ready = nvs_ready;
+    snapshot->persistent_write_failure_count = (uint32_t)atomic_load_explicit(
+        &persistent_write_failure_count, memory_order_relaxed);
+    snapshot->persistent_last_write_error = (int32_t)atomic_load_explicit(
+        &persistent_last_write_error, memory_order_relaxed);
     const uint32_t oldest =
         (persistent.event_head + DIAGNOSTICS_FAULT_LOG_CAPACITY -
          persistent.event_count) %
@@ -605,6 +661,16 @@ bool diagnostics_snapshot_get(diagnostics_snapshot_t *snapshot)
             (oldest + index) % DIAGNOSTICS_FAULT_LOG_CAPACITY];
     }
     xSemaphoreGive(state_mutex);
+
+    if (temperature_attempted_now && temperature_result != ESP_OK &&
+        !atomic_exchange_explicit(
+            &temperature_read_failure_recorded,
+            true,
+            memory_order_acq_rel)) {
+        diagnostics_record_event(
+            DIAGNOSTICS_EVENT_TEMPERATURE_SENSOR_FAILED,
+            temperature_result);
+    }
 
     for (size_t index = 0; index < DIAGNOSTICS_BACNET_COUNTER_COUNT; ++index) {
         snapshot->bacnet[index] = (uint32_t)atomic_load_explicit(

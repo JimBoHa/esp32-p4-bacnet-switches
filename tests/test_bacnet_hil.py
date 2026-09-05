@@ -97,6 +97,81 @@ class BacnetHilTests(unittest.TestCase):
         profile["inputs"][0]["header_position"] = 36
         self.assertFalse(bacnet_hil_test.hardware_profile_valid(profile))
 
+    def test_firmware_diagnostics_validation(self) -> None:
+        image_sha = "a" * 64
+        status = {
+            "partition": "ota_0",
+            "state": "valid",
+            "image_sha256": image_sha,
+            "firmware": {
+                "build_date": "Sep  5 2026",
+                "build_time": "04:00:00",
+                "secure_version": 0,
+                "elf_sha256": "b" * 64,
+                "rollback_enabled": True,
+                "running_partition": {
+                    "label": "ota_0",
+                    "address": 131072,
+                    "size_bytes": 4194304,
+                    "state": "valid",
+                    "image_sha256": image_sha,
+                },
+                "boot_partition": {
+                    "label": "ota_0",
+                    "address": 131072,
+                    "size_bytes": 4194304,
+                    "matches_running": True,
+                },
+                "next_update_partition": {
+                    "available": True,
+                    "label": "ota_1",
+                    "address": 4325376,
+                    "size_bytes": 4194304,
+                },
+            },
+        }
+        self.assertTrue(bacnet_hil_test.firmware_diagnostics_valid(status))
+        status["firmware"]["next_update_partition"]["label"] = "ota_0"
+        self.assertFalse(bacnet_hil_test.firmware_diagnostics_valid(status))
+
+    def test_runtime_diagnostics_validation(self) -> None:
+        status = {
+            "system": {
+                "chip_temperature_c": 36.5,
+                "uptime_ms": 10000,
+                "temperature": {
+                    "valid": True,
+                    "current_c": 36.5,
+                    "minimum_c": 35.0,
+                    "maximum_c": 37.0,
+                    "sample_count_since_boot": 9,
+                    "error_count_since_boot": 0,
+                    "sample_interval_ms": 1000,
+                    "last_sample_uptime_ms": 9500,
+                    "sample_age_ms": 500,
+                    "last_result": {"code": 0, "name": "ESP_OK"},
+                },
+            },
+            "fault_log": [
+                {"sequence": 8, "type": "boot"},
+                {"sequence": 9, "type": "ota-validated"},
+            ],
+            "fault_log_health": {
+                "capacity": 16,
+                "count": 2,
+                "total_event_count": 9,
+                "overwritten_event_count": 7,
+                "persistence_ready": True,
+                "write_failure_count_since_boot": 0,
+                "last_write_error": {"code": 0, "name": "ESP_OK"},
+                "oldest_sequence": 8,
+                "newest_sequence": 9,
+            },
+        }
+        self.assertTrue(bacnet_hil_test.runtime_diagnostics_valid(status))
+        status["system"]["temperature"]["maximum_c"] = 30.0
+        self.assertFalse(bacnet_hil_test.runtime_diagnostics_valid(status))
+
     def test_report_is_machine_readable(self) -> None:
         report = bacnet_hil_test.TestReport(
             started_at="2026-01-01T00:00:00Z",
