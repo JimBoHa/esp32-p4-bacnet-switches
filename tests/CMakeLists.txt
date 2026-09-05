@@ -14,6 +14,7 @@ add_executable(
     ../main/diagnostics_metrics.c
     ../main/hardware_profile.c
     ../main/input_debounce.c
+    ../main/input_history.c
     ../main/input_line_classifier.c
     ../main/network_config_model.c
     ../main/ota_auth.c

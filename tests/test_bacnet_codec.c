@@ -13,6 +13,7 @@
 #include "hardware_profile.h"
 #include "input_line_classifier.h"
 #include "input_debounce.h"
+#include "input_history.h"
 #include "network_config_model.h"
 #include "ota_auth.h"
 #include "ota_health.h"
@@ -2606,6 +2607,47 @@ static void test_subscribe_cov_capacity_error(void)
         0x5AU, response, sizeof(expected) - 1U) == 0U);
 }
 
+static void test_input_event_history(void)
+{
+    input_history_t history;
+    input_history_event_t event;
+    input_history_init(&history);
+    CHECK(history.count == 0U);
+    CHECK(!input_history_get(&history, 0U, &event));
+    CHECK(!input_history_record(NULL, 20, INPUT_HISTORY_INITIAL, false, 0U, 0U));
+    CHECK(!input_history_record(&history, -1, INPUT_HISTORY_INITIAL, false, 0U, 0U));
+    CHECK(!input_history_record(&history, 20, (input_history_kind_t)99, false, 0U, 0U));
+    const uint64_t late_uptime = (uint64_t)UINT32_MAX + 50000U;
+    CHECK(input_history_record(
+        &history, 22, INPUT_HISTORY_REJECTED_PULSE, false, 30U, late_uptime));
+    CHECK(input_history_get(&history, 0U, &event));
+    CHECK(event.sequence == 1U && event.gpio == 22U);
+    CHECK(event.uptime_ms == late_uptime && event.pulse_width_ms == 30U);
+    CHECK(!event.active && event.kind == INPUT_HISTORY_REJECTED_PULSE);
+    for (size_t index = 0U; index < INPUT_HISTORY_CAPACITY * 3U; ++index) {
+        CHECK(input_history_record(
+            &history, 20, INPUT_HISTORY_TRANSITION, (index % 2U) != 0U,
+            999U, late_uptime + index + 1U));
+    }
+    CHECK(history.count == INPUT_HISTORY_CAPACITY);
+    CHECK(history.total_events == INPUT_HISTORY_CAPACITY * 3U + 1U);
+    for (size_t index = 0U; index < INPUT_HISTORY_CAPACITY; ++index) {
+        CHECK(input_history_get(&history, index, &event));
+        CHECK(event.sequence == history.total_events - history.count + index + 1U);
+        CHECK(event.pulse_width_ms == 0U);
+        CHECK(event.uptime_ms == late_uptime + event.sequence - 1U);
+    }
+    CHECK(!input_history_get(&history, INPUT_HISTORY_CAPACITY, &event));
+    CHECK(!input_history_get(&history, 0U, NULL));
+    CHECK(!input_history_get(NULL, 0U, &event));
+    CHECK(strcmp(input_history_kind_name(INPUT_HISTORY_CHATTER_STARTED), "chatter-started") == 0);
+    CHECK(strcmp(input_history_kind_name((input_history_kind_t)99), "unknown") == 0);
+    history.total_events = UINT64_MAX;
+    CHECK(!input_history_record(&history, 20, INPUT_HISTORY_INITIAL, false, 0U, 0U));
+    input_history_init(&history);
+    CHECK(history.count == 0U && history.total_events == 0U);
+}
+
 int main(void)
 {
     test_reference_vectors();
@@ -2624,6 +2666,7 @@ int main(void)
     test_diagnostics_time_rollover();
     test_cov_retry_payload_cache();
     test_input_debounce_diagnostics();
+    test_input_event_history();
     test_input_line_classifier();
     test_config_model();
     test_network_config_model();
