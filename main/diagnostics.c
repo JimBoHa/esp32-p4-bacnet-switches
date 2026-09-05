@@ -355,6 +355,8 @@ const char *diagnostics_event_name(diagnostics_event_type_t event)
         return "ota-server-failed";
     case DIAGNOSTICS_EVENT_TASK_WATCHDOG_FAILED:
         return "task-watchdog-failed";
+    case DIAGNOSTICS_EVENT_REMOTE_REBOOT_REQUESTED:
+        return "remote-reboot-requested";
     default:
         return "unknown";
     }

@@ -571,6 +571,159 @@ class OtaToolTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "not valid JSON"):
                 client._network_put(arguments, "x" * 64)
 
+    def test_client_requests_and_verifies_authenticated_reboot(self) -> None:
+        client = _load_client_module()
+        image_sha = "b" * 64
+        before = {
+            "partition": "ota_0",
+            "state": "valid",
+            "image_sha256": image_sha,
+            "system": {"boot_count": 41},
+        }
+        after = {
+            **before,
+            "system": {"boot_count": 42},
+        }
+
+        class Response:
+            status = 202
+            reason = "Accepted"
+
+            def read(self) -> bytes:
+                return json.dumps(
+                    {
+                        "accepted": True,
+                        "rebooting": True,
+                        "boot_count": 41,
+                        "image_sha256": image_sha,
+                    }
+                ).encode()
+
+        class Connection:
+            def __init__(self, interrupted: bool = False) -> None:
+                self.request_call: tuple[object, ...] | None = None
+                self.closed = False
+                self.interrupted = interrupted
+
+            def request(self, *args: object, **kwargs: object) -> None:
+                self.request_call = (*args, kwargs)
+
+            def getresponse(self) -> Response:
+                if self.interrupted:
+                    raise OSError("peer rebooted")
+                return Response()
+
+            def close(self) -> None:
+                self.closed = True
+
+        arguments = type(
+            "Arguments",
+            (),
+            {
+                "host": "192.0.2.1",
+                "post_host": None,
+                "port": 443,
+                "cert": Path("certificate.pem"),
+                "timeout": 1.0,
+                "reboot_timeout": 10.0,
+                "poll_interval": 0.01,
+            },
+        )()
+        for interrupted in (False, True):
+            connection = Connection(interrupted)
+            with mock.patch.object(
+                client, "_fetch_status", side_effect=[before, after]
+            ), mock.patch.object(
+                client, "_connection", return_value=connection
+            ), mock.patch.object(client.time, "sleep"), mock.patch("builtins.print"):
+                self.assertEqual(client._reboot(arguments, "x" * 64), 0)
+            self.assertTrue(connection.closed)
+            self.assertIsNotNone(connection.request_call)
+            self.assertEqual(
+                connection.request_call[0:2],
+                ("POST", "/system/reboot"),
+            )
+            request_arguments = connection.request_call[-1]
+            self.assertEqual(request_arguments["body"], b"")
+            self.assertEqual(
+                request_arguments["headers"]["Authorization"],
+                "Bearer " + "x" * 64,
+            )
+
+        connection = Connection()
+        with mock.patch.object(
+            client, "_fetch_status", return_value=before
+        ), mock.patch.object(
+            client, "_connection", return_value=connection
+        ), mock.patch.object(
+            client,
+            "_show_response",
+            return_value=(0, {"accepted": True, "rebooting": False}),
+        ):
+            with self.assertRaisesRegex(ValueError, "acceptance record"):
+                client._reboot(arguments, "x" * 64)
+
+    def test_client_reboot_fails_closed_on_identity_drift(self) -> None:
+        client = _load_client_module()
+        before = {
+            "partition": "ota_0",
+            "state": "valid",
+            "image_sha256": "b" * 64,
+            "system": {"boot_count": 0xFFFFFFFF},
+        }
+        arguments = type(
+            "Arguments",
+            (),
+            {
+                "host": "192.0.2.1",
+                "post_host": "192.0.2.2",
+                "port": 443,
+                "cert": Path("certificate.pem"),
+                "timeout": 1.0,
+                "reboot_timeout": 10.0,
+                "poll_interval": 0.01,
+            },
+        )()
+        wrapped = {
+            **before,
+            "system": {"boot_count": 0},
+        }
+        with mock.patch.object(
+            client, "_fetch_status", return_value=wrapped
+        ), mock.patch.object(client.time, "sleep"), mock.patch("builtins.print"):
+            self.assertEqual(
+                client._wait_for_reboot(arguments, "x" * 64, before),
+                0,
+            )
+
+        wrong_image = {
+            **wrapped,
+            "image_sha256": "c" * 64,
+        }
+        with mock.patch.object(
+            client, "_fetch_status", return_value=wrong_image
+        ), mock.patch.object(client.time, "sleep"):
+            with self.assertRaisesRegex(ValueError, "different firmware image"):
+                client._wait_for_reboot(arguments, "x" * 64, before)
+
+        wrong_partition = {
+            **wrapped,
+            "partition": "ota_1",
+        }
+        with mock.patch.object(
+            client, "_fetch_status", return_value=wrong_partition
+        ), mock.patch.object(client.time, "sleep"):
+            with self.assertRaisesRegex(ValueError, "different OTA partition"):
+                client._wait_for_reboot(arguments, "x" * 64, before)
+
+        incomplete = {"state": "valid", "system": {"boot_count": 1}}
+        with mock.patch.object(
+            client, "_fetch_status", return_value=incomplete
+        ), mock.patch.object(client, "_connection") as connection:
+            with self.assertRaisesRegex(ValueError, "pre-reboot status"):
+                client._reboot(arguments, "x" * 64)
+        connection.assert_not_called()
+
     def test_client_waits_for_reboot_and_rollback_validation(self) -> None:
         client = _load_client_module()
         metadata = client.FirmwareMetadata(
