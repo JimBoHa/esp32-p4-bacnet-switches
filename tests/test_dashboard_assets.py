@@ -71,7 +71,8 @@ class DashboardAssetTests(unittest.TestCase):
     def test_token_and_rendering_stay_on_safe_browser_surfaces(self) -> None:
         script = JAVASCRIPT.read_text(encoding="utf-8")
         self.assertIn('window.fetch("/ota/status"', script)
-        self.assertIn('"Authorization": `Bearer ${bearerToken}`', script)
+        self.assertIn('"Authorization": `Bearer ${tokenForRequest}`', script)
+        self.assertIn("signal: controller.signal", script)
         self.assertIn("textContent", script)
         for forbidden in (
             "localStorage",
@@ -97,6 +98,15 @@ class DashboardAssetTests(unittest.TestCase):
     def test_javascript_parses(self) -> None:
         subprocess.run(
             ["node", "--check", str(JAVASCRIPT)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    @unittest.skipUnless(shutil.which("node"), "Node.js is unavailable")
+    def test_disconnect_and_unauthorized_responses_hide_device_data(self) -> None:
+        subprocess.run(
+            ["node", str(ROOT / "tests" / "dashboard_runtime_test.mjs")],
             check=True,
             capture_output=True,
             text=True,

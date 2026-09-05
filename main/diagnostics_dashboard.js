@@ -12,7 +12,7 @@
 
   let bearerToken = "";
   let refreshTimer = 0;
-  let requestInFlight = false;
+  let activeRequest = null;
 
   const text = (id, value) => {
     element(id).textContent = value;
@@ -217,22 +217,32 @@
   };
 
   const refresh = async () => {
-    if (!bearerToken || requestInFlight) return;
-    requestInFlight = true;
+    if (!bearerToken || activeRequest) return;
+    const tokenForRequest = bearerToken;
+    const controller = new AbortController();
+    let requestTimedOut = false;
+    const requestTimeout = window.setTimeout(() => {
+      requestTimedOut = true;
+      controller.abort();
+    }, 10000);
+    activeRequest = controller;
     connectionStatus.className = "status-line";
     connectionStatus.textContent = "Refreshing authenticated diagnostics…";
     try {
       const response = await window.fetch("/ota/status", {
         method: "GET",
-        headers: {"Authorization": `Bearer ${bearerToken}`, "Accept": "application/json"},
+        headers: {"Authorization": `Bearer ${tokenForRequest}`, "Accept": "application/json"},
         cache: "no-store",
         credentials: "omit",
+        signal: controller.signal,
       });
+      if (activeRequest !== controller || bearerToken !== tokenForRequest) return;
       if (!response.ok) {
         if (response.status === 401) bearerToken = "";
         throw new Error(`HTTP ${response.status}`);
       }
       const status = await response.json();
+      if (activeRequest !== controller || bearerToken !== tokenForRequest) return;
       if (!status || typeof status !== "object" || Array.isArray(status)) {
         throw new Error("invalid status document");
       }
@@ -240,16 +250,25 @@
       connectedControls.hidden = false;
       connectionStatus.textContent = "Authenticated. Device data is read-only.";
     } catch (error) {
+      if (activeRequest !== controller) return;
+      if (controller.signal.aborted && !requestTimedOut) return;
       connectionStatus.className = "status-line error";
-      connectionStatus.textContent = `Diagnostics unavailable: ${error instanceof Error ? error.message : "request failed"}`;
+      connectionStatus.textContent = `Diagnostics unavailable: ${requestTimedOut ? "request timed out" : error instanceof Error ? error.message : "request failed"}`;
       if (!bearerToken) {
+        dashboard.hidden = true;
         connectedControls.hidden = true;
         overallHealth.textContent = "Not connected";
         overallHealth.className = "health health-idle";
+      } else {
+        overallHealth.textContent = "Connection error";
+        overallHealth.className = "health health-bad";
       }
     } finally {
-      requestInFlight = false;
-      scheduleRefresh();
+      window.clearTimeout(requestTimeout);
+      if (activeRequest === controller) {
+        activeRequest = null;
+        scheduleRefresh();
+      }
     }
   };
 
@@ -261,6 +280,11 @@
       connectionStatus.textContent = "Token must contain 32–128 printable characters without spaces.";
       return;
     }
+    window.clearTimeout(refreshTimer);
+    if (activeRequest) {
+      activeRequest.abort();
+      activeRequest = null;
+    }
     bearerToken = candidate;
     tokenInput.value = "";
     refresh();
@@ -271,6 +295,10 @@
   element("disconnect").addEventListener("click", () => {
     bearerToken = "";
     window.clearTimeout(refreshTimer);
+    if (activeRequest) {
+      activeRequest.abort();
+      activeRequest = null;
+    }
     dashboard.hidden = true;
     connectedControls.hidden = true;
     overallHealth.textContent = "Not connected";
