@@ -18,6 +18,8 @@ import sys
 import time
 from pathlib import Path
 
+from firmware_signing import DEFAULT_PUBLIC_KEY, verify_image_signature
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CERTIFICATE = PROJECT_ROOT / "main" / "ota_server_cert.pem"
@@ -43,6 +45,9 @@ class FirmwareMetadata:
     image_sha256: str
     project: str
     version: str
+    signed: bool = False
+    signing_key_sha256: str | None = None
+    unsigned_size: int = 0
     image: bytes = dataclasses.field(default=b"", repr=False, compare=False)
 
 
@@ -56,7 +61,9 @@ def _decode_app_field(value: bytes, name: str) -> str:
         raise ValueError(f"firmware {name} is not ASCII") from error
 
 
-def _inspect_firmware(path: Path) -> FirmwareMetadata:
+def _inspect_firmware(
+    path: Path, public_key: Path = DEFAULT_PUBLIC_KEY, *, require_signature: bool = False,
+) -> FirmwareMetadata:
     with path.open("rb") as source:
         image = source.read(MAX_OTA_IMAGE_BYTES + 1)
     if len(image) > MAX_OTA_IMAGE_BYTES:
@@ -102,7 +109,9 @@ def _inspect_firmware(path: Path) -> FirmwareMetadata:
         position = segment_end
 
     checksum_offset = position + (15 - (position % 16))
-    if checksum_offset + 1 != digest_offset:
+    digest_offset = checksum_offset + 1
+    unsigned_end = digest_offset + digest_size
+    if unsigned_end > len(image):
         raise ValueError("firmware has an invalid checksum or digest position")
     if image[checksum_offset] != checksum:
         raise ValueError("firmware ESP image checksum does not match its segments")
@@ -112,10 +121,15 @@ def _inspect_firmware(path: Path) -> FirmwareMetadata:
     if descriptor_magic != ESP_APP_DESC_MAGIC:
         raise ValueError("firmware application descriptor is invalid")
 
-    appended_digest = image[-hashlib.sha256().digest_size :]
-    computed_digest = hashlib.sha256(image[: -hashlib.sha256().digest_size]).digest()
+    appended_digest = image[digest_offset:unsigned_end]
+    computed_digest = hashlib.sha256(image[:digest_offset]).digest()
     if not hmac.compare_digest(appended_digest, computed_digest):
         raise ValueError("firmware appended validation hash does not match its contents")
+
+    signed = len(image) != unsigned_end
+    if require_signature and not signed:
+        raise ValueError("unsigned firmware refused; a pinned firmware signature is required")
+    signing_key_sha256 = verify_image_signature(image, unsigned_end, public_key) if signed else None
 
     version = _decode_app_field(image[descriptor_offset + 16 : descriptor_offset + 48], "version")
     project = _decode_app_field(image[descriptor_offset + 48 : descriptor_offset + 80], "project")
@@ -125,6 +139,9 @@ def _inspect_firmware(path: Path) -> FirmwareMetadata:
         image_sha256=appended_digest.hex(),
         project=project,
         version=version,
+        signed=signed,
+        signing_key_sha256=signing_key_sha256,
+        unsigned_size=unsigned_end,
         image=image,
     )
 
@@ -555,7 +572,10 @@ def _reboot(args: argparse.Namespace, token: str) -> int:
 
 def _upload(args: argparse.Namespace, token: str) -> int:
     firmware: Path = args.firmware
-    metadata = _inspect_firmware(firmware)
+    metadata = _inspect_firmware(
+        firmware, getattr(args, "signing_public_key", DEFAULT_PUBLIC_KEY),
+        require_signature=not getattr(args, "allow_unsigned_legacy", False),
+    )
     if metadata.project != args.project:
         raise ValueError(
             f"firmware project is {metadata.project!r}, expected {args.project!r}"
@@ -569,6 +589,9 @@ def _upload(args: argparse.Namespace, token: str) -> int:
         post_token = _read_token(args.post_token_file)
 
     before = _fetch_status(args.host, args.port, args.cert, args.timeout, token)
+    if before.get("security", {}).get("software_signature_verification") is True:
+        if not metadata.signed or before.get("ota_policy", {}).get("signing_key_sha256") != metadata.signing_key_sha256:
+            raise ValueError("firmware signature does not match the running device's trusted key")
     if before.get("project") != metadata.project:
         raise ValueError(
             f"connected device project is {before.get('project')!r}, "
@@ -702,6 +725,11 @@ def _wait_for_deployment(
                 raise ValueError("deployed firmware reports a different project")
             if status.get("version") != metadata.version:
                 raise ValueError("deployed firmware reports a different version")
+            if metadata.signed and (
+                status.get("security", {}).get("software_signature_verification") is not True
+                or status.get("ota_policy", {}).get("signing_key_sha256") != metadata.signing_key_sha256
+            ):
+                raise ValueError("deployed firmware did not confirm the expected signing policy and trusted key")
             if (
                 expected_partition is not None
                 and status.get("partition") != expected_partition
@@ -842,6 +870,10 @@ def _arguments() -> argparse.Namespace:
     upload = commands.add_parser("upload", help="upload an ESP-IDF application image")
     _add_connection_arguments(upload)
     upload.add_argument("firmware", type=Path, help="application .bin from idf.py build")
+    upload.add_argument("--signing-public-key", type=Path, default=DEFAULT_PUBLIC_KEY,
+                        help="pinned RSA-3072 firmware signing public key")
+    upload.add_argument("--allow-unsigned-legacy", action="store_true",
+                        help="explicitly permit unsigned images only for a device without signature enforcement")
     upload.add_argument(
         "--project",
         default=DEFAULT_PROJECT,

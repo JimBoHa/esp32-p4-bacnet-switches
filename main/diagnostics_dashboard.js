@@ -202,6 +202,9 @@
     overallHealth.className = `health ${healthy ? "health-good" : "health-bad"}`;
     text("firmware", status.version ?? "—");
     text("source", status.git_revision ?? "—");
+    text("signaturePolicy", status.security?.software_signature_verification === true
+      ? "Signed OTA required · software verification"
+      : "Signed OTA enforcement not reported");
     text("uptime", formatDuration(system.uptime_ms));
     text("bootCount", `Boot ${formatInteger(system.boot_count)}`);
     text("temperature", finiteNumber(system.chip_temperature_c) === null ? "—" : `${system.chip_temperature_c.toFixed(1)} °C`);

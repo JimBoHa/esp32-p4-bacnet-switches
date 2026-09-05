@@ -49,6 +49,9 @@ jobs:
       - name: Build credential-free target configuration
         run: |
           . /opt/esp/idf/export.sh
+          umask 077
+          python3 tools/firmware_signing.py generate-key \
+            --public-key "$RUNNER_TEMP/ci-signing-public.pem"
           export ESP32_P4_OTA_SECRETS_DIR="$RUNNER_TEMP/no-credentials-present"
           idf.py -B build-ci \
             -DIDF_TARGET=esp32p4 \
@@ -66,6 +69,24 @@ jobs:
           assert config["BOOTLOADER_APP_ROLLBACK_ENABLE"] is True
           assert config["ESP_TASK_WDT_PANIC"] is True
           assert config["ESP_COREDUMP_ENABLE_TO_NONE"] is True
+          assert config["SECURE_SIGNED_ON_UPDATE_NO_SECURE_BOOT"] is True
+          assert config["SECURE_SIGNED_APPS_RSA_SCHEME"] is True
+          assert config["SECURE_BOOT"] is False
+          assert config["SECURE_FLASH_ENC_ENABLED"] is False
+          assert not config.get("BOOTLOADER_APP_ANTI_ROLLBACK")
+          assert not config.get("SECURE_DISABLE_ROM_DL_MODE")
+          assert not config.get("SECURE_ENABLE_SECURE_ROM_DL_MODE")
           image = Path("build-ci/esp32_p4_bacnet_switches.bin").read_bytes()
           assert b"-----BEGIN PRIVATE KEY-----" not in image
+          PY
+          PYTHONPATH=tools python3 - <<'PY'
+          import os
+          from pathlib import Path
+          from ota_client import _inspect_firmware
+          metadata = _inspect_firmware(
+              Path("build-ci/esp32_p4_bacnet_switches.bin"),
+              Path(os.environ["RUNNER_TEMP"]) / "ci-signing-public.pem",
+              require_signature=True,
+          )
+          assert metadata.signed and metadata.signing_key_sha256
           PY
