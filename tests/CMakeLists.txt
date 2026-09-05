@@ -11,6 +11,7 @@ add_executable(
     ../main/config_model.c
     ../main/cov_retry_cache.c
     ../main/diagnostics_time.c
+    ../main/input_debounce.c
     ../main/input_line_classifier.c
     ../main/network_config_model.c
     ../main/ota_auth.c

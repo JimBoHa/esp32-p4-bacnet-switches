@@ -69,6 +69,7 @@ idf_component_register(
         "cov_retry_cache.c"
         "diagnostics.c"
         "diagnostics_time.c"
+        "input_debounce.c"
         "input_line_classifier.c"
         "network_config_model.c"
         "network_config_store.c"

@@ -116,6 +116,27 @@ def error_signature(error: BaseException) -> tuple[str, str]:
     )
 
 
+def revision_matches(expected: str | None, reported: object) -> bool:
+    """Match a full or abbreviated revision embedded in a reported string."""
+    if expected is None:
+        return True
+    expected_lower = expected.lower()
+    reported_lower = str(reported).lower()
+    matches = re.finditer(
+        r"(?<![0-9a-f])[0-9a-f]{7,40}(?![0-9a-f])",
+        reported_lower,
+    )
+    revisions = [
+        match.group(0)
+        for match in matches
+        if not reported_lower[match.end() :].startswith("-dirty")
+    ]
+    return any(
+        revision.startswith(expected_lower) or expected_lower.startswith(revision)
+        for revision in revisions
+    )
+
+
 def validate_args(args: argparse.Namespace) -> None:
     for label in ("device_instance", "client_instance"):
         value = getattr(args, label)
@@ -413,10 +434,9 @@ class HilRunner:
             self.args.expected_version is None
             or str(metadata["firmware-revision"]) == self.args.expected_version
         )
-        source_ok = (
-            self.args.expected_source is None
-            or self.args.expected_source.lower()
-            in str(metadata["application-software-version"]).lower()
+        source_ok = revision_matches(
+            self.args.expected_source,
+            metadata["application-software-version"],
         )
         self.report.require(
             "Device identity metadata",
@@ -725,15 +745,39 @@ class HilRunner:
         configuration = status.get("configuration", {})
         bacnet = status.get("bacnet", {})
         watchdog = system.get("task_watchdog", {}) if isinstance(system, dict) else {}
+        gpio_diagnostics = status.get("gpio_diagnostics", [])
+        signal_diagnostics_ok = isinstance(gpio_diagnostics, list) and len(
+            gpio_diagnostics
+        ) == len(PHYSICAL_INPUT_INSTANCES)
+        if signal_diagnostics_ok:
+            for item in gpio_diagnostics:
+                signal = item.get("signal", {}) if isinstance(item, dict) else {}
+                signal_diagnostics_ok = signal_diagnostics_ok and (
+                    isinstance(signal, dict)
+                    and signal.get("accepted_transition_count")
+                    == item.get("transition_count")
+                    and all(
+                        isinstance(signal.get(key), int) and signal[key] >= 0
+                        for key in (
+                            "raw_edge_count",
+                            "accepted_transition_count",
+                            "rejected_pulse_count",
+                            "chatter_event_count",
+                            "candidate_age_ms",
+                            "last_raw_edge_uptime_ms",
+                            "last_rejected_pulse_uptime_ms",
+                            "last_rejected_pulse_width_ms",
+                        )
+                    )
+                    and isinstance(signal.get("chattering"), bool)
+                    and isinstance(signal.get("candidate_active"), bool)
+                    and isinstance(signal.get("candidate_level"), bool)
+                )
         version_ok = (
             self.args.expected_version is None
             or status.get("version") == self.args.expected_version
         )
-        source_ok = (
-            self.args.expected_source is None
-            or source.startswith(self.args.expected_source.lower())
-            or self.args.expected_source.lower().startswith(source)
-        )
+        source_ok = revision_matches(self.args.expected_source, source)
         image_ok = (
             self.args.expected_image_sha256 is None
             or image_sha == self.args.expected_image_sha256.lower()
@@ -763,6 +807,7 @@ class HilRunner:
                 isinstance(item, dict) and item.get("healthy") is True
                 for item in watchdog.values()
             )
+            and signal_diagnostics_ok
         )
         self.report.require(
             "Authenticated HTTPS health",
