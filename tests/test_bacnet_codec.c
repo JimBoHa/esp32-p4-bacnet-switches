@@ -9,6 +9,7 @@
 #include "config_model.h"
 #include "cov_retry_cache.h"
 #include "diagnostics_time.h"
+#include "hardware_profile.h"
 #include "input_line_classifier.h"
 #include "input_debounce.h"
 #include "network_config_model.h"
@@ -2487,6 +2488,18 @@ static void test_network_config_model(void)
     CHECK(network_config_crc32(NULL) == 0U);
 }
 
+static void test_hardware_profile(void)
+{
+    CHECK(hardware_profile_p1_position(20) == 35);
+    CHECK(hardware_profile_p1_position(21) == 34);
+    CHECK(hardware_profile_p1_position(22) == 32);
+    CHECK(hardware_profile_p1_position(23) == -1);
+    CHECK(strcmp(hardware_profile_binary_state(false, false), "inactive") == 0);
+    CHECK(strcmp(hardware_profile_binary_state(true, false), "active") == 0);
+    CHECK(strcmp(hardware_profile_binary_state(false, true), "active") == 0);
+    CHECK(strcmp(hardware_profile_binary_state(true, true), "inactive") == 0);
+}
+
 static void test_subscribe_cov_capacity_error(void)
 {
     uint8_t response[32];
@@ -2522,6 +2535,7 @@ int main(void)
     test_input_line_classifier();
     test_config_model();
     test_network_config_model();
+    test_hardware_profile();
     printf("bacnet_codec_tests: %u checks passed\n", tests_run);
     return EXIT_SUCCESS;
 }
