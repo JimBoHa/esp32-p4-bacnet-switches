@@ -357,6 +357,8 @@ const char *diagnostics_event_name(diagnostics_event_type_t event)
         return "task-watchdog-failed";
     case DIAGNOSTICS_EVENT_REMOTE_REBOOT_REQUESTED:
         return "remote-reboot-requested";
+    case DIAGNOSTICS_EVENT_MDNS_FAILED:
+        return "mdns-failed";
     default:
         return "unknown";
     }
