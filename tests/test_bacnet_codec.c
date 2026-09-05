@@ -2124,13 +2124,21 @@ static void test_ota_bearer_authentication(void)
     CHECK(ota_authorization_role(viewer_auth, strlen(viewer_auth), token, viewer) == OTA_ROLE_VIEWER);
     CHECK(ota_authorization_role(viewer_auth, strlen(viewer_auth) - 1U, token, viewer) == OTA_ROLE_NONE);
     CHECK(ota_authorization_role(authorization, strlen(authorization), token, token) == OTA_ROLE_NONE);
-    CHECK(ota_authorization_role(NULL, 0U, token, viewer) == OTA_ROLE_NONE);
+    CHECK(ota_authorization_role(NULL, 0U, token, viewer) == OTA_ROLE_ANONYMOUS);
+    CHECK(ota_authorization_role(NULL, 1U, token, viewer) == OTA_ROLE_NONE);
+    CHECK(ota_authorization_role("", 0U, token, viewer) == OTA_ROLE_NONE);
+    CHECK(ota_authorization_role(NULL, 0U, token, token) == OTA_ROLE_NONE);
+    CHECK(ota_authorization_role(NULL, 0U, NULL, viewer) == OTA_ROLE_NONE);
     CHECK(ota_role_allows(OTA_ROLE_ADMIN, true));
     CHECK(ota_role_allows(OTA_ROLE_ADMIN, false));
     CHECK(ota_role_allows(OTA_ROLE_VIEWER, true));
     CHECK(!ota_role_allows(OTA_ROLE_VIEWER, false));
+    CHECK(ota_role_allows(OTA_ROLE_ANONYMOUS, true));
+    CHECK(!ota_role_allows(OTA_ROLE_ANONYMOUS, false));
     CHECK(!ota_role_allows(OTA_ROLE_NONE, true));
+    CHECK(!ota_role_allows(OTA_ROLE_NONE, false));
     CHECK(!ota_role_allows((ota_role_t)99, true));
+    CHECK(!ota_role_allows((ota_role_t)99, false));
     CHECK(ota_authorization_valid(
         authorization, strlen(authorization), token));
     CHECK(!ota_authorization_valid(

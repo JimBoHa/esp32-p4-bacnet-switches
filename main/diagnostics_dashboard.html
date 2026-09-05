@@ -20,24 +20,15 @@
   <main>
     <section class="panel connection" aria-labelledby="connectionTitle">
       <div>
-        <h2 id="connectionTitle">Secure connection</h2>
-        <p class="muted">The token is kept only in this page's memory and is cleared when the page closes.</p>
+        <h2 id="connectionTitle">Read-only live view</h2>
+        <p class="muted">No login required. Configuration changes, tests, reboots, and firmware updates still require an admin token.</p>
       </div>
-      <form id="connectForm" autocomplete="off">
-        <label for="token">Viewer or admin token</label>
-        <div class="token-row">
-          <input id="token" name="token" type="password" minlength="32" maxlength="128"
-                 autocomplete="off" autocapitalize="none" spellcheck="false" required>
-          <button type="submit">Connect</button>
-        </div>
-      </form>
-      <div id="connectedControls" class="controls" hidden>
+      <div id="connectedControls" class="controls">
         <button id="refresh" type="button">Refresh now</button>
         <button id="downloadReport" type="button">Download diagnostics</button>
         <label class="check"><input id="autoRefresh" type="checkbox" checked> Refresh every 5 seconds</label>
-        <button id="disconnect" class="quiet" type="button">Clear token</button>
       </div>
-      <p id="connectionStatus" class="status-line" role="status" aria-live="polite">Enter the deployed device token to load diagnostics.</p>
+      <p id="connectionStatus" class="status-line" role="status" aria-live="polite">Loading read-only diagnostics…</p>
       <p id="reportStatus" class="muted" role="status" aria-live="polite">Reports exclude credentials but include site configuration and network addresses. Review before sharing.</p>
     </section>
 
@@ -127,7 +118,7 @@
     </section>
   </main>
 
-  <noscript><p class="noscript">JavaScript is required to request authenticated diagnostics.</p></noscript>
+  <noscript><p class="noscript">JavaScript is required to load live diagnostics. No login is needed.</p></noscript>
   <footer>Read-only dashboard · BACnet/IP remains available on UDP 47808</footer>
   <script src="/diagnostics/app.js" defer></script>
 </body>

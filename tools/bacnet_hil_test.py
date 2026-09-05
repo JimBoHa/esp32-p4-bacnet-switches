@@ -399,6 +399,7 @@ def security_recovery_posture_valid(status: dict[str, Any]) -> bool:
     return status.get("security") == {
         "https_management": True,
         "bearer_authentication": True,
+        "anonymous_read_only": True,
         "viewer_admin_separation": True,
         "mutations_require_admin": True,
         "tls_private_key_embedded": True,
@@ -1245,18 +1246,16 @@ class HilRunner:
         )
         certificate_der = ota_client._certificate_der(self.args.certificate)
         fingerprint = hashlib.sha256(certificate_der).hexdigest()
-        for method, path in (
-            ("GET", "/ota/status"),
-            ("GET", "/diagnostics/report"),
-            ("GET", "/config"),
-            ("GET", "/network/config"),
+        read_routes = ("/ota/status", "/diagnostics/report", "/config", "/network/config")
+        mutation_routes = (
             ("POST", "/ota"),
             ("PUT", "/config"),
             ("PUT", "/network/config"),
             ("POST", "/network/config/confirm"),
             ("POST", "/diagnostics/input-self-test"),
             ("POST", "/system/reboot"),
-        ):
+        )
+        for path in read_routes:
             connection = ota_client._connection(
                 self.args.device_address,
                 443,
@@ -1264,19 +1263,73 @@ class HilRunner:
                 self.args.timeout,
             )
             try:
-                connection.request(method, path, headers={"Accept": "application/json"})
+                connection.request("GET", path, headers={"Accept": "application/json"})
                 response = connection.getresponse()
-                response.read(MAX_HTTP_RESPONSE_BYTES + 1)
-                if response.status != 401:
-                    raise HilError(
-                        f"unauthenticated {method} {path} returned HTTP {response.status}"
-                    )
+                payload = ota_client._read_response(response)
+                if (response.status != 200
+                    or response.getheader("Cache-Control") != "no-store"
+                    or response.getheader("X-Content-Type-Options") != "nosniff"
+                    or response.getheader("Cross-Origin-Resource-Policy") != "same-origin"
+                    or response.getheader("Access-Control-Allow-Origin") is not None
+                    or response.getheader("WWW-Authenticate") is not None):
+                    raise HilError(f"anonymous GET {path} failed access or security-header checks")
+                document = json.loads(payload)
+                if not isinstance(document, dict):
+                    raise HilError(f"anonymous GET {path} returned invalid JSON")
+                public_status = document.get("status", {}) if path == "/diagnostics/report" else document
+                if path in ("/ota/status", "/diagnostics/report") and (
+                    public_status.get("access_role") != "anonymous"
+                    or public_status.get("image_sha256") != image_sha
+                    or public_status.get("security", {}).get("anonymous_read_only") is not True):
+                    raise HilError(f"anonymous GET {path} has incorrect role, identity, or read policy")
+                if path == "/diagnostics/report":
+                    ota_client._validate_diagnostics_report(document, token)
+                    if self.args.viewer_token_file is not None:
+                        ota_client._validate_diagnostics_report(
+                            document, ota_client._read_token(self.args.viewer_token_file))
             finally:
                 connection.close()
+        self.report.add("Anonymous read-only access", "pass",
+                        "all four read routes returned 200 without credentials; roles, report privacy, and browser headers checked")
+        invalid_headers = (
+            {},
+            {"Authorization": "Bearer invalid-token"},
+            {"Authorization": "Bearer " + ("!" if token[0] != "!" else "#") + token[1:]},
+            {"Authorization": "Basic aW52YWxpZA=="},
+            {"Authorization": "Bearer " + "x" * 129},
+        )
+        for extra_headers in invalid_headers:
+            routes = mutation_routes if not extra_headers else (
+                *(("GET", path) for path in read_routes), *mutation_routes)
+            for method, path in routes:
+                connection = ota_client._connection(
+                    self.args.device_address, 443, self.args.certificate, self.args.timeout)
+                try:
+                    connection.request(method, path, headers={"Accept": "application/json", **extra_headers})
+                    response = connection.getresponse()
+                    ota_client._read_response(response)
+                    if response.status != 401:
+                        raise HilError(f"absent/invalid credentials on {method} {path} returned HTTP {response.status}; expected 401")
+                finally:
+                    connection.close()
         self.report.add(
             "HTTPS authentication boundary",
             "pass",
-            f"ten protected routes returned 401; certificate SHA-256={fingerprint}",
+            f"six anonymous mutations and all routes with four invalid credential forms returned 401; certificate SHA-256={fingerprint}",
+        )
+        after_boundary = ota_client._fetch_status(
+            self.args.device_address, 443, self.args.certificate, self.args.timeout, token)
+        self.report.require(
+            "Anonymous mutation isolation",
+            after_boundary.get("configuration") == configuration
+            and after_boundary.get("network_configuration") == status.get("network_configuration")
+            and after_boundary.get("system", {}).get("boot_count") == system.get("boot_count")
+            and after_boundary.get("image_sha256") == image_sha
+            and after_boundary.get("gpio_diagnostics") is not None
+            and [item.get("self_test") for item in after_boundary["gpio_diagnostics"]]
+                == [item.get("self_test") for item in status["gpio_diagnostics"]],
+            "configuration, network, boot, image, and input self-test unchanged after denied requests",
+            "controller state changed during denied anonymous/invalid-credential requests",
         )
 
         connection = ota_client._connection(
