@@ -63,6 +63,7 @@ idf_component_register(
         "app_main.c"
         "bacnet_codec.c"
         "bacnet_server.c"
+        "cov_retry_cache.c"
         "diagnostics.c"
         "diagnostics_time.c"
         "ota_auth.c"

@@ -100,7 +100,8 @@ Supported services:
 
 COV supports eight simultaneous subscriptions, lifetimes up to seven days,
 initial notification, value/reliability change notifications, confirmed
-acknowledgements, and bounded retries. The server remains deliberately
+acknowledgements, and bounded retries. Confirmed retries preserve the original
+notification bytes until acknowledged. The server remains deliberately
 read-only and rejects WriteProperty. It is not a BBMD, foreign device, BACnet
 router, or BACnet/SC node; discovery requires the local subnet or an existing
 BACnet/IP router.
