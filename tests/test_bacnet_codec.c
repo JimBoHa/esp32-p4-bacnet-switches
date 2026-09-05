@@ -43,16 +43,24 @@ static const bacnet_device_state_t STATE = {
     .description = "Three toggle inputs",
     .location = "Test bench",
     .database_revision = 3,
-    .binary_input_instances = {20, 21, 22},
-    .binary_input_names = {"GPIO20 Toggle", "GPIO21 Toggle", "GPIO22 Toggle"},
+    .binary_input_instances = {20, 21, 22, 1001, 1002},
+    .binary_input_names = {
+        "GPIO20 Toggle",
+        "GPIO21 Toggle",
+        "GPIO22 Toggle",
+        "Status Ethernet Link",
+        "Status IPv4 Assigned",
+    },
     .binary_input_descriptions = {
         "GPIO20 input",
         "GPIO21 input",
         "GPIO22 input",
+        "Physical Ethernet link is up",
+        "Ethernet interface has an IPv4 address",
     },
-    .binary_input_values = {false, true, false},
-    .binary_input_reliability = {7, 0, 0},
-    .binary_input_active_low = {false, true, false},
+    .binary_input_values = {false, true, false, true, true},
+    .binary_input_reliability = {7, 0, 0, 0, 0},
+    .binary_input_active_low = {false, true, false, false, false},
     .analog_value_instances = {
         1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009,
     },
@@ -733,7 +741,7 @@ static void test_device_and_binary_input_properties(void)
         &STATE,
         response,
         sizeof(response));
-    static const uint8_t object_count_tail[] = {0x21, 0x0F, 0x3F};
+    static const uint8_t object_count_tail[] = {0x21, 0x11, 0x3F};
     CHECK(result.response_length >= sizeof(object_count_tail));
     CHECK(memcmp(
         response + result.response_length - sizeof(object_count_tail),
@@ -1172,6 +1180,103 @@ static void test_network_port_object(void)
         request, length, &STATE, response, sizeof(response));
     CHECK(result.kind == BACNET_PACKET_WHO_HAS);
     CHECK(result.response_length > 20U);
+}
+
+static void test_network_status_inputs(void)
+{
+    static const uint8_t ethernet_object[] = {
+        0xC4U, 0x00U, 0xC0U, 0x03U, 0xE9U, 0x3FU,
+    };
+    static const uint8_t ipv4_object[] = {
+        0xC4U, 0x00U, 0xC0U, 0x03U, 0xEAU, 0x3FU,
+    };
+    static const uint8_t active[] = {0x91U, 0x01U, 0x3FU};
+    static const uint8_t normal_polarity[] = {0x91U, 0x00U, 0x3FU};
+
+    check_read_property_tail(
+        &STATE, 8U, STATE.device_instance, 76U, true, 16U,
+        ethernet_object, sizeof(ethernet_object));
+    check_read_property_tail(
+        &STATE, 8U, STATE.device_instance, 76U, true, 17U,
+        ipv4_object, sizeof(ipv4_object));
+    check_read_property_tail(
+        &STATE, 3U, BACNET_ETHERNET_LINK_INPUT_INSTANCE, 85U, false, 0U,
+        active, sizeof(active));
+    check_read_property_tail(
+        &STATE, 3U, BACNET_IPV4_READY_INPUT_INSTANCE, 85U, false, 0U,
+        active, sizeof(active));
+    check_read_property_tail(
+        &STATE, 3U, BACNET_ETHERNET_LINK_INPUT_INSTANCE, 84U, false, 0U,
+        normal_polarity, sizeof(normal_polarity));
+
+    uint8_t request[BACNET_MAX_REQUEST_BYTES];
+    uint8_t response[1500];
+    size_t length = read_property_request(
+        request,
+        3U,
+        BACNET_ETHERNET_LINK_INPUT_INSTANCE,
+        77U,
+        false,
+        0U);
+    bacnet_packet_result_t result = bacnet_handle_packet(
+        request, length, &STATE, response, sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_READ_PROPERTY);
+    CHECK(contains_bytes(
+        response,
+        result.response_length,
+        (const uint8_t *)BACNET_ETHERNET_LINK_INPUT_NAME,
+        strlen(BACNET_ETHERNET_LINK_INPUT_NAME)));
+
+    length = who_has_request(
+        request,
+        0x0AU,
+        false,
+        false,
+        0U,
+        0U,
+        true,
+        0U,
+        0U,
+        BACNET_IPV4_READY_INPUT_NAME);
+    result = bacnet_handle_packet(
+        request, length, &STATE, response, sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_WHO_HAS);
+    CHECK(result.response_length > 20U);
+    CHECK(contains_bytes(
+        response,
+        result.response_length,
+        (const uint8_t *)BACNET_IPV4_READY_INPUT_NAME,
+        strlen(BACNET_IPV4_READY_INPUT_NAME)));
+
+    length = subscribe_cov_request(
+        request,
+        0x5BU,
+        88U,
+        3U,
+        BACNET_ETHERNET_LINK_INPUT_INSTANCE,
+        true,
+        true,
+        60U);
+    result = bacnet_handle_packet(
+        request, length, &STATE, response, sizeof(response));
+    static const uint8_t simple_ack[] = {
+        0x81U, 0x0AU, 0x00U, 0x09U, 0x01U,
+        0x00U, 0x20U, 0x5BU, 0x05U,
+    };
+    CHECK(result.kind == BACNET_PACKET_SUBSCRIBE_COV);
+    CHECK(result.cov_object_instance == BACNET_ETHERNET_LINK_INPUT_INSTANCE);
+    CHECK(bytes_equal(
+        response, result.response_length, simple_ack, sizeof(simple_ack)));
+
+    bacnet_device_state_t no_ipv4 = STATE;
+    no_ipv4.binary_input_values[4] = false;
+    static const uint8_t inactive[] = {0x91U, 0x00U, 0x3FU};
+    check_read_property_tail(
+        &no_ipv4, 3U, BACNET_IPV4_READY_INPUT_INSTANCE, 85U, false, 0U,
+        inactive, sizeof(inactive));
+    check_read_property_tail(
+        &no_ipv4, 3U, BACNET_IPV4_READY_INPUT_INSTANCE, 103U, false, 0U,
+        normal_polarity, sizeof(normal_polarity));
 }
 
 static void test_read_property_multiple(void)
@@ -1645,7 +1750,7 @@ static void test_errors_and_malformed_input(void)
         sizeof(unknown_property_tail)) == 0);
 
     request_length = read_property_request(
-        request, 8, STATE.device_instance, 76, true, 16);
+        request, 8, STATE.device_instance, 76, true, 18);
     result = bacnet_handle_packet(
         request,
         request_length,
@@ -2135,6 +2240,17 @@ static void test_config_model(void)
     invalid.input_instances[2] = invalid.input_instances[0];
     CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
     invalid = config;
+    invalid.input_instances[1] = BACNET_ETHERNET_LINK_INPUT_INSTANCE;
+    CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
+    CHECK(strcmp(reason, "input instance is reserved for network status") == 0);
+    invalid = config;
+    (void)snprintf(
+        invalid.input_names[1],
+        sizeof(invalid.input_names[1]),
+        "%s",
+        BACNET_IPV4_READY_INPUT_NAME);
+    CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
     (void)snprintf(
         invalid.input_names[2],
         sizeof(invalid.input_names[2]),
@@ -2245,6 +2361,7 @@ int main(void)
     test_who_has_i_have();
     test_device_and_binary_input_properties();
     test_network_port_object();
+    test_network_status_inputs();
     test_read_property_multiple();
     test_subscribe_cov_and_notifications();
     test_errors_and_malformed_input();

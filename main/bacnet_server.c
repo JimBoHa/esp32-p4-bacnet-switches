@@ -44,12 +44,14 @@ enum {
 
 static const char *TAG = "bacnet_ip";
 _Static_assert(
-    BACNET_BINARY_INPUT_COUNT == SWITCH_INPUT_COUNT,
+    BACNET_PHYSICAL_BINARY_INPUT_COUNT == SWITCH_INPUT_COUNT,
     "BACnet and physical input counts must match");
 static const char *const INPUT_DESCRIPTIONS[BACNET_BINARY_INPUT_COUNT] = {
     "Debounced read-only physical toggle input 1",
     "Debounced read-only physical toggle input 2",
     "Debounced read-only physical toggle input 3",
+    "Physical Ethernet link is up",
+    "Ethernet interface has an IPv4 address",
 };
 static const uint32_t ANALOG_VALUE_INSTANCES[BACNET_ANALOG_VALUE_COUNT] = {
     1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009,
@@ -139,26 +141,35 @@ static void snapshot_device_state(bacnet_device_state_t *state)
         .description =
             "Read-only BACnet/IP Device exposing three physical toggle inputs",
         .location = bacnet_config.location,
-        .database_revision = bacnet_config.database_revision,
+        .database_revision = bacnet_config.database_revision +
+            BACNET_FIRMWARE_DATABASE_REVISION_OFFSET,
         .binary_input_instances = {
             bacnet_config.input_instances[0],
             bacnet_config.input_instances[1],
             bacnet_config.input_instances[2],
+            BACNET_ETHERNET_LINK_INPUT_INSTANCE,
+            BACNET_IPV4_READY_INPUT_INSTANCE,
         },
         .binary_input_names = {
             bacnet_config.input_names[0],
             bacnet_config.input_names[1],
             bacnet_config.input_names[2],
+            BACNET_ETHERNET_LINK_INPUT_NAME,
+            BACNET_IPV4_READY_INPUT_NAME,
         },
         .binary_input_descriptions = {
             INPUT_DESCRIPTIONS[0],
             INPUT_DESCRIPTIONS[1],
             INPUT_DESCRIPTIONS[2],
+            INPUT_DESCRIPTIONS[3],
+            INPUT_DESCRIPTIONS[4],
         },
         .binary_input_values = {
             switch_input_get(0),
             switch_input_get(1),
             switch_input_get(2),
+            diagnostics_valid && diagnostics.network.link_up,
+            diagnostics_valid && diagnostics.network.ipv4_address != 0U,
         },
         .binary_input_reliability = {
             switch_input_faulted(0)
@@ -170,11 +181,19 @@ static void snapshot_device_state(bacnet_device_state_t *state)
             switch_input_faulted(2)
                 ? BACNET_RELIABILITY_UNRELIABLE_OTHER
                 : BACNET_RELIABILITY_NO_FAULT,
+            diagnostics_valid
+                ? BACNET_RELIABILITY_NO_FAULT
+                : BACNET_RELIABILITY_UNRELIABLE_OTHER,
+            diagnostics_valid
+                ? BACNET_RELIABILITY_NO_FAULT
+                : BACNET_RELIABILITY_UNRELIABLE_OTHER,
         },
         .binary_input_active_low = {
             switch_input_active_low(0),
             switch_input_active_low(1),
             switch_input_active_low(2),
+            false,
+            false,
         },
         .analog_value_instances = {
             ANALOG_VALUE_INSTANCES[0],
@@ -899,6 +918,8 @@ esp_err_t bacnet_server_start(esp_netif_t *netif)
         bacnet_config.input_instances[0],
         bacnet_config.input_instances[1],
         bacnet_config.input_instances[2],
+        BACNET_ETHERNET_LINK_INPUT_INSTANCE,
+        BACNET_IPV4_READY_INPUT_INSTANCE,
     };
     for (size_t index = 0; index < BACNET_BINARY_INPUT_COUNT; ++index) {
         ESP_RETURN_ON_FALSE(
