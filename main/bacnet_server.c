@@ -405,6 +405,31 @@ static bool input_index_for_instance(
     return false;
 }
 
+static bool cov_subscription_can_apply(
+    const bacnet_packet_result_t *packet,
+    const struct sockaddr_in *source,
+    const bacnet_device_state_t *state)
+{
+    if (packet->cov_cancel) {
+        return true;
+    }
+    size_t input_index = 0U;
+    if (!input_index_for_instance(
+            state, packet->cov_object_instance, &input_index)) {
+        return true;
+    }
+    for (size_t index = 0; index < BACNET_MAX_COV_SUBSCRIPTIONS; ++index) {
+        const cov_subscription_t *subscription = &cov_subscriptions[index];
+        if (!subscription->active ||
+            (same_recipient(&subscription->recipient, source) &&
+             subscription->process_id == packet->cov_process_id &&
+             subscription->input_index == input_index)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 static void apply_cov_subscription(
     const bacnet_packet_result_t *packet,
     const struct sockaddr_in *source,
@@ -448,22 +473,14 @@ static void apply_cov_subscription(
     }
 
     size_t selected = BACNET_MAX_COV_SUBSCRIPTIONS;
-    int64_t earliest_expiry = INT64_MAX;
     for (size_t index = 0; index < BACNET_MAX_COV_SUBSCRIPTIONS; ++index) {
         if (!cov_subscriptions[index].active) {
             selected = index;
             break;
         }
-        const int64_t expiry = cov_subscriptions[index].expires_at_us == 0LL
-            ? INT64_MAX
-            : cov_subscriptions[index].expires_at_us;
-        if (expiry < earliest_expiry) {
-            earliest_expiry = expiry;
-            selected = index;
-        }
     }
     if (selected >= BACNET_MAX_COV_SUBSCRIPTIONS) {
-        selected = 0U;
+        return;
     }
 
     const uint32_t lifetime =
@@ -815,12 +832,20 @@ static void bacnet_server_task(void *argument)
 
             bacnet_device_state_t state;
             snapshot_device_state(&state);
-            const bacnet_packet_result_t packet = bacnet_handle_packet(
+            bacnet_packet_result_t packet = bacnet_handle_packet(
                 request,
                 (size_t)received,
                 &state,
                 response,
                 sizeof(response));
+            bool apply_cov = packet.kind == BACNET_PACKET_SUBSCRIBE_COV &&
+                packet.response_length > 6U && response[6] == 0x20U;
+            if (apply_cov &&
+                !cov_subscription_can_apply(&packet, &source, &state)) {
+                packet.response_length = bacnet_encode_subscribe_cov_no_space(
+                    packet.invoke_id, response, sizeof(response));
+                apply_cov = false;
+            }
             switch (packet.kind) {
             case BACNET_PACKET_WHO_IS:
                 diagnostics_bacnet_increment(DIAGNOSTICS_BACNET_WHO_IS);
@@ -889,7 +914,7 @@ static void bacnet_server_task(void *argument)
                 response[6] == 0x70U || response[6] == 0x71U) {
                 diagnostics_bacnet_increment(DIAGNOSTICS_BACNET_ERRORS);
             }
-            if (packet.kind == BACNET_PACKET_SUBSCRIBE_COV) {
+            if (apply_cov) {
                 apply_cov_subscription(&packet, &source, &state);
             }
         }

@@ -29,6 +29,8 @@ enum {
     BACNET_GLOBAL_NETWORK = 0xFFFF,
     BACNET_ERROR_CLASS_OBJECT = 1,
     BACNET_ERROR_CLASS_PROPERTY = 2,
+    BACNET_ERROR_CLASS_RESOURCES = 3,
+    BACNET_ERROR_NO_SPACE_TO_ADD_LIST_ELEMENT = 19,
     BACNET_ERROR_UNKNOWN_OBJECT = 31,
     BACNET_ERROR_UNKNOWN_PROPERTY = 32,
     BACNET_ERROR_INVALID_ARRAY_INDEX = 42,
@@ -1653,6 +1655,20 @@ static size_t encode_error(
     encode_application_enumerated(&writer, error_class);
     encode_application_enumerated(&writer, error_code);
     return finish_bvlc(&writer);
+}
+
+size_t bacnet_encode_subscribe_cov_no_space(
+    uint8_t invoke_id,
+    uint8_t *response,
+    size_t response_capacity)
+{
+    return encode_error(
+        invoke_id,
+        BACNET_SERVICE_SUBSCRIBE_COV,
+        BACNET_ERROR_CLASS_RESOURCES,
+        BACNET_ERROR_NO_SPACE_TO_ADD_LIST_ELEMENT,
+        response,
+        response_capacity);
 }
 
 static size_t encode_read_property_response(
