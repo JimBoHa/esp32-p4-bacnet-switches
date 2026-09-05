@@ -203,6 +203,70 @@ static size_t read_property_request(
     return finish_request(frame, length);
 }
 
+static void append_context_character_string(
+    uint8_t *frame,
+    size_t *length,
+    uint8_t tag,
+    const char *value)
+{
+    const size_t text_length = strlen(value);
+    const size_t encoded_length = text_length + 1U;
+    CHECK(encoded_length < 254U);
+    if (encoded_length <= 4U) {
+        frame[(*length)++] =
+            (uint8_t)((tag << 4U) | 0x08U | encoded_length);
+    } else {
+        frame[(*length)++] = (uint8_t)((tag << 4U) | 0x08U | 5U);
+        frame[(*length)++] = (uint8_t)encoded_length;
+    }
+    frame[(*length)++] = 0U;
+    memcpy(frame + *length, value, text_length);
+    *length += text_length;
+}
+
+static size_t who_has_request(
+    uint8_t *frame,
+    uint8_t bvlc_function,
+    bool routed_global,
+    bool has_limits,
+    uint32_t low_limit,
+    uint32_t high_limit,
+    bool by_name,
+    uint32_t object_type,
+    uint32_t object_instance,
+    const char *object_name)
+{
+    size_t length = 0U;
+    frame[length++] = 0x81U;
+    frame[length++] = bvlc_function;
+    frame[length++] = 0U;
+    frame[length++] = 0U;
+    frame[length++] = 0x01U;
+    if (routed_global) {
+        frame[length++] = 0x20U;
+        frame[length++] = 0xFFU;
+        frame[length++] = 0xFFU;
+        frame[length++] = 0U;
+        frame[length++] = 0xFFU;
+    } else {
+        frame[length++] = 0U;
+    }
+    frame[length++] = 0x10U;
+    frame[length++] = 7U;
+    if (has_limits) {
+        append_context_unsigned(frame, &length, 0U, low_limit);
+        append_context_unsigned(frame, &length, 1U, high_limit);
+    }
+    if (by_name) {
+        append_context_character_string(
+            frame, &length, 3U, object_name);
+    } else {
+        append_context_object_id(
+            frame, &length, 2U, object_type, object_instance);
+    }
+    return finish_request(frame, length);
+}
+
 typedef struct {
     uint32_t property;
     bool has_array_index;
@@ -392,6 +456,201 @@ static void test_reference_vectors(void)
     CHECK(result.kind == BACNET_PACKET_WHO_IS);
     CHECK(result.response_length == 0);
     CHECK(!result.broadcast_response);
+}
+
+static void test_who_has_i_have(void)
+{
+    uint8_t request[BACNET_MAX_REQUEST_BYTES];
+    uint8_t response[1500];
+    size_t length = who_has_request(
+        request,
+        0x0AU,
+        false,
+        false,
+        0U,
+        0U,
+        false,
+        3U,
+        20U,
+        NULL);
+    bacnet_packet_result_t result = bacnet_handle_packet(
+        request, length, &STATE, response, sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_WHO_HAS);
+    CHECK(result.response_length > 20U);
+    CHECK(!result.broadcast_response);
+    CHECK(response[1] == 0x0AU && response[6] == 0x10U && response[7] == 1U);
+    const uint32_t device_id = (8U << 22U) | STATE.device_instance;
+    const uint32_t input_id = (3U << 22U) | 20U;
+    const uint8_t encoded_device[] = {
+        0xC4U,
+        (uint8_t)(device_id >> 24U),
+        (uint8_t)(device_id >> 16U),
+        (uint8_t)(device_id >> 8U),
+        (uint8_t)device_id,
+    };
+    const uint8_t encoded_input[] = {
+        0xC4U,
+        (uint8_t)(input_id >> 24U),
+        (uint8_t)(input_id >> 16U),
+        (uint8_t)(input_id >> 8U),
+        (uint8_t)input_id,
+    };
+    CHECK(contains_bytes(
+        response,
+        result.response_length,
+        encoded_device,
+        sizeof(encoded_device)));
+    CHECK(contains_bytes(
+        response,
+        result.response_length,
+        encoded_input,
+        sizeof(encoded_input)));
+    CHECK(contains_bytes(
+        response,
+        result.response_length,
+        (const uint8_t *)"GPIO20 Toggle",
+        strlen("GPIO20 Toggle")));
+
+    length = who_has_request(
+        request,
+        0x0BU,
+        false,
+        true,
+        STATE.device_instance,
+        STATE.device_instance,
+        true,
+        0U,
+        0U,
+        "Chip Temperature");
+    result = bacnet_handle_packet(
+        request, length, &STATE, response, sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_WHO_HAS);
+    CHECK(result.response_length > 24U);
+    CHECK(result.broadcast_response);
+    CHECK(response[1] == 0x0BU && response[10] == 0x10U && response[11] == 1U);
+    CHECK(contains_bytes(
+        response,
+        result.response_length,
+        (const uint8_t *)"Chip Temperature",
+        strlen("Chip Temperature")));
+
+    length = who_has_request(
+        request,
+        0x0BU,
+        true,
+        false,
+        0U,
+        0U,
+        true,
+        0U,
+        0U,
+        STATE.device_name);
+    result = bacnet_handle_packet(
+        request, length, &STATE, response, sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_WHO_HAS);
+    CHECK(result.response_length > 24U);
+    CHECK(result.broadcast_response);
+    CHECK(contains_bytes(
+        response,
+        result.response_length,
+        (const uint8_t *)STATE.device_name,
+        strlen(STATE.device_name)));
+
+    length = who_has_request(
+        request,
+        0x0AU,
+        false,
+        true,
+        STATE.device_instance + 1U,
+        STATE.device_instance + 10U,
+        false,
+        3U,
+        20U,
+        NULL);
+    result = bacnet_handle_packet(
+        request, length, &STATE, response, sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_WHO_HAS);
+    CHECK(result.response_length == 0U);
+
+    length = who_has_request(
+        request,
+        0x0AU,
+        false,
+        false,
+        0U,
+        0U,
+        true,
+        0U,
+        0U,
+        "Unknown Object");
+    result = bacnet_handle_packet(
+        request, length, &STATE, response, sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_WHO_HAS);
+    CHECK(result.response_length == 0U);
+
+    length = who_has_request(
+        request,
+        0x0AU,
+        false,
+        false,
+        0U,
+        0U,
+        true,
+        0U,
+        0U,
+        "GPIO21 Toggle");
+    result = bacnet_handle_packet(
+        request, length, &STATE, response, 12U);
+    CHECK(result.kind == BACNET_PACKET_WHO_HAS);
+    CHECK(result.response_length == 0U);
+
+    request[length++] = 0U;
+    length = finish_request(request, length);
+    result = bacnet_handle_packet(
+        request, length, &STATE, response, sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_MALFORMED);
+    CHECK(result.response_length == 0U);
+
+    static const uint8_t missing_object[] = {
+        0x81U, 0x0AU, 0x00U, 0x08U, 0x01U, 0x00U, 0x10U, 0x07U,
+    };
+    result = bacnet_handle_packet(
+        missing_object,
+        sizeof(missing_object),
+        &STATE,
+        response,
+        sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_MALFORMED);
+
+    length = who_has_request(
+        request,
+        0x0AU,
+        false,
+        false,
+        0U,
+        0U,
+        true,
+        0U,
+        0U,
+        "GPIO22 Toggle");
+    request[10] = 3U; /* Unsupported BACnet character-set identifier. */
+    result = bacnet_handle_packet(
+        request, length, &STATE, response, sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_MALFORMED);
+
+    length = read_property_request(
+        request, 8U, STATE.device_instance, 97U, false, 0U);
+    result = bacnet_handle_packet(
+        request, length, &STATE, response, sizeof(response));
+    static const uint8_t services_supported[] = {
+        0x85U, 0x06U, 0x05U, 0x44U, 0x0AU, 0x00U, 0x38U, 0x60U,
+    };
+    CHECK(result.kind == BACNET_PACKET_READ_PROPERTY);
+    CHECK(contains_bytes(
+        response,
+        result.response_length,
+        services_supported,
+        sizeof(services_supported)));
 }
 
 static void test_device_and_binary_input_properties(void)
@@ -1676,6 +1935,7 @@ static void test_network_config_model(void)
 int main(void)
 {
     test_reference_vectors();
+    test_who_has_i_have();
     test_device_and_binary_input_properties();
     test_read_property_multiple();
     test_subscribe_cov_and_notifications();
