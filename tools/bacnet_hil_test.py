@@ -800,6 +800,9 @@ class HilRunner:
             == configuration.get("active_database_revision")
             + FIRMWARE_DATABASE_REVISION_OFFSET
             and isinstance(bacnet, dict)
+            and bacnet.get("device_instance") == self.args.device_instance
+            and bacnet.get("vendor_identifier") == 999
+            and bacnet.get("port") == self.args.bacnet_port
             and bacnet.get("active_cov_subscriptions") == 0
             and bacnet.get("cov_timeouts") == 0
             and isinstance(watchdog, dict)
@@ -844,6 +847,47 @@ class HilRunner:
             "HTTPS authentication boundary",
             "pass",
             f"five protected routes returned 401; certificate SHA-256={fingerprint}",
+        )
+
+        dashboard_assets = (
+            ("/diagnostics", "text/html", b"ESP32-P4 BACnet Diagnostics"),
+            ("/diagnostics/app.css", "text/css", b"--accent"),
+            ("/diagnostics/app.js", "application/javascript", b"/ota/status"),
+        )
+        dashboard_ok = True
+        dashboard_bytes = 0
+        for path, content_type, marker in dashboard_assets:
+            connection = ota_client._connection(
+                self.args.device_address,
+                443,
+                self.args.certificate,
+                self.args.timeout,
+            )
+            try:
+                connection.request("GET", path, headers={"Accept": content_type})
+                response = connection.getresponse()
+                payload = response.read(MAX_HTTP_RESPONSE_BYTES + 1)
+                dashboard_bytes += len(payload)
+                dashboard_ok = dashboard_ok and (
+                    response.status == 200
+                    and response.getheader("Content-Type", "").startswith(content_type)
+                    and response.getheader("Cache-Control") == "no-store"
+                    and response.getheader("X-Content-Type-Options") == "nosniff"
+                    and response.getheader("X-Frame-Options") == "DENY"
+                    and response.getheader("Cross-Origin-Resource-Policy")
+                    == "same-origin"
+                    and "default-src 'none'"
+                    in response.getheader("Content-Security-Policy", "")
+                    and len(payload) <= MAX_HTTP_RESPONSE_BYTES
+                    and marker in payload
+                )
+            finally:
+                connection.close()
+        self.report.require(
+            "Read-only diagnostics dashboard",
+            dashboard_ok,
+            f"three same-origin assets ({dashboard_bytes} bytes) passed security-header checks",
+            "dashboard asset content, media type, or browser security headers are invalid",
         )
 
 

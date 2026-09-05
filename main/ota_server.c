@@ -62,6 +62,18 @@ extern const unsigned char ota_token_txt_start[]
     asm("_binary_ota_token_txt_start");
 extern const unsigned char ota_token_txt_end[]
     asm("_binary_ota_token_txt_end");
+extern const unsigned char diagnostics_dashboard_html_start[]
+    asm("_binary_diagnostics_dashboard_html_start");
+extern const unsigned char diagnostics_dashboard_html_end[]
+    asm("_binary_diagnostics_dashboard_html_end");
+extern const unsigned char diagnostics_dashboard_css_start[]
+    asm("_binary_diagnostics_dashboard_css_start");
+extern const unsigned char diagnostics_dashboard_css_end[]
+    asm("_binary_diagnostics_dashboard_css_end");
+extern const unsigned char diagnostics_dashboard_js_start[]
+    asm("_binary_diagnostics_dashboard_js_start");
+extern const unsigned char diagnostics_dashboard_js_end[]
+    asm("_binary_diagnostics_dashboard_js_end");
 
 static httpd_handle_t server_handle;
 static atomic_bool upload_in_progress;
@@ -1275,12 +1287,17 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             response,
             OTA_STATUS_RESPONSE_BYTES,
             &response_length,
-            "\"bacnet\":{\"rx\":%u,\"who_is\":%u,\"who_has\":%u,"
+            "\"bacnet\":{\"device_instance\":%u,"
+            "\"vendor_identifier\":%u,\"port\":%u,"
+            "\"rx\":%u,\"who_is\":%u,\"who_has\":%u,"
             "\"read_property\":%u,\"read_property_multiple\":%u,"
             "\"subscribe_cov\":%u,\"malformed\":%u,\"ignored\":%u,"
             "\"responses\":%u,\"errors\":%u,\"rate_limited\":%u,"
             "\"cov_sent\":%u,\"cov_acked\":%u,\"cov_timeouts\":%u,"
             "\"active_cov_subscriptions\":%u},\"gpio_diagnostics\":[",
+            (unsigned)active_config.device_instance,
+            (unsigned)active_config.vendor_identifier,
+            (unsigned)active_config.bacnet_port,
             (unsigned)snapshot.bacnet[DIAGNOSTICS_BACNET_RX],
             (unsigned)snapshot.bacnet[DIAGNOSTICS_BACNET_WHO_IS],
             (unsigned)snapshot.bacnet[DIAGNOSTICS_BACNET_WHO_HAS],
@@ -1739,6 +1756,82 @@ static esp_err_t reboot_post_handler(httpd_req_t *request)
     return ESP_OK;
 }
 
+static esp_err_t diagnostics_asset_get_handler(httpd_req_t *request)
+{
+    const unsigned char *start = NULL;
+    const unsigned char *end = NULL;
+    const char *content_type = NULL;
+
+    if (strcmp(request->uri, "/diagnostics") == 0) {
+        start = diagnostics_dashboard_html_start;
+        end = diagnostics_dashboard_html_end;
+        content_type = "text/html; charset=utf-8";
+    } else if (strcmp(request->uri, "/diagnostics/app.css") == 0) {
+        start = diagnostics_dashboard_css_start;
+        end = diagnostics_dashboard_css_end;
+        content_type = "text/css; charset=utf-8";
+    } else if (strcmp(request->uri, "/diagnostics/app.js") == 0) {
+        start = diagnostics_dashboard_js_start;
+        end = diagnostics_dashboard_js_end;
+        content_type = "application/javascript; charset=utf-8";
+    } else {
+        return httpd_resp_send_err(
+            request, HTTPD_404_NOT_FOUND, "dashboard asset not found");
+    }
+
+    size_t length = (size_t)(end - start);
+    while (length > 0U && start[length - 1U] == '\0') {
+        length--;
+    }
+    ESP_RETURN_ON_ERROR(
+        httpd_resp_set_type(request, content_type),
+        TAG,
+        "dashboard content type rejected");
+    ESP_RETURN_ON_ERROR(
+        httpd_resp_set_hdr(request, "Cache-Control", "no-store"),
+        TAG,
+        "dashboard Cache-Control header rejected");
+    ESP_RETURN_ON_ERROR(
+        httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff"),
+        TAG,
+        "dashboard MIME header rejected");
+    ESP_RETURN_ON_ERROR(
+        httpd_resp_set_hdr(request, "X-Frame-Options", "DENY"),
+        TAG,
+        "dashboard framing header rejected");
+    ESP_RETURN_ON_ERROR(
+        httpd_resp_set_hdr(request, "Referrer-Policy", "no-referrer"),
+        TAG,
+        "dashboard referrer header rejected");
+    ESP_RETURN_ON_ERROR(
+        httpd_resp_set_hdr(
+            request, "Cross-Origin-Opener-Policy", "same-origin"),
+        TAG,
+        "dashboard opener header rejected");
+    ESP_RETURN_ON_ERROR(
+        httpd_resp_set_hdr(
+            request, "Cross-Origin-Resource-Policy", "same-origin"),
+        TAG,
+        "dashboard resource header rejected");
+    ESP_RETURN_ON_ERROR(
+        httpd_resp_set_hdr(
+            request,
+            "Permissions-Policy",
+            "camera=(), microphone=(), geolocation=(), payment=(), usb=()"),
+        TAG,
+        "dashboard permissions header rejected");
+    ESP_RETURN_ON_ERROR(
+        httpd_resp_set_hdr(
+            request,
+            "Content-Security-Policy",
+            "default-src 'none'; style-src 'self'; script-src 'self'; "
+            "connect-src 'self'; img-src 'self' data:; base-uri 'none'; "
+            "form-action 'none'; frame-ancestors 'none'"),
+        TAG,
+        "dashboard CSP header rejected");
+    return httpd_resp_send(request, (const char *)start, length);
+}
+
 esp_err_t ota_server_start(void)
 {
     if (server_handle != NULL) {
@@ -1761,7 +1854,8 @@ esp_err_t ota_server_start(void)
 
     httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
     config.port_secure = CONFIG_OTA_HTTPS_PORT;
-    config.httpd.max_uri_handlers = 9;
+    config.httpd.max_uri_handlers = 12;
+    config.httpd.max_resp_headers = 8;
     config.httpd.max_open_sockets = 2;
     config.httpd.lru_purge_enable = true;
     config.httpd.stack_size = 12288;
@@ -1823,6 +1917,21 @@ esp_err_t ota_server_start(void)
         .method = HTTP_POST,
         .handler = reboot_post_handler,
     };
+    const httpd_uri_t diagnostics_dashboard_uri = {
+        .uri = "/diagnostics",
+        .method = HTTP_GET,
+        .handler = diagnostics_asset_get_handler,
+    };
+    const httpd_uri_t diagnostics_css_uri = {
+        .uri = "/diagnostics/app.css",
+        .method = HTTP_GET,
+        .handler = diagnostics_asset_get_handler,
+    };
+    const httpd_uri_t diagnostics_js_uri = {
+        .uri = "/diagnostics/app.js",
+        .method = HTTP_GET,
+        .handler = diagnostics_asset_get_handler,
+    };
     esp_err_t result =
         httpd_register_uri_handler(created_server, &status_uri);
     if (result == ESP_OK) {
@@ -1855,6 +1964,18 @@ esp_err_t ota_server_start(void)
     if (result == ESP_OK) {
         result = httpd_register_uri_handler(
             created_server, &reboot_uri);
+    }
+    if (result == ESP_OK) {
+        result = httpd_register_uri_handler(
+            created_server, &diagnostics_dashboard_uri);
+    }
+    if (result == ESP_OK) {
+        result = httpd_register_uri_handler(
+            created_server, &diagnostics_css_uri);
+    }
+    if (result == ESP_OK) {
+        result = httpd_register_uri_handler(
+            created_server, &diagnostics_js_uri);
     }
     if (result != ESP_OK) {
         (void)httpd_ssl_stop(created_server);

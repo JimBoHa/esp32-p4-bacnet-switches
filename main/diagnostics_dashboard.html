@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark light">
+  <meta name="theme-color" content="#10251f">
+  <title>ESP32-P4 BACnet Diagnostics</title>
+  <link rel="stylesheet" href="/diagnostics/app.css">
+</head>
+<body>
+  <header class="masthead">
+    <div>
+      <p class="eyebrow">Field controller</p>
+      <h1>ESP32-P4 BACnet Diagnostics</h1>
+    </div>
+    <span id="overallHealth" class="health health-idle">Not connected</span>
+  </header>
+
+  <main>
+    <section class="panel connection" aria-labelledby="connectionTitle">
+      <div>
+        <h2 id="connectionTitle">Secure connection</h2>
+        <p class="muted">The token is kept only in this page's memory and is cleared when the page closes.</p>
+      </div>
+      <form id="connectForm" autocomplete="off">
+        <label for="token">Bearer token</label>
+        <div class="token-row">
+          <input id="token" name="token" type="password" minlength="32" maxlength="128"
+                 autocomplete="off" autocapitalize="none" spellcheck="false" required>
+          <button type="submit">Connect</button>
+        </div>
+      </form>
+      <div id="connectedControls" class="controls" hidden>
+        <button id="refresh" type="button">Refresh now</button>
+        <label class="check"><input id="autoRefresh" type="checkbox" checked> Refresh every 5 seconds</label>
+        <button id="disconnect" class="quiet" type="button">Clear token</button>
+      </div>
+      <p id="connectionStatus" class="status-line" role="status" aria-live="polite">Enter the deployed device token to load diagnostics.</p>
+    </section>
+
+    <section id="dashboard" hidden>
+      <div class="summary-grid" aria-label="Controller summary">
+        <article class="metric"><span>Firmware</span><strong id="firmware">—</strong><small id="source">—</small></article>
+        <article class="metric"><span>Uptime</span><strong id="uptime">—</strong><small id="bootCount">—</small></article>
+        <article class="metric"><span>Temperature</span><strong id="temperature">—</strong><small>ESP32-P4 internal sensor</small></article>
+        <article class="metric"><span>Free heap</span><strong id="freeHeap">—</strong><small id="minimumHeap">—</small></article>
+      </div>
+
+      <div class="two-column">
+        <section class="panel" aria-labelledby="identityTitle">
+          <h2 id="identityTitle">Identity and image</h2>
+          <dl id="identityDetails" class="details"></dl>
+        </section>
+        <section class="panel" aria-labelledby="networkTitle">
+          <h2 id="networkTitle">Ethernet and IPv4</h2>
+          <dl id="networkDetails" class="details"></dl>
+        </section>
+      </div>
+
+      <section class="panel" aria-labelledby="inputsTitle">
+        <div class="section-heading">
+          <div>
+            <h2 id="inputsTitle">Physical inputs</h2>
+            <p class="muted">Raw and debounced state plus field-wire signal quality.</p>
+          </div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>GPIO</th><th>State</th><th>Raw</th><th>Line test</th><th>Edges</th><th>Accepted</th><th>Rejected</th><th>Chatter</th></tr></thead>
+            <tbody id="inputRows"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <div class="two-column">
+        <section class="panel" aria-labelledby="bacnetTitle">
+          <h2 id="bacnetTitle">BACnet/IP</h2>
+          <dl id="bacnetDetails" class="details"></dl>
+        </section>
+        <section class="panel" aria-labelledby="watchdogTitle">
+          <h2 id="watchdogTitle">Task watchdogs</h2>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Task</th><th>Subscribed</th><th>Health</th><th>Heartbeat</th></tr></thead>
+              <tbody id="watchdogRows"></tbody>
+            </table>
+          </div>
+        </section>
+      </div>
+
+      <section class="panel" aria-labelledby="faultTitle">
+        <div class="section-heading">
+          <div>
+            <h2 id="faultTitle">Persistent event log</h2>
+            <p class="muted">Newest events first. Entries survive restart.</p>
+          </div>
+          <span id="lastUpdated" class="updated">—</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>Sequence</th><th>Boot</th><th>Boot-relative time</th><th>Event</th><th>Code</th></tr></thead>
+            <tbody id="faultRows"></tbody>
+          </table>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <noscript><p class="noscript">JavaScript is required to request authenticated diagnostics.</p></noscript>
+  <footer>Read-only dashboard · BACnet/IP remains available on UDP 47808</footer>
+  <script src="/diagnostics/app.js" defer></script>
+</body>
+</html>
