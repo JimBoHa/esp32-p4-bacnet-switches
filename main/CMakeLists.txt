@@ -64,6 +64,7 @@ idf_component_register(
         "bacnet_codec.c"
         "bacnet_server.c"
         "diagnostics.c"
+        "diagnostics_time.c"
         "ota_auth.c"
         "ota_health.c"
         "ota_server.c"

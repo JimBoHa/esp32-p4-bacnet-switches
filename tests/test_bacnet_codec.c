@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "bacnet_codec.h"
+#include "diagnostics_time.h"
 #include "ota_auth.h"
 #include "ota_health.h"
 
@@ -1398,6 +1399,39 @@ static void test_ota_rollback_health_gate(void)
     ota_health_gate_reset(NULL);
 }
 
+static void test_diagnostics_time_rollover(void)
+{
+    const uint64_t after_legacy_rollover_ms =
+        (uint64_t)UINT32_MAX + 1U;
+
+    CHECK(diagnostics_milliseconds_from_microseconds(-1) == 0U);
+    CHECK(diagnostics_milliseconds_from_microseconds(999) == 0U);
+    CHECK(diagnostics_milliseconds_from_microseconds(1000) == 1U);
+    CHECK(diagnostics_milliseconds_from_microseconds(
+              (int64_t)(after_legacy_rollover_ms * 1000U)) ==
+        after_legacy_rollover_ms);
+    CHECK(diagnostics_elapsed_milliseconds(
+              after_legacy_rollover_ms + 5000U,
+              after_legacy_rollover_ms + 1234U) == 3766U);
+    CHECK(diagnostics_elapsed_milliseconds(10U, 11U) == 0U);
+    CHECK(diagnostics_heartbeat_is_healthy(
+        true,
+        after_legacy_rollover_ms + 5000U,
+        after_legacy_rollover_ms + 2500U,
+        2500U));
+    CHECK(!diagnostics_heartbeat_is_healthy(
+        true,
+        after_legacy_rollover_ms + 5001U,
+        after_legacy_rollover_ms + 2500U,
+        2500U));
+    CHECK(!diagnostics_heartbeat_is_healthy(
+        false,
+        after_legacy_rollover_ms + 5000U,
+        after_legacy_rollover_ms + 2500U,
+        2500U));
+    CHECK(!diagnostics_heartbeat_is_healthy(true, 100U, 101U, 2500U));
+}
+
 int main(void)
 {
     test_reference_vectors();
@@ -1408,6 +1442,7 @@ int main(void)
     test_capacity_guards_and_random_frames();
     test_ota_bearer_authentication();
     test_ota_rollback_health_gate();
+    test_diagnostics_time_rollover();
     printf("bacnet_codec_tests: %u checks passed\n", tests_run);
     return EXIT_SUCCESS;
 }
