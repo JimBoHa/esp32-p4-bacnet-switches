@@ -41,7 +41,8 @@ static atomic_uint_fast32_t stable_input_bits;
 static atomic_uint_fast32_t input_fault_bits;
 static atomic_bool self_test_active;
 static atomic_uint_fast32_t transition_counts[SWITCH_INPUT_COUNT];
-static atomic_uint_fast32_t last_transition_ms[SWITCH_INPUT_COUNT];
+static uint64_t last_transition_ms[SWITCH_INPUT_COUNT];
+static portMUX_TYPE transition_time_lock = portMUX_INITIALIZER_UNLOCKED;
 static atomic_bool self_test_run[SWITCH_INPUT_COUNT];
 static atomic_bool self_test_passed[SWITCH_INPUT_COUNT];
 static atomic_bool self_test_pull_down_levels[SWITCH_INPUT_COUNT];
@@ -184,10 +185,10 @@ static void switch_poll_task(void *argument)
                 store_input(index, stable[index]);
                 atomic_fetch_add_explicit(
                     &transition_counts[index], 1U, memory_order_relaxed);
-                atomic_store_explicit(
-                    &last_transition_ms[index],
-                    (uint32_t)(esp_timer_get_time() / 1000LL),
-                    memory_order_release);
+                portENTER_CRITICAL(&transition_time_lock);
+                last_transition_ms[index] =
+                    (uint64_t)esp_timer_get_time() / 1000U;
+                portEXIT_CRITICAL(&transition_time_lock);
                 ESP_LOGI(
                     TAG,
                     "GPIO%d changed to %s",
@@ -226,7 +227,7 @@ void switch_inputs_init(void)
     atomic_init(&self_test_active, false);
     for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
         atomic_init(&transition_counts[index], 0U);
-        atomic_init(&last_transition_ms[index], 0U);
+        last_transition_ms[index] = 0U;
         atomic_init(&self_test_run[index], false);
         atomic_init(&self_test_passed[index], false);
         atomic_init(&self_test_pull_down_levels[index], false);
@@ -377,6 +378,10 @@ bool switch_input_diagnostics_get(
         return false;
     }
 
+    portENTER_CRITICAL(&transition_time_lock);
+    const uint64_t last_transition_uptime_ms = last_transition_ms[index];
+    portEXIT_CRITICAL(&transition_time_lock);
+
     *diagnostics = (switch_input_diagnostics_t){
         .gpio = (int)INPUT_GPIOS[index],
         .active_low = INPUT_ACTIVE_LOW[index],
@@ -390,8 +395,7 @@ bool switch_input_diagnostics_get(
         .stable = switch_input_get(index),
         .transition_count = (uint32_t)atomic_load_explicit(
             &transition_counts[index], memory_order_relaxed),
-        .last_transition_uptime_ms = (uint32_t)atomic_load_explicit(
-            &last_transition_ms[index], memory_order_acquire),
+        .last_transition_uptime_ms = last_transition_uptime_ms,
         .self_test_run = atomic_load_explicit(
             &self_test_run[index], memory_order_acquire),
         .self_test_passed = atomic_load_explicit(

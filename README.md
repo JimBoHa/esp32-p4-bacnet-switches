@@ -231,6 +231,9 @@ The status endpoint reports their registration, most recent heartbeat, and
 health. Firmware version and the source Git revision are independently exposed
 through HTTPS and BACnet `Application_Software_Version`.
 
+All millisecond uptime, heartbeat, IP-age, transition, and fault-log timestamps
+are 64-bit JSON integers, so they do not wrap after 49.7 days.
+
 ### Vendor ID warning
 
 The default Vendor Identifier **999** and vendor name **Lab placeholder** are
