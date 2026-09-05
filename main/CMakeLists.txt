@@ -66,6 +66,7 @@ idf_component_register(
         "cov_retry_cache.c"
         "diagnostics.c"
         "diagnostics_time.c"
+        "input_line_classifier.c"
         "ota_auth.c"
         "ota_health.c"
         "ota_server.c"
