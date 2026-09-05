@@ -65,6 +65,7 @@ extern const unsigned char ota_token_txt_end[]
 
 static httpd_handle_t server_handle;
 static atomic_bool upload_in_progress;
+static atomic_bool reboot_in_progress;
 static atomic_bool server_ready;
 static char bearer_token[OTA_TOKEN_MAX_LENGTH + 1U];
 static char running_image_sha256[OTA_SHA256_HEX_BYTES + 1U];
@@ -1678,6 +1679,66 @@ fail:
     return httpd_resp_send_err(request, http_error, error_message);
 }
 
+static esp_err_t reboot_post_handler(httpd_req_t *request)
+{
+    if (!request_authenticated(request)) {
+        return send_unauthorized(request);
+    }
+    if (request->content_len != 0U) {
+        return httpd_resp_send_err(
+            request,
+            HTTPD_400_BAD_REQUEST,
+            "reboot request body must be empty");
+    }
+    if (atomic_load_explicit(
+            &upload_in_progress, memory_order_acquire)) {
+        httpd_resp_set_status(request, "409 Conflict");
+        return httpd_resp_sendstr(request, "OTA update in progress");
+    }
+    esp_err_t rejection_result = ESP_OK;
+    if (!running_image_allows_update(request, &rejection_result)) {
+        return rejection_result;
+    }
+    if (atomic_exchange_explicit(
+            &reboot_in_progress, true, memory_order_acq_rel)) {
+        httpd_resp_set_status(request, "409 Conflict");
+        return httpd_resp_sendstr(request, "reboot already in progress");
+    }
+
+    diagnostics_snapshot_t snapshot;
+    if (!diagnostics_snapshot_get(&snapshot)) {
+        atomic_store_explicit(
+            &reboot_in_progress, false, memory_order_release);
+        return httpd_resp_send_err(
+            request,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "diagnostics snapshot unavailable");
+    }
+    diagnostics_record_event(
+        DIAGNOSTICS_EVENT_REMOTE_REBOOT_REQUESTED, 0);
+
+    char response[192];
+    const int response_length = snprintf(
+        response,
+        sizeof(response),
+        "{\"accepted\":true,\"rebooting\":true,"
+        "\"boot_count\":%u,\"image_sha256\":\"%s\"}",
+        (unsigned)snapshot.boot_count,
+        running_image_sha256);
+    httpd_resp_set_status(request, "202 Accepted");
+    httpd_resp_set_type(request, "application/json");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    if (response_length > 0 && (size_t)response_length < sizeof(response)) {
+        (void)httpd_resp_send(request, response, response_length);
+    } else {
+        (void)httpd_resp_sendstr(request, "reboot accepted");
+    }
+    ESP_LOGI(TAG, "authenticated remote reboot accepted");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+    return ESP_OK;
+}
+
 esp_err_t ota_server_start(void)
 {
     if (server_handle != NULL) {
@@ -1700,7 +1761,7 @@ esp_err_t ota_server_start(void)
 
     httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
     config.port_secure = CONFIG_OTA_HTTPS_PORT;
-    config.httpd.max_uri_handlers = 8;
+    config.httpd.max_uri_handlers = 9;
     config.httpd.max_open_sockets = 2;
     config.httpd.lru_purge_enable = true;
     config.httpd.stack_size = 12288;
@@ -1757,6 +1818,11 @@ esp_err_t ota_server_start(void)
         .method = HTTP_POST,
         .handler = network_config_confirm_handler,
     };
+    const httpd_uri_t reboot_uri = {
+        .uri = "/system/reboot",
+        .method = HTTP_POST,
+        .handler = reboot_post_handler,
+    };
     esp_err_t result =
         httpd_register_uri_handler(created_server, &status_uri);
     if (result == ESP_OK) {
@@ -1786,6 +1852,10 @@ esp_err_t ota_server_start(void)
         result = httpd_register_uri_handler(
             created_server, &network_config_confirm_uri);
     }
+    if (result == ESP_OK) {
+        result = httpd_register_uri_handler(
+            created_server, &reboot_uri);
+    }
     if (result != ESP_OK) {
         (void)httpd_ssl_stop(created_server);
         return result;
@@ -1793,6 +1863,8 @@ esp_err_t ota_server_start(void)
 
     atomic_store_explicit(
         &upload_in_progress, false, memory_order_release);
+    atomic_store_explicit(
+        &reboot_in_progress, false, memory_order_release);
     server_handle = created_server;
     atomic_store_explicit(&server_ready, true, memory_order_release);
     ESP_LOGI(

@@ -822,6 +822,7 @@ class HilRunner:
             ("GET", "/config"),
             ("GET", "/network/config"),
             ("POST", "/diagnostics/input-self-test"),
+            ("POST", "/system/reboot"),
         ):
             connection = ota_client._connection(
                 self.args.device_address,
@@ -842,7 +843,7 @@ class HilRunner:
         self.report.add(
             "HTTPS authentication boundary",
             "pass",
-            f"four protected routes returned 401; certificate SHA-256={fingerprint}",
+            f"five protected routes returned 401; certificate SHA-256={fingerprint}",
         )
 
 
