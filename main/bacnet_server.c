@@ -21,6 +21,7 @@
 #include "freertos/task.h"
 #include "lwip/inet.h"
 #include "lwip/sockets.h"
+#include "network_config_store.h"
 #include "sdkconfig.h"
 #include "switch_inputs.h"
 
@@ -118,7 +119,9 @@ static void snapshot_device_state(bacnet_device_state_t *state)
 {
     const esp_app_desc_t *app = esp_app_get_description();
     diagnostics_snapshot_t diagnostics;
+    network_config_t network_config;
     const bool diagnostics_valid = diagnostics_snapshot_get(&diagnostics);
+    network_config_get_active(&network_config);
     (void)snprintf(
         application_software_version,
         sizeof(application_software_version),
@@ -278,7 +281,45 @@ static void snapshot_device_state(bacnet_device_state_t *state)
                 ? BACNET_RELIABILITY_NO_FAULT
                 : BACNET_RELIABILITY_UNRELIABLE_OTHER,
         },
+        .network_port_instance = 1U,
+        .network_port_name = "BACnet/IP Ethernet",
+        .network_port_description =
+            "Primary BACnet/IPv4 Ethernet interface",
+        .network_port_reliability =
+            diagnostics_valid && diagnostics.network.link_up &&
+                diagnostics.network.ipv4_address != 0U
+            ? BACNET_RELIABILITY_NO_FAULT
+            : 12U, /* communication-failure */
+        .network_port_out_of_service = false,
+        .network_port_changes_pending =
+            config_store_restart_required() ||
+            network_config_restart_required(),
+        .network_port_link_speed_bps =
+            diagnostics_valid
+            ? (float)diagnostics.network.speed_mbps * 1000000.0F
+            : 0.0F,
+        .network_port_udp_port = bacnet_config.bacnet_port,
+        .network_port_dhcp_enabled =
+            network_config.mode == NETWORK_ADDRESS_DHCP,
     };
+    if (diagnostics_valid) {
+        memcpy(
+            state->network_port_ipv4,
+            &diagnostics.network.ipv4_address,
+            sizeof(state->network_port_ipv4));
+        memcpy(
+            state->network_port_netmask,
+            &diagnostics.network.ipv4_netmask,
+            sizeof(state->network_port_netmask));
+        memcpy(
+            state->network_port_gateway,
+            &diagnostics.network.ipv4_gateway,
+            sizeof(state->network_port_gateway));
+        memcpy(
+            state->network_port_dns,
+            diagnostics.network.ipv4_dns,
+            sizeof(state->network_port_dns));
+    }
 }
 
 static bool valid_source(const struct sockaddr_in *source)
