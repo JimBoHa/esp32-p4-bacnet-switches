@@ -164,7 +164,7 @@ python3 tools/mdns_probe.py \
   --hostname esp32-p4-bacnet \
   --address 192.168.75.152 \
   --device-instance 599152 \
-  --firmware-version 1.18.0
+  --firmware-version 1.19.0
 ```
 
 For an endurance run after the finite suite, use the append-only soak monitor.
@@ -252,6 +252,8 @@ The HTTPS server provides nine bearer-authenticated operations:
 - `GET /ota/status` — running/boot/update partition and rollback state, source
   and ELF identity, build metadata, exact running-image SHA-256, reset reason,
   enforced OTA size/media-type/deadline/secure-version policy,
+  explicit secure-boot/encryption/authentication posture and watchdog/panic/
+  brownout/core-dump recovery settings,
   uptime, temperature current/minimum/maximum/error counters, heap, watchdog
   health, Ethernet negotiation, DHCP/address state, BACnet counters, input
   pad/raw/debounced/transition data, self-test results, and the persistent fault
@@ -419,16 +421,19 @@ application or merged binaries are also secrets and must not be committed or
 attached to a public release. Secure Boot and flash encryption are not enabled
 because eFuse provisioning is irreversible and device-specific. Someone with
 physical flash access can therefore recover credentials unless those controls
-are provisioned separately.
+are provisioned separately. Flash core dumps are intentionally disabled: an
+unencrypted dump could retain the bearer token, TLS private key, or field data.
+Authenticated status reports these limitations directly instead of implying
+that rollback or HTTPS provides physical-device security.
 
 ### Persistent diagnostics
 
 The NVS-backed 16-entry fault log survives reboot and records boot/reset,
 abnormal reset (panic, brownout, watchdog, power glitch, or CPU lockup), link/IP
-loss, OTA accepted/failed/validated, input-test failures, temperature setup
-failure, BACnet socket failure, HTTPS server startup failure, task-watchdog
-registration failure, and authenticated remote-reboot requests. Entries include
-sequence, boot count, boot-relative time, type, and error code.
+loss, OTA accepted/failed/validated/rolled-back, input-test failures,
+temperature setup failure, BACnet socket failure, HTTPS server startup failure,
+task-watchdog registration failure, and authenticated remote-reboot requests.
+Entries include sequence, boot count, boot-relative time, type, and error code.
 An mDNS initialization or service-advertisement failure is also persisted; a
 runtime hostname conflict is counted in authenticated status.
 Status reports retained/overwritten event counts and NVS write failures. It also
@@ -441,10 +446,12 @@ supply, dry-contact circuit, pull-down recommendation, GPIO-to-header, and
 GPIO-to-BACnet mappings. HIL and soak tests require that profile exactly, so a
 pin-map regression fails release acceptance.
 
-The switch-input and BACnet tasks are registered with ESP-IDF's task watchdog.
-The status endpoint reports their registration, most recent heartbeat, and
-health. Firmware version and the source Git revision are independently exposed
-through HTTPS and BACnet `Application_Software_Version`.
+The switch-input and BACnet tasks are registered with ESP-IDF's five-second task
+watchdog. A missed deadline now causes a panic/reboot instead of only printing a
+warning; an unvalidated OTA image then rolls back on that reboot. The status
+endpoint reports registration, most recent heartbeat, health, timeout, and
+panic behavior. Firmware version and the source Git revision are independently
+exposed through HTTPS and BACnet `Application_Software_Version`.
 
 All millisecond uptime, heartbeat, IP-age, transition, and fault-log timestamps
 are 64-bit JSON integers, so they do not wrap after 49.7 days.

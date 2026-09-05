@@ -29,6 +29,7 @@ typedef enum {
     DIAGNOSTICS_EVENT_OTA_SERVER_FAILED,
     DIAGNOSTICS_EVENT_REMOTE_REBOOT_REQUESTED,
     DIAGNOSTICS_EVENT_MDNS_FAILED,
+    DIAGNOSTICS_EVENT_OTA_ROLLED_BACK,
 } diagnostics_event_type_t;
 
 typedef enum {
@@ -36,6 +37,7 @@ typedef enum {
     DIAGNOSTICS_OTA_ACCEPTED,
     DIAGNOSTICS_OTA_FAILED,
     DIAGNOSTICS_OTA_VALIDATED,
+    DIAGNOSTICS_OTA_ROLLED_BACK,
 } diagnostics_ota_result_t;
 
 typedef enum {
