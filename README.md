@@ -116,7 +116,9 @@ to use the guarded HTTPS API, not BACnet WriteProperty.
 COV supports eight simultaneous subscriptions, lifetimes up to seven days,
 initial notification, value/reliability change notifications, confirmed
 acknowledgements, and bounded retries. Confirmed retries preserve the original
-notification bytes until acknowledged. The server remains deliberately
+notification bytes until acknowledged. A ninth distinct subscription is
+rejected with `resources:no-space-to-add-list-element` rather than silently
+evicting an existing client. The server remains deliberately
 read-only and rejects WriteProperty. It is not a BBMD, foreign device, BACnet
 router, or BACnet/SC node; discovery requires the local subnet or an existing
 BACnet/IP router.
