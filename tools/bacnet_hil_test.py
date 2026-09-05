@@ -286,6 +286,26 @@ def runtime_diagnostics_valid(status: dict[str, Any]) -> bool:
     return temperature_ok and fault_ok
 
 
+def security_recovery_posture_valid(status: dict[str, Any]) -> bool:
+    return status.get("security") == {
+        "https_management": True,
+        "bearer_authentication": True,
+        "tls_private_key_embedded": True,
+        "secure_boot_enabled": False,
+        "flash_encryption_enabled": False,
+        "application_anti_rollback_enabled": False,
+    } and status.get("recovery") == {
+        "ota_rollback_enabled": True,
+        "task_watchdog_enabled": True,
+        "task_watchdog_timeout_seconds": 5,
+        "task_watchdog_panics": True,
+        "interrupt_watchdog_enabled": True,
+        "panic_reboots": True,
+        "brownout_detection_enabled": True,
+        "core_dump_destination": "disabled",
+    }
+
+
 def validate_args(args: argparse.Namespace) -> None:
     for label in ("device_instance", "client_instance"):
         value = getattr(args, label)
@@ -1026,6 +1046,7 @@ class HilRunner:
             and hardware_profile_valid(hardware)
             and firmware_diagnostics_valid(status)
             and runtime_diagnostics_valid(status)
+            and security_recovery_posture_valid(status)
             and (
                 self.args.mdns_hostname is None
                 or (
@@ -1052,7 +1073,7 @@ class HilRunner:
             "Authenticated HTTPS health",
             healthy,
             f"version={status.get('version')}; source={source}; image={image_sha}; firmware/runtime diagnostics healthy",
-            "firmware identity, OTA state, network, configuration, COV cleanup, watchdog, wiring, image, temperature, or fault-log health failed",
+            "firmware identity, OTA state, network, configuration, COV cleanup, watchdog, security/recovery posture, wiring, image, temperature, or fault-log health failed",
         )
         certificate_der = ota_client._certificate_der(self.args.certificate)
         fingerprint = hashlib.sha256(certificate_der).hexdigest()
