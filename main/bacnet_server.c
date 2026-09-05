@@ -55,6 +55,7 @@ static const char *const INPUT_DESCRIPTIONS[BACNET_BINARY_INPUT_COUNT] = {
 };
 static const uint32_t ANALOG_VALUE_INSTANCES[BACNET_ANALOG_VALUE_COUNT] = {
     1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010,
+    1011, 1012, 1013, 1014, 1015, 1016, 1017, 1018, 1019,
 };
 static const char *const ANALOG_VALUE_NAMES[BACNET_ANALOG_VALUE_COUNT] = {
     BACNET_CHIP_TEMPERATURE_VALUE_NAME,
@@ -68,6 +69,15 @@ static const char *const ANALOG_VALUE_NAMES[BACNET_ANALOG_VALUE_COUNT] = {
     BACNET_LAST_RESET_REASON_VALUE_NAME,
     BACNET_ACTIVE_COV_SUBSCRIPTIONS_VALUE_NAME,
     BACNET_BOOT_COUNT_VALUE_NAME,
+    BACNET_GPIO20_CHATTER_VALUE_NAME,
+    BACNET_GPIO20_REJECTED_PULSES_VALUE_NAME,
+    BACNET_GPIO20_TRANSITION_AGE_VALUE_NAME,
+    BACNET_GPIO21_CHATTER_VALUE_NAME,
+    BACNET_GPIO21_REJECTED_PULSES_VALUE_NAME,
+    BACNET_GPIO21_TRANSITION_AGE_VALUE_NAME,
+    BACNET_GPIO22_CHATTER_VALUE_NAME,
+    BACNET_GPIO22_REJECTED_PULSES_VALUE_NAME,
+    BACNET_GPIO22_TRANSITION_AGE_VALUE_NAME,
 };
 static const char *const ANALOG_VALUE_DESCRIPTIONS[
     BACNET_ANALOG_VALUE_COUNT] = {
@@ -82,6 +92,15 @@ static const char *const ANALOG_VALUE_DESCRIPTIONS[
     "Numeric ESP-IDF reset reason for the current boot",
     "Currently active BACnet COV subscriptions",
     "Persistent successful-start count including the current boot",
+    "GPIO20 sampled chatter: 1 active, 0 quiet",
+    "GPIO20 sampled pulses rejected by debounce since boot",
+    "GPIO20 seconds since accepted transition, or initial observation if none",
+    "GPIO21 sampled chatter: 1 active, 0 quiet",
+    "GPIO21 sampled pulses rejected by debounce since boot",
+    "GPIO21 seconds since accepted transition, or initial observation if none",
+    "GPIO22 sampled chatter: 1 active, 0 quiet",
+    "GPIO22 sampled pulses rejected by debounce since boot",
+    "GPIO22 seconds since accepted transition, or initial observation if none",
 };
 static const uint32_t ANALOG_VALUE_UNITS[BACNET_ANALOG_VALUE_COUNT] = {
     BACNET_UNITS_DEGREES_CELSIUS,
@@ -95,6 +114,9 @@ static const uint32_t ANALOG_VALUE_UNITS[BACNET_ANALOG_VALUE_COUNT] = {
     BACNET_UNITS_NO_UNITS,
     BACNET_UNITS_NO_UNITS,
     BACNET_UNITS_NO_UNITS,
+    BACNET_UNITS_NO_UNITS, BACNET_UNITS_NO_UNITS, BACNET_UNITS_SECONDS,
+    BACNET_UNITS_NO_UNITS, BACNET_UNITS_NO_UNITS, BACNET_UNITS_SECONDS,
+    BACNET_UNITS_NO_UNITS, BACNET_UNITS_NO_UNITS, BACNET_UNITS_SECONDS,
 };
 
 typedef struct {
@@ -198,45 +220,6 @@ static void snapshot_device_state(bacnet_device_state_t *state)
             false,
             false,
         },
-        .analog_value_instances = {
-            ANALOG_VALUE_INSTANCES[0],
-            ANALOG_VALUE_INSTANCES[1],
-            ANALOG_VALUE_INSTANCES[2],
-            ANALOG_VALUE_INSTANCES[3],
-            ANALOG_VALUE_INSTANCES[4],
-            ANALOG_VALUE_INSTANCES[5],
-            ANALOG_VALUE_INSTANCES[6],
-            ANALOG_VALUE_INSTANCES[7],
-            ANALOG_VALUE_INSTANCES[8],
-            ANALOG_VALUE_INSTANCES[9],
-            ANALOG_VALUE_INSTANCES[10],
-        },
-        .analog_value_names = {
-            ANALOG_VALUE_NAMES[0],
-            ANALOG_VALUE_NAMES[1],
-            ANALOG_VALUE_NAMES[2],
-            ANALOG_VALUE_NAMES[3],
-            ANALOG_VALUE_NAMES[4],
-            ANALOG_VALUE_NAMES[5],
-            ANALOG_VALUE_NAMES[6],
-            ANALOG_VALUE_NAMES[7],
-            ANALOG_VALUE_NAMES[8],
-            ANALOG_VALUE_NAMES[9],
-            ANALOG_VALUE_NAMES[10],
-        },
-        .analog_value_descriptions = {
-            ANALOG_VALUE_DESCRIPTIONS[0],
-            ANALOG_VALUE_DESCRIPTIONS[1],
-            ANALOG_VALUE_DESCRIPTIONS[2],
-            ANALOG_VALUE_DESCRIPTIONS[3],
-            ANALOG_VALUE_DESCRIPTIONS[4],
-            ANALOG_VALUE_DESCRIPTIONS[5],
-            ANALOG_VALUE_DESCRIPTIONS[6],
-            ANALOG_VALUE_DESCRIPTIONS[7],
-            ANALOG_VALUE_DESCRIPTIONS[8],
-            ANALOG_VALUE_DESCRIPTIONS[9],
-            ANALOG_VALUE_DESCRIPTIONS[10],
-        },
         .analog_value_values = {
             diagnostics_valid ? diagnostics.chip_temperature_c : 0.0F,
             diagnostics_valid ? diagnostics.uptime_ms / 1000.0F : 0.0F,
@@ -262,19 +245,6 @@ static void snapshot_device_state(bacnet_device_state_t *state)
                 ? (float)diagnostics.active_cov_subscriptions
                 : 0.0F,
             diagnostics_valid ? (float)diagnostics.boot_count : 0.0F,
-        },
-        .analog_value_units = {
-            ANALOG_VALUE_UNITS[0],
-            ANALOG_VALUE_UNITS[1],
-            ANALOG_VALUE_UNITS[2],
-            ANALOG_VALUE_UNITS[3],
-            ANALOG_VALUE_UNITS[4],
-            ANALOG_VALUE_UNITS[5],
-            ANALOG_VALUE_UNITS[6],
-            ANALOG_VALUE_UNITS[7],
-            ANALOG_VALUE_UNITS[8],
-            ANALOG_VALUE_UNITS[9],
-            ANALOG_VALUE_UNITS[10],
         },
         .analog_value_reliability = {
             diagnostics_valid && diagnostics.chip_temperature_valid
@@ -332,6 +302,28 @@ static void snapshot_device_state(bacnet_device_state_t *state)
         .network_port_dhcp_enabled =
             network_config.mode == NETWORK_ADDRESS_DHCP,
     };
+    memcpy(state->analog_value_instances, ANALOG_VALUE_INSTANCES,
+           sizeof(state->analog_value_instances));
+    memcpy(state->analog_value_names, ANALOG_VALUE_NAMES,
+           sizeof(state->analog_value_names));
+    memcpy(state->analog_value_descriptions, ANALOG_VALUE_DESCRIPTIONS,
+           sizeof(state->analog_value_descriptions));
+    memcpy(state->analog_value_units, ANALOG_VALUE_UNITS,
+           sizeof(state->analog_value_units));
+    for (size_t input_index = 0U; input_index < SWITCH_INPUT_COUNT; ++input_index) {
+        switch_input_diagnostics_t input = {0};
+        const bool valid = switch_input_diagnostics_get(input_index, &input) &&
+            input.initialized;
+        const size_t start = BACNET_INPUT_DIAGNOSTIC_START +
+            input_index * BACNET_INPUT_DIAGNOSTICS_PER_INPUT;
+        state->analog_value_values[start] = valid && input.chattering ? 1.0F : 0.0F;
+        state->analog_value_values[start + 1U] = valid ? (float)input.rejected_pulse_count : 0.0F;
+        state->analog_value_values[start + 2U] = valid ? input.transition_age_ms / 1000.0F : 0.0F;
+        for (size_t offset = 0U; offset < BACNET_INPUT_DIAGNOSTICS_PER_INPUT; ++offset) {
+            state->analog_value_reliability[start + offset] = valid
+                ? BACNET_RELIABILITY_NO_FAULT : BACNET_RELIABILITY_UNRELIABLE_OTHER;
+        }
+    }
     if (diagnostics_valid) {
         memcpy(
             state->network_port_ipv4,
