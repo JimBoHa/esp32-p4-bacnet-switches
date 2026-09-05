@@ -60,6 +60,12 @@
         </section>
       </div>
 
+      <section class="panel" aria-labelledby="clockTitle">
+        <h2 id="clockTitle">Clock and event timestamps</h2>
+        <p class="muted">UTC is unknown before site NTP synchronization. Quality reflects sync age; SNTP time is not authenticated.</p>
+        <dl id="clockDetails" class="details"></dl>
+      </section>
+
       <section class="panel" aria-labelledby="inputsTitle">
         <div class="section-heading">
           <div>
@@ -81,7 +87,7 @@
         <p id="inputHistoryStatus" class="muted"></p>
         <div class="table-wrap" tabindex="0" role="region" aria-label="Recent input events table">
           <table>
-            <thead><tr><th>Sequence</th><th>GPIO</th><th>Boot-relative time</th><th>Event</th><th>Stable state</th><th>Rejected pulse</th></tr></thead>
+            <thead><tr><th>Sequence</th><th>GPIO</th><th>Boot-relative time</th><th>UTC and quality</th><th>Event</th><th>Stable state</th><th>Rejected pulse</th></tr></thead>
             <tbody id="inputHistoryRows"></tbody>
           </table>
         </div>
@@ -113,7 +119,7 @@
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th>Sequence</th><th>Boot</th><th>Boot-relative time</th><th>Event</th><th>Code</th></tr></thead>
+            <thead><tr><th>Sequence</th><th>Boot</th><th>Boot-relative time</th><th>UTC and quality</th><th>Event</th><th>Code</th></tr></thead>
             <tbody id="faultRows"></tbody>
           </table>
         </div>

@@ -6,6 +6,7 @@
 
 #include "driver/gpio.h"
 #include "diagnostics.h"
+#include "clock_service.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_timer.h"
@@ -146,12 +147,13 @@ static void switch_poll_task(void *argument)
 
     for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
         const bool initial = (initial_bits & (1U << index)) != 0;
+        const clock_stamp_t stamp = clock_service_stamp((uint64_t)esp_timer_get_time() / 1000U);
         portENTER_CRITICAL(&debounce_state_lock);
         input_debounce_init(&debounce_states[index], initial);
         (void)input_history_record(
             &recent_input_history, (int)INPUT_GPIOS[index],
             INPUT_HISTORY_INITIAL, initial, 0U,
-            (uint64_t)esp_timer_get_time() / 1000U);
+            stamp);
         portEXIT_CRITICAL(&debounce_state_lock);
         store_input(index, initial);
         ESP_LOGI(
@@ -171,6 +173,7 @@ static void switch_poll_task(void *argument)
         const uint32_t sampled_bits = read_input_bits();
         const uint64_t uptime_ms =
             (uint64_t)esp_timer_get_time() / 1000U;
+        const clock_stamp_t stamp = clock_service_stamp(uptime_ms);
 
         for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
             const bool sampled = (sampled_bits & (1U << index)) != 0;
@@ -184,19 +187,19 @@ static void switch_poll_task(void *argument)
             if (result.accepted_transition) {
                 (void)input_history_record(
                     &recent_input_history, (int)INPUT_GPIOS[index],
-                    INPUT_HISTORY_TRANSITION, result.stable, 0U, uptime_ms);
+                    INPUT_HISTORY_TRANSITION, result.stable, 0U, stamp);
             }
             if (result.rejected_pulse) {
                 (void)input_history_record(
                     &recent_input_history, (int)INPUT_GPIOS[index],
                     INPUT_HISTORY_REJECTED_PULSE, result.stable,
                     debounce_states[index].last_rejected_pulse_width_ms,
-                    uptime_ms);
+                    stamp);
             }
             if (result.chatter_started) {
                 (void)input_history_record(
                     &recent_input_history, (int)INPUT_GPIOS[index],
-                    INPUT_HISTORY_CHATTER_STARTED, result.stable, 0U, uptime_ms);
+                    INPUT_HISTORY_CHATTER_STARTED, result.stable, 0U, stamp);
             }
             portEXIT_CRITICAL(&debounce_state_lock);
             if (result.accepted_transition) {

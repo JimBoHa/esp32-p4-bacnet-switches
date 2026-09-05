@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "clock_model.h"
 
 #define INPUT_HISTORY_CAPACITY 64U
 
@@ -16,10 +17,12 @@ typedef enum {
 typedef struct {
     uint64_t sequence;
     uint64_t uptime_ms;
+    uint64_t utc_unix_ms;
     uint32_t pulse_width_ms;
     uint16_t gpio;
     uint8_t kind;
     bool active;
+    uint8_t clock_quality;
 } input_history_event_t;
 
 /* Callers synchronize access. Events are retained oldest-to-newest in RAM. */
@@ -37,7 +40,7 @@ bool input_history_record(
     input_history_kind_t kind,
     bool active,
     uint32_t pulse_width_ms,
-    uint64_t uptime_ms);
+    clock_stamp_t stamp);
 bool input_history_get(
     const input_history_t *history,
     size_t oldest_index,

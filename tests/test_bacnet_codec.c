@@ -14,6 +14,7 @@
 #include "input_line_classifier.h"
 #include "input_debounce.h"
 #include "input_history.h"
+#include "diagnostics_log_model.h"
 #include "network_config_model.h"
 #include "ota_auth.h"
 #include "ota_health.h"
@@ -2627,27 +2628,133 @@ static void test_subscribe_cov_capacity_error(void)
         0x5AU, response, sizeof(expected) - 1U) == 0U);
 }
 
+static void test_clock_model(void)
+{
+    clock_model_t model = {0};
+    CHECK(clock_model_stamp(&model, 100U).unix_ms == 0U);
+    CHECK(clock_model_stamp(NULL, 100U).quality == CLOCK_UNSYNCHRONIZED);
+    CHECK(!clock_model_sync(NULL, 0U, CLOCK_MIN_UNIX_MS));
+    CHECK(!clock_model_sync(&model, 100U, CLOCK_MIN_UNIX_MS - 1U));
+    CHECK(model.rejected_sync_count == 1U && model.sync_count == 0U);
+    const uint64_t uptime = (uint64_t)UINT32_MAX + 2000U;
+    CHECK(clock_model_sync(&model, uptime, CLOCK_MIN_UNIX_MS + 20000U));
+    CHECK(clock_model_stamp(&model, uptime - 1U).unix_ms == 0U);
+    clock_stamp_t captured = clock_model_stamp(&model, uptime + 1000U);
+    CHECK(captured.unix_ms == CLOCK_MIN_UNIX_MS + 21000U);
+    CHECK(captured.uptime_ms == uptime + 1000U && captured.quality == CLOCK_SYNCHRONIZED);
+    CHECK(clock_model_stamp(&model, uptime + CLOCK_STALE_AFTER_MS).quality == CLOCK_SYNCHRONIZED);
+    CHECK(clock_model_stamp(&model, uptime + CLOCK_STALE_AFTER_MS + 1U).quality == CLOCK_STALE);
+    CHECK(!clock_model_sync(&model, uptime - 1U, CLOCK_MIN_UNIX_MS));
+    CHECK(clock_model_sync(&model, uptime + 2000U, CLOCK_MIN_UNIX_MS)); /* legitimate clock step back */
+    CHECK(captured.unix_ms == CLOCK_MIN_UNIX_MS + 21000U); /* old event never changes */
+    CHECK(clock_model_stamp(&model, UINT64_MAX).unix_ms == 0U);
+    CHECK(!clock_model_sync(&model, uptime + 3000U, CLOCK_MAX_UNIX_MS));
+    model.sync_count = UINT32_MAX;
+    model.rejected_sync_count = UINT32_MAX;
+    CHECK(clock_model_sync(&model, uptime + 3000U, CLOCK_MIN_UNIX_MS));
+    CHECK(!clock_model_sync(&model, uptime, 0U));
+    CHECK(model.sync_count == UINT32_MAX && model.rejected_sync_count == UINT32_MAX);
+    CHECK(strcmp(clock_quality_name(CLOCK_STALE), "stale") == 0);
+    CHECK(clock_server_name_valid(""));
+    CHECK(clock_server_name_valid("ntp.site.example"));
+    CHECK(clock_server_name_valid("192.168.75.1"));
+    CHECK(!clock_server_name_valid(NULL));
+    CHECK(!clock_server_name_valid("-ntp.site"));
+    CHECK(!clock_server_name_valid("ntp-.site"));
+    CHECK(!clock_server_name_valid("ntp..site"));
+    CHECK(!clock_server_name_valid("ntp.site/endpoint"));
+    CHECK(!clock_server_name_valid("ntp\"site"));
+    CHECK(!clock_server_name_valid("ntp.site."));
+    char long_label[65];
+    memset(long_label, 'n', sizeof(long_label) - 1U);
+    long_label[sizeof(long_label) - 1U] = '\0';
+    CHECK(!clock_server_name_valid(long_label));
+}
+
+static void test_timestamp_log_migration(void)
+{
+    diagnostics_persistent_state_t original = {
+        .magic = DIAGNOSTICS_PERSISTENT_MAGIC, .version = DIAGNOSTICS_PERSISTENT_VERSION,
+        .boot_count = 9U, .next_sequence = 44U, .event_head = 1U, .event_count = 1U,
+        .last_ota_result = 3U,
+    };
+    original.events[0] = (diagnostics_fault_event_t){
+        .sequence = 43U, .boot_count = 9U, .uptime_ms = (uint64_t)UINT32_MAX + 10U,
+        .utc_unix_ms = CLOCK_MIN_UNIX_MS, .clock_quality = CLOCK_SYNCHRONIZED,
+        .type = 1U, .code = 3,
+    };
+    diagnostics_persistent_state_t decoded;
+    CHECK(diagnostics_log_decode(&original, sizeof(original), &decoded));
+    CHECK(decoded.events[0].utc_unix_ms == CLOCK_MIN_UNIX_MS);
+    diagnostics_persistent_state_v2_t mirror;
+    diagnostics_log_to_v2(&original, &mirror);
+    CHECK(mirror.version == 2U && mirror.boot_count == 9U && mirror.next_sequence == 44U);
+    CHECK(diagnostics_log_decode(&mirror, sizeof(mirror), &decoded));
+    CHECK(decoded.version == 3U && decoded.events[0].uptime_ms == (uint64_t)UINT32_MAX + 10U);
+    CHECK(decoded.events[0].utc_unix_ms == 0U && decoded.events[0].clock_quality == CLOCK_UNSYNCHRONIZED);
+    decoded.boot_count = 10U; /* old rollback firmware wrote a later boot */
+    decoded.next_sequence = 45U;
+    decoded.event_head = 2U;
+    decoded.event_count = 2U;
+    decoded.events[1] = (diagnostics_fault_event_t){.sequence = 44U, .boot_count = 10U, .type = 1U};
+    diagnostics_log_reconcile(&original, &decoded);
+    CHECK(original.boot_count == 10U && original.next_sequence == 45U);
+    CHECK(original.events[0].utc_unix_ms == CLOCK_MIN_UNIX_MS); /* matching UTC survives downgrade/upgrade */
+    CHECK(original.events[1].utc_unix_ms == 0U);
+    decoded.boot_count = 8U;
+    diagnostics_log_reconcile(&original, &decoded);
+    CHECK(original.boot_count == 10U);
+    CHECK(!diagnostics_log_decode(NULL, 0U, &decoded));
+    CHECK(!diagnostics_log_decode(&original, sizeof(original) - 1U, &decoded));
+    original.events[0].clock_quality = 99U;
+    CHECK(!diagnostics_log_decode(&original, sizeof(original), &decoded));
+    original.events[0].clock_quality = CLOCK_UNSYNCHRONIZED;
+    CHECK(!diagnostics_log_decode(&original, sizeof(original), &decoded));
+    original.events[0].utc_unix_ms = 0U;
+    original.event_count = 17U;
+    CHECK(!diagnostics_log_decode(&original, sizeof(original), &decoded));
+
+    uint8_t v1[284] = {0};
+    const uint32_t header[] = {DIAGNOSTICS_PERSISTENT_MAGIC, 1U, 7U, 13U, 1U, 1U, 2U};
+    memcpy(v1, header, sizeof(header));
+    const uint32_t old_event[] = {12U, 7U, UINT32_MAX, 0xFFFE0005U};
+    memcpy(v1 + sizeof(header), old_event, sizeof(old_event));
+    CHECK(diagnostics_log_decode(v1, sizeof(v1), &decoded));
+    CHECK(decoded.version == 3U && decoded.boot_count == 7U);
+    CHECK(decoded.events[0].sequence == 12U && decoded.events[0].uptime_ms == UINT32_MAX);
+    CHECK(decoded.events[0].type == 5U && decoded.events[0].code == -2);
+    CHECK(decoded.events[0].utc_unix_ms == 0U);
+    v1[0] ^= 1U;
+    CHECK(!diagnostics_log_decode(v1, sizeof(v1), &decoded));
+}
+
 static void test_input_event_history(void)
 {
     input_history_t history;
     input_history_event_t event;
+    const clock_stamp_t unknown = {0};
     input_history_init(&history);
     CHECK(history.count == 0U);
     CHECK(!input_history_get(&history, 0U, &event));
-    CHECK(!input_history_record(NULL, 20, INPUT_HISTORY_INITIAL, false, 0U, 0U));
-    CHECK(!input_history_record(&history, -1, INPUT_HISTORY_INITIAL, false, 0U, 0U));
-    CHECK(!input_history_record(&history, 20, (input_history_kind_t)99, false, 0U, 0U));
+    CHECK(!input_history_record(NULL, 20, INPUT_HISTORY_INITIAL, false, 0U, unknown));
+    CHECK(!input_history_record(&history, -1, INPUT_HISTORY_INITIAL, false, 0U, unknown));
+    CHECK(!input_history_record(&history, 20, (input_history_kind_t)99, false, 0U, unknown));
+    CHECK(!input_history_record(&history, 20, INPUT_HISTORY_INITIAL, false, 0U,
+                               (clock_stamp_t){.quality = CLOCK_SYNCHRONIZED}));
     const uint64_t late_uptime = (uint64_t)UINT32_MAX + 50000U;
     CHECK(input_history_record(
-        &history, 22, INPUT_HISTORY_REJECTED_PULSE, false, 30U, late_uptime));
+        &history, 22, INPUT_HISTORY_REJECTED_PULSE, false, 30U,
+        (clock_stamp_t){.uptime_ms = late_uptime, .unix_ms = CLOCK_MIN_UNIX_MS,
+                        .quality = CLOCK_SYNCHRONIZED}));
     CHECK(input_history_get(&history, 0U, &event));
     CHECK(event.sequence == 1U && event.gpio == 22U);
     CHECK(event.uptime_ms == late_uptime && event.pulse_width_ms == 30U);
+    CHECK(event.utc_unix_ms == CLOCK_MIN_UNIX_MS && event.clock_quality == CLOCK_SYNCHRONIZED);
     CHECK(!event.active && event.kind == INPUT_HISTORY_REJECTED_PULSE);
     for (size_t index = 0U; index < INPUT_HISTORY_CAPACITY * 3U; ++index) {
         CHECK(input_history_record(
             &history, 20, INPUT_HISTORY_TRANSITION, (index % 2U) != 0U,
-            999U, late_uptime + index + 1U));
+            999U, (clock_stamp_t){.uptime_ms = late_uptime + index + 1U}));
     }
     CHECK(history.count == INPUT_HISTORY_CAPACITY);
     CHECK(history.total_events == INPUT_HISTORY_CAPACITY * 3U + 1U);
@@ -2663,7 +2770,7 @@ static void test_input_event_history(void)
     CHECK(strcmp(input_history_kind_name(INPUT_HISTORY_CHATTER_STARTED), "chatter-started") == 0);
     CHECK(strcmp(input_history_kind_name((input_history_kind_t)99), "unknown") == 0);
     history.total_events = UINT64_MAX;
-    CHECK(!input_history_record(&history, 20, INPUT_HISTORY_INITIAL, false, 0U, 0U));
+    CHECK(!input_history_record(&history, 20, INPUT_HISTORY_INITIAL, false, 0U, unknown));
     input_history_init(&history);
     CHECK(history.count == 0U && history.total_events == 0U);
 }
@@ -2687,6 +2794,8 @@ int main(void)
     test_cov_retry_payload_cache();
     test_input_debounce_diagnostics();
     test_input_event_history();
+    test_clock_model();
+    test_timestamp_log_migration();
     test_input_line_classifier();
     test_config_model();
     test_network_config_model();
