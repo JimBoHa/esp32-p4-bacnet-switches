@@ -246,6 +246,20 @@ directory instead, set `ESP32_P4_OTA_SECRETS_DIR`; it must contain
 both distinct tokens, certificate lifetime and server-auth purpose, P-256 PKCS#8 key format,
 private file permissions, and certificate/key match before compiling.
 
+Every application also needs the existing project's RSA-3072 signing key at
+`secrets/firmware_signing_key.pem` (mode 0600). Obtain it from the approved
+backup; a new key cannot update a controller that trusts the existing key.
+`main/ota_signing_public_key.pem` is the tracked, non-secret verification pin.
+For a **new, unprovisioned trust domain only**, generate a new pair with
+`python3 tools/firmware_signing.py generate-key --backup-dir NEW-PRIVATE-DIRECTORY`.
+The tool refuses to replace any existing key or backup. Never regenerate this
+project's pin just because the private key is missing.
+
+For pre-1.26 SDK configurations, enable `Require signed app images`, RSA,
+`Verify app signature on update`, and `Sign binaries during build`; set the
+private-key path above. Fresh builds use these defaults. Build checks reject
+unsigned configurations, mismatched signing keys and hardware/eFuse provisioning.
+
 Perform the first installation over USB. The project uses a dual-slot
 partition table, so erase an older single-image layout once:
 
@@ -499,6 +513,37 @@ a fully tested valid update after the suite; do not run it when power is
 unstable or recovery access is unavailable.
 
 ### Credential rotation and security boundary
+
+OTA images use ESP-IDF's RSA-PSS-3072/SHA-256 Secure Boot v2 signature format,
+verified in software by `esp_ota_end()` before boot selection. Only the first
+signature block is trusted, using the key in the running signed application.
+The signing private key is host-only, never embedded in firmware or a recovery
+package. Losing it prevents further authorized OTA updates; keep its separate
+backup offline or in an approved secret store. Permission-restricted backups
+are not encrypted. Remote key rotation is not supported by this single-key
+workflow; it requires separately planned physical recovery/reprovisioning.
+
+The client verifies the complete image, signature sector, pinned public key
+and RSA-PSS signature before connecting, then checks the device's trusted-key
+digest and confirms signing policy after reboot. Unsigned uploads require
+`--allow-unsigned-legacy` and are still refused for an enforcing device.
+Private packages include the verifier and public pin, not the signing private
+key. Their management client can use
+`--signing-public-key management/ota_signing_public_key.pem` explicitly.
+
+Migration from an earlier unsigned release sends a **signed** 1.26+ application
+through the existing authenticated OTA route. Its initial boot must contain a
+valid signature block; otherwise ESP-IDF aborts and rollback handles the failed
+candidate. Preserve a pre-migration recovery package first, then verify a second
+signed update and rejection tests. The rejection tool accepts
+`--wrong-key-firmware FILE --wrong-key-public-key FILE` for a correctly signed
+image made with a disposable untrusted key. Signed-image tests also exercise
+unsigned and tampered-signature rejection. They erase only the inactive slot;
+immediately restore redundancy with a valid signed update.
+
+This is software OTA verification, **not hardware Secure Boot**. It does not
+verify the boot chain or protect against physical flash writes or a signing-key
+compromise. See the [ESP-IDF signed-app verification documentation](https://docs.espressif.com/projects/esp-idf/en/v5.5.4/esp32p4/security/secure-boot-v2.html#signed-app-verification-without-hardware-secure-boot).
 
 To rotate remotely, first preserve the currently deployed certificate/token in
 a secure temporary location. Generate replacement credentials, build the new

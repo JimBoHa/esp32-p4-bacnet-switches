@@ -122,6 +122,9 @@ class BacnetHilTests(unittest.TestCase):
                 "upload_deadline_seconds": 300,
                 "required_content_type": "application/octet-stream",
                 "minimum_secure_version": 0,
+                "signature_required": True,
+                "signature_scheme": "rsa-pss-3072-sha256",
+                "signing_key_sha256": "c" * 64,
             },
             "firmware": {
                 "build_date": "Sep  5 2026",
@@ -248,6 +251,8 @@ class BacnetHilTests(unittest.TestCase):
                 "viewer_admin_separation": True,
                 "mutations_require_admin": True,
                 "tls_private_key_embedded": True,
+                "software_signature_verification": True,
+                "signing_private_key_embedded": False,
                 "secure_boot_enabled": False,
                 "flash_encryption_enabled": False,
                 "application_anti_rollback_enabled": False,
