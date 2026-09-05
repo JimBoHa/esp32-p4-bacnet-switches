@@ -38,6 +38,17 @@ typedef struct {
     bool stable;
     uint32_t transition_count;
     uint64_t last_transition_uptime_ms;
+    uint32_t raw_edge_count;
+    uint32_t accepted_transition_count;
+    uint32_t rejected_pulse_count;
+    uint32_t chatter_event_count;
+    bool chattering;
+    bool candidate_active;
+    bool candidate_level;
+    uint32_t candidate_age_ms;
+    uint32_t last_rejected_pulse_width_ms;
+    uint64_t last_raw_edge_uptime_ms;
+    uint64_t last_rejected_pulse_uptime_ms;
     bool self_test_run;
     bool self_test_passed;
     bool self_test_pull_down_level;

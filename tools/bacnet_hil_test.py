@@ -725,6 +725,34 @@ class HilRunner:
         configuration = status.get("configuration", {})
         bacnet = status.get("bacnet", {})
         watchdog = system.get("task_watchdog", {}) if isinstance(system, dict) else {}
+        gpio_diagnostics = status.get("gpio_diagnostics", [])
+        signal_diagnostics_ok = isinstance(gpio_diagnostics, list) and len(
+            gpio_diagnostics
+        ) == len(PHYSICAL_INPUT_INSTANCES)
+        if signal_diagnostics_ok:
+            for item in gpio_diagnostics:
+                signal = item.get("signal", {}) if isinstance(item, dict) else {}
+                signal_diagnostics_ok = signal_diagnostics_ok and (
+                    isinstance(signal, dict)
+                    and signal.get("accepted_transition_count")
+                    == item.get("transition_count")
+                    and all(
+                        isinstance(signal.get(key), int) and signal[key] >= 0
+                        for key in (
+                            "raw_edge_count",
+                            "accepted_transition_count",
+                            "rejected_pulse_count",
+                            "chatter_event_count",
+                            "candidate_age_ms",
+                            "last_raw_edge_uptime_ms",
+                            "last_rejected_pulse_uptime_ms",
+                            "last_rejected_pulse_width_ms",
+                        )
+                    )
+                    and isinstance(signal.get("chattering"), bool)
+                    and isinstance(signal.get("candidate_active"), bool)
+                    and isinstance(signal.get("candidate_level"), bool)
+                )
         version_ok = (
             self.args.expected_version is None
             or status.get("version") == self.args.expected_version
@@ -763,6 +791,7 @@ class HilRunner:
                 isinstance(item, dict) and item.get("healthy") is True
                 for item in watchdog.values()
             )
+            and signal_diagnostics_ok
         )
         self.report.require(
             "Authenticated HTTPS health",

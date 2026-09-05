@@ -10,6 +10,7 @@
 #include "cov_retry_cache.h"
 #include "diagnostics_time.h"
 #include "input_line_classifier.h"
+#include "input_debounce.h"
 #include "network_config_model.h"
 #include "ota_auth.h"
 #include "ota_health.h"
@@ -2205,6 +2206,106 @@ static void test_input_line_classifier(void)
               "not-tested") == 0);
 }
 
+static void test_input_debounce_diagnostics(void)
+{
+    input_debounce_state_t state;
+    input_debounce_init(&state, false);
+    CHECK(state.initialized);
+    CHECK(!state.stable);
+
+    input_debounce_result_t result = {0};
+    for (uint64_t now = 10U; now <= 50U; now += 10U) {
+        result = input_debounce_sample(
+            &state, true, 10U, 50U, now);
+    }
+    CHECK(result.accepted_transition);
+    CHECK(result.stable);
+    CHECK(state.raw_edge_count == 1U);
+    CHECK(state.accepted_transition_count == 1U);
+    CHECK(state.last_raw_edge_uptime_ms == 10U);
+    CHECK(state.last_accepted_transition_uptime_ms == 50U);
+    CHECK(!state.candidate_active);
+
+    result = input_debounce_sample(&state, false, 10U, 50U, 60U);
+    CHECK(result.raw_edge);
+    CHECK(!result.accepted_transition);
+    result = input_debounce_sample(&state, false, 10U, 50U, 70U);
+    CHECK(!result.raw_edge);
+    result = input_debounce_sample(&state, true, 10U, 50U, 80U);
+    CHECK(result.raw_edge);
+    CHECK(result.rejected_pulse);
+    CHECK(state.stable);
+    CHECK(state.raw_edge_count == 3U);
+    CHECK(state.rejected_pulse_count == 1U);
+    CHECK(state.last_rejected_pulse_width_ms == 20U);
+    CHECK(state.last_rejected_pulse_uptime_ms == 80U);
+
+    input_debounce_init(&state, false);
+    for (unsigned pulse = 0U;
+         pulse < INPUT_CHATTER_REJECTION_THRESHOLD;
+         ++pulse) {
+        const uint64_t start = 100U + pulse * 100U;
+        result = input_debounce_sample(
+            &state, true, 10U, 50U, start);
+        CHECK(result.raw_edge);
+        result = input_debounce_sample(
+            &state, false, 10U, 50U, start + 10U);
+        CHECK(result.rejected_pulse);
+        CHECK(result.chatter_started ==
+            (pulse + 1U == INPUT_CHATTER_REJECTION_THRESHOLD));
+    }
+    CHECK(state.rejected_pulse_count == INPUT_CHATTER_REJECTION_THRESHOLD);
+    CHECK(state.chatter_event_count == 1U);
+    CHECK(input_debounce_is_chattering(&state, 1000U));
+    CHECK(!input_debounce_is_chattering(
+        &state, state.chattering_until_uptime_ms));
+
+    input_debounce_init(&state, false);
+    for (unsigned pulse = 0U;
+         pulse < INPUT_CHATTER_REJECTION_THRESHOLD;
+         ++pulse) {
+        const uint64_t start = 100U + pulse * 1900U;
+        (void)input_debounce_sample(
+            &state, true, 10U, 50U, start);
+        result = input_debounce_sample(
+            &state, false, 10U, 50U, start + 10U);
+        CHECK(!result.chatter_started);
+    }
+    CHECK(state.chatter_event_count == 0U);
+
+    input_debounce_init(&state, false);
+    for (unsigned pulse = 0U; pulse < 3U; ++pulse) {
+        const uint64_t start = 100U + pulse * 100U;
+        (void)input_debounce_sample(
+            &state, true, 10U, 50U, start);
+        (void)input_debounce_sample(
+            &state, false, 10U, 50U, start + 10U);
+    }
+    for (uint64_t now = 500U; now <= 540U; now += 10U) {
+        result = input_debounce_sample(
+            &state, true, 10U, 50U, now);
+    }
+    CHECK(result.accepted_transition);
+    (void)input_debounce_sample(&state, false, 10U, 50U, 600U);
+    result = input_debounce_sample(&state, true, 10U, 50U, 610U);
+    CHECK(result.rejected_pulse);
+    CHECK(!result.chatter_started);
+    CHECK(state.rejection_window_count == 1U);
+
+    input_debounce_init(&state, false);
+    result = input_debounce_sample(&state, true, 10U, 0U, 10U);
+    CHECK(result.accepted_transition);
+    CHECK(state.stable);
+    state.raw_edge_count = UINT32_MAX;
+    result = input_debounce_sample(&state, false, 10U, 0U, 20U);
+    CHECK(result.accepted_transition);
+    CHECK(state.raw_edge_count == UINT32_MAX);
+    CHECK(!input_debounce_is_chattering(NULL, 0U));
+    input_debounce_init(NULL, false);
+    result = input_debounce_sample(NULL, false, 10U, 50U, 0U);
+    CHECK(!result.accepted_transition);
+}
+
 static firmware_config_t valid_firmware_config(void)
 {
     firmware_config_t config = {
@@ -2417,6 +2518,7 @@ int main(void)
     test_ota_rollback_health_gate();
     test_diagnostics_time_rollover();
     test_cov_retry_payload_cache();
+    test_input_debounce_diagnostics();
     test_input_line_classifier();
     test_config_model();
     test_network_config_model();
