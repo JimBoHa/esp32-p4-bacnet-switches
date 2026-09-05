@@ -80,6 +80,7 @@ typedef struct {
     uint32_t ipv4_address;
     uint32_t ipv4_netmask;
     uint32_t ipv4_gateway;
+    uint32_t ipv4_dns[3];
     uint32_t dhcp_status;
 } diagnostics_network_snapshot_t;
 

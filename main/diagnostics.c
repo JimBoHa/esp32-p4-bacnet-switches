@@ -450,6 +450,9 @@ void diagnostics_ethernet_link_changed(bool link_up)
     } else {
         network_state.link_down_count++;
         network_state.ipv4_address = 0U;
+        network_state.ipv4_netmask = 0U;
+        network_state.ipv4_gateway = 0U;
+        memset(network_state.ipv4_dns, 0, sizeof(network_state.ipv4_dns));
         diagnostics_event_type_t event =
             DIAGNOSTICS_EVENT_ETHERNET_LINK_LOST;
         xSemaphoreGive(state_mutex);
@@ -475,6 +478,19 @@ void diagnostics_ip_acquired(
     network_state.ipv4_address = ip_info->ip.addr;
     network_state.ipv4_netmask = ip_info->netmask.addr;
     network_state.ipv4_gateway = ip_info->gw.addr;
+    for (size_t index = 0U;
+         index < sizeof(network_state.ipv4_dns) /
+             sizeof(network_state.ipv4_dns[0]);
+         ++index) {
+        esp_netif_dns_info_t dns = {0};
+        if (esp_netif_get_dns_info(
+                netif, (esp_netif_dns_type_t)index, &dns) == ESP_OK &&
+            dns.ip.type == ESP_IPADDR_TYPE_V4) {
+            network_state.ipv4_dns[index] = dns.ip.u_addr.ip4.addr;
+        } else {
+            network_state.ipv4_dns[index] = 0U;
+        }
+    }
     network_state.ip_acquisition_count++;
     network_state.ip_acquired_uptime_ms = uptime_ms();
     esp_netif_dhcp_status_t status = ESP_NETIF_DHCP_INIT;
@@ -489,6 +505,9 @@ void diagnostics_ip_lost(void)
     if (state_mutex != NULL &&
         xSemaphoreTake(state_mutex, portMAX_DELAY) == pdTRUE) {
         network_state.ipv4_address = 0U;
+        network_state.ipv4_netmask = 0U;
+        network_state.ipv4_gateway = 0U;
+        memset(network_state.ipv4_dns, 0, sizeof(network_state.ipv4_dns));
         xSemaphoreGive(state_mutex);
     }
     diagnostics_record_event(DIAGNOSTICS_EVENT_IP_LOST, 0);

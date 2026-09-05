@@ -12,6 +12,7 @@ enum {
     BACNET_OBJECT_ANALOG_VALUE = 2,
     BACNET_OBJECT_BINARY_INPUT = 3,
     BACNET_OBJECT_DEVICE = 8,
+    BACNET_OBJECT_NETWORK_PORT = 56,
     BACNET_SERVICE_CONFIRMED_COV_NOTIFICATION = 1,
     BACNET_SERVICE_SUBSCRIBE_COV = 5,
     BACNET_SERVICE_I_AM = 0,
@@ -43,14 +44,28 @@ enum {
     PROP_APDU_SEGMENT_TIMEOUT = 10,
     PROP_APDU_TIMEOUT = 11,
     PROP_APPLICATION_SOFTWARE_VERSION = 12,
+    PROP_APDU_LENGTH = 399,
+    PROP_BACNET_IP_MODE = 408,
+    PROP_BACNET_IP_UDP_PORT = 412,
+    PROP_CHANGES_PENDING = 416,
     PROP_DESCRIPTION = 28,
     PROP_DEVICE_ADDRESS_BINDING = 30,
     PROP_EVENT_STATE = 36,
     PROP_FIRMWARE_REVISION = 44,
     PROP_INACTIVE_TEXT = 46,
+    PROP_IP_ADDRESS = 400,
+    PROP_IP_DEFAULT_GATEWAY = 401,
+    PROP_IP_DHCP_ENABLE = 402,
+    PROP_IP_DNS_SERVER = 406,
+    PROP_IP_SUBNET_MASK = 411,
+    PROP_LINK_SPEED = 420,
     PROP_LOCATION = 58,
     PROP_MAX_APDU_LENGTH_ACCEPTED = 62,
     PROP_MODEL_NAME = 70,
+    PROP_MAC_ADDRESS = 423,
+    PROP_NETWORK_NUMBER = 425,
+    PROP_NETWORK_NUMBER_QUALITY = 426,
+    PROP_NETWORK_TYPE = 427,
     PROP_NUMBER_OF_APDU_RETRIES = 73,
     PROP_OBJECT_IDENTIFIER = 75,
     PROP_OBJECT_LIST = 76,
@@ -70,6 +85,7 @@ enum {
     PROP_VENDOR_IDENTIFIER = 120,
     PROP_VENDOR_NAME = 121,
     PROP_PROTOCOL_REVISION = 139,
+    PROP_PROTOCOL_LEVEL = 482,
     PROP_DATABASE_REVISION = 155,
     PROP_PROPERTY_LIST = 371,
 };
@@ -130,6 +146,32 @@ static const uint16_t ANALOG_VALUE_PROPERTIES[] = {
     PROP_PROPERTY_LIST,
 };
 
+static const uint16_t NETWORK_PORT_PROPERTIES[] = {
+    PROP_OBJECT_IDENTIFIER,
+    PROP_OBJECT_NAME,
+    PROP_OBJECT_TYPE,
+    PROP_STATUS_FLAGS,
+    PROP_RELIABILITY,
+    PROP_OUT_OF_SERVICE,
+    PROP_NETWORK_TYPE,
+    PROP_PROTOCOL_LEVEL,
+    PROP_CHANGES_PENDING,
+    PROP_APDU_LENGTH,
+    PROP_NETWORK_NUMBER,
+    PROP_NETWORK_NUMBER_QUALITY,
+    PROP_LINK_SPEED,
+    PROP_DESCRIPTION,
+    PROP_MAC_ADDRESS,
+    PROP_BACNET_IP_MODE,
+    PROP_IP_ADDRESS,
+    PROP_BACNET_IP_UDP_PORT,
+    PROP_IP_SUBNET_MASK,
+    PROP_IP_DEFAULT_GATEWAY,
+    PROP_IP_DNS_SERVER,
+    PROP_IP_DHCP_ENABLE,
+    PROP_PROPERTY_LIST,
+};
+
 #define BACNET_RPM_MAX_OBJECTS 8U
 #define BACNET_RPM_MAX_REFERENCES 48U
 #define BACNET_WHO_HAS_NAME_CAPACITY 96U
@@ -138,6 +180,7 @@ typedef enum {
     PROPERTY_LIST_DEVICE,
     PROPERTY_LIST_BINARY_INPUT,
     PROPERTY_LIST_ANALOG_VALUE,
+    PROPERTY_LIST_NETWORK_PORT,
 } property_list_kind_t;
 
 typedef struct {
@@ -304,6 +347,13 @@ static void encode_application_enumerated(writer_t *writer, uint32_t value)
 static void encode_application_boolean(writer_t *writer, bool value)
 {
     write_u8(writer, (uint8_t)(0x10U | (value ? 1U : 0U)));
+}
+
+static void encode_application_octet_string(
+    writer_t *writer, const uint8_t *value, size_t length)
+{
+    encode_tag(writer, 6, false, length);
+    write_bytes(writer, value, length);
 }
 
 static void encode_application_real(writer_t *writer, float value)
@@ -972,13 +1022,19 @@ static property_result_t encode_array_item(
                 writer,
                 BACNET_OBJECT_BINARY_INPUT,
                 state->binary_input_instances[input_index]);
-        } else {
+        } else if (index <= 1U + BACNET_BINARY_INPUT_COUNT +
+                BACNET_ANALOG_VALUE_COUNT) {
             const size_t value_index =
                 index - 2U - BACNET_BINARY_INPUT_COUNT;
             encode_application_object_id(
                 writer,
                 BACNET_OBJECT_ANALOG_VALUE,
                 state->analog_value_instances[value_index]);
+        } else {
+            encode_application_object_id(
+                writer,
+                BACNET_OBJECT_NETWORK_PORT,
+                state->network_port_instance);
         }
         return property_ok();
     }
@@ -988,6 +1044,8 @@ static property_result_t encode_array_item(
         properties = BINARY_INPUT_PROPERTIES;
     } else if (property_list_kind == PROPERTY_LIST_ANALOG_VALUE) {
         properties = ANALOG_VALUE_PROPERTIES;
+    } else if (property_list_kind == PROPERTY_LIST_NETWORK_PORT) {
+        properties = NETWORK_PORT_PROPERTIES;
     }
     encode_application_enumerated(writer, properties[index - 1U]);
     return property_ok();
@@ -1001,7 +1059,7 @@ static property_result_t encode_array(
     property_list_kind_t property_list_kind)
 {
     uint32_t count = 1U + BACNET_BINARY_INPUT_COUNT +
-        BACNET_ANALOG_VALUE_COUNT;
+        BACNET_ANALOG_VALUE_COUNT + BACNET_NETWORK_PORT_COUNT;
     if (!object_list) {
         if (property_list_kind == PROPERTY_LIST_BINARY_INPUT) {
             count = (uint32_t)(
@@ -1011,6 +1069,10 @@ static property_result_t encode_array(
             count = (uint32_t)(
                 sizeof(ANALOG_VALUE_PROPERTIES) /
                 sizeof(ANALOG_VALUE_PROPERTIES[0]));
+        } else if (property_list_kind == PROPERTY_LIST_NETWORK_PORT) {
+            count = (uint32_t)(
+                sizeof(NETWORK_PORT_PROPERTIES) /
+                sizeof(NETWORK_PORT_PROPERTIES[0]));
         } else {
             count = (uint32_t)(
                 sizeof(DEVICE_PROPERTIES) / sizeof(DEVICE_PROPERTIES[0]));
@@ -1089,7 +1151,7 @@ static property_result_t encode_device_property(
         encode_application_unsigned(writer, 1);
         break;
     case PROP_PROTOCOL_REVISION:
-        encode_application_unsigned(writer, 14);
+        encode_application_unsigned(writer, 17);
         break;
     case PROP_PROTOCOL_SERVICES_SUPPORTED: {
         const uint8_t set_bits[] = {1, 5, 12, 14, 26, 27, 28, 33, 34};
@@ -1102,9 +1164,10 @@ static property_result_t encode_device_property(
             BACNET_OBJECT_ANALOG_VALUE,
             BACNET_OBJECT_BINARY_INPUT,
             BACNET_OBJECT_DEVICE,
+            BACNET_OBJECT_NETWORK_PORT,
         };
         encode_application_bit_string(
-            writer, 9, set_bits, sizeof(set_bits));
+            writer, 57, set_bits, sizeof(set_bits));
         break;
     }
     case PROP_OBJECT_LIST:
@@ -1285,6 +1348,153 @@ static property_result_t encode_analog_value_property(
     return property_ok();
 }
 
+static property_result_t encode_network_port_dns(
+    writer_t *writer,
+    const bacnet_device_state_t *state,
+    const read_property_request_t *request)
+{
+    const uint32_t count = (uint32_t)(
+        sizeof(state->network_port_dns) / sizeof(state->network_port_dns[0]));
+    if (!request->has_array_index) {
+        for (uint32_t index = 0U; index < count; ++index) {
+            encode_application_octet_string(
+                writer,
+                state->network_port_dns[index],
+                sizeof(state->network_port_dns[index]));
+        }
+        return property_ok();
+    }
+    if (request->array_index >= 1U && request->array_index <= count) {
+        encode_application_octet_string(
+            writer,
+            state->network_port_dns[request->array_index - 1U],
+            sizeof(state->network_port_dns[0]));
+        return property_ok();
+    }
+    if (request->array_index == 0U) {
+        encode_application_unsigned(writer, count);
+        return property_ok();
+    }
+    return property_error(
+        BACNET_ERROR_CLASS_PROPERTY, BACNET_ERROR_INVALID_ARRAY_INDEX);
+}
+
+static property_result_t encode_network_port_property(
+    writer_t *writer,
+    const bacnet_device_state_t *state,
+    const read_property_request_t *request)
+{
+    const uint32_t property = request->property_identifier;
+    const bool is_array = property == PROP_IP_DNS_SERVER ||
+        property == PROP_PROPERTY_LIST;
+
+    if (request->has_array_index && !is_array) {
+        return property_error(
+            BACNET_ERROR_CLASS_PROPERTY,
+            BACNET_ERROR_PROPERTY_IS_NOT_AN_ARRAY);
+    }
+
+    switch (property) {
+    case PROP_OBJECT_IDENTIFIER:
+        encode_application_object_id(
+            writer,
+            BACNET_OBJECT_NETWORK_PORT,
+            state->network_port_instance);
+        break;
+    case PROP_OBJECT_NAME:
+        encode_application_character_string(writer, state->network_port_name);
+        break;
+    case PROP_OBJECT_TYPE:
+        encode_application_enumerated(writer, BACNET_OBJECT_NETWORK_PORT);
+        break;
+    case PROP_STATUS_FLAGS: {
+        uint8_t set_bits[2];
+        size_t count = 0U;
+        if (state->network_port_reliability != 0U) {
+            set_bits[count++] = 1U; /* fault */
+        }
+        if (state->network_port_out_of_service) {
+            set_bits[count++] = 3U; /* out-of-service */
+        }
+        encode_application_bit_string(writer, 4U, set_bits, count);
+        break;
+    }
+    case PROP_RELIABILITY:
+        encode_application_enumerated(writer, state->network_port_reliability);
+        break;
+    case PROP_OUT_OF_SERVICE:
+        encode_application_boolean(writer, state->network_port_out_of_service);
+        break;
+    case PROP_NETWORK_TYPE:
+        encode_application_enumerated(writer, 5U); /* BACnet/IPv4 */
+        break;
+    case PROP_PROTOCOL_LEVEL:
+        encode_application_enumerated(writer, 2U); /* BACnet application */
+        break;
+    case PROP_CHANGES_PENDING:
+        encode_application_boolean(writer, state->network_port_changes_pending);
+        break;
+    case PROP_APDU_LENGTH:
+        encode_application_unsigned(writer, BACNET_MAX_APDU);
+        break;
+    case PROP_NETWORK_NUMBER:
+        encode_application_unsigned(writer, 0U); /* unknown/local network */
+        break;
+    case PROP_NETWORK_NUMBER_QUALITY:
+        encode_application_enumerated(writer, 0U); /* unknown */
+        break;
+    case PROP_LINK_SPEED:
+        encode_application_real(writer, state->network_port_link_speed_bps);
+        break;
+    case PROP_DESCRIPTION:
+        encode_application_character_string(
+            writer, state->network_port_description);
+        break;
+    case PROP_MAC_ADDRESS: {
+        uint8_t address[6];
+        memcpy(address, state->network_port_ipv4, 4U);
+        address[4] = (uint8_t)(state->network_port_udp_port >> 8);
+        address[5] = (uint8_t)state->network_port_udp_port;
+        encode_application_octet_string(writer, address, sizeof(address));
+        break;
+    }
+    case PROP_BACNET_IP_MODE:
+        encode_application_enumerated(writer, 0U); /* normal */
+        break;
+    case PROP_IP_ADDRESS:
+        encode_application_octet_string(
+            writer, state->network_port_ipv4, sizeof(state->network_port_ipv4));
+        break;
+    case PROP_BACNET_IP_UDP_PORT:
+        encode_application_unsigned(writer, state->network_port_udp_port);
+        break;
+    case PROP_IP_SUBNET_MASK:
+        encode_application_octet_string(
+            writer,
+            state->network_port_netmask,
+            sizeof(state->network_port_netmask));
+        break;
+    case PROP_IP_DEFAULT_GATEWAY:
+        encode_application_octet_string(
+            writer,
+            state->network_port_gateway,
+            sizeof(state->network_port_gateway));
+        break;
+    case PROP_IP_DNS_SERVER:
+        return encode_network_port_dns(writer, state, request);
+    case PROP_IP_DHCP_ENABLE:
+        encode_application_boolean(writer, state->network_port_dhcp_enabled);
+        break;
+    case PROP_PROPERTY_LIST:
+        return encode_array(
+            writer, state, request, false, PROPERTY_LIST_NETWORK_PORT);
+    default:
+        return property_error(
+            BACNET_ERROR_CLASS_PROPERTY, BACNET_ERROR_UNKNOWN_PROPERTY);
+    }
+    return property_ok();
+}
+
 static bool find_binary_input(
     const bacnet_device_state_t *state,
     uint32_t instance,
@@ -1357,6 +1567,16 @@ static bool find_who_has_object(
             return true;
         }
     }
+    if ((request->by_name &&
+            strcmp(request->object_name, state->network_port_name) == 0) ||
+        (!request->by_name &&
+         request->object_type == BACNET_OBJECT_NETWORK_PORT &&
+         request->object_instance == state->network_port_instance)) {
+        *object_type = BACNET_OBJECT_NETWORK_PORT;
+        *object_instance = state->network_port_instance;
+        *object_name = state->network_port_name;
+        return true;
+    }
     return false;
 }
 
@@ -1383,6 +1603,9 @@ static property_result_t encode_object_property(
             return encode_analog_value_property(
                 writer, state, request, value_index);
         }
+    } else if (request->object_type == BACNET_OBJECT_NETWORK_PORT &&
+        request->object_instance == state->network_port_instance) {
+        return encode_network_port_property(writer, state, request);
     }
     return property_error(
         BACNET_ERROR_CLASS_OBJECT, BACNET_ERROR_UNKNOWN_OBJECT);
@@ -1537,6 +1760,35 @@ static const uint16_t ANALOG_VALUE_OPTIONAL_PROPERTIES[] = {
     PROP_PROPERTY_LIST,
 };
 
+static const uint16_t NETWORK_PORT_REQUIRED_PROPERTIES[] = {
+    PROP_OBJECT_IDENTIFIER,
+    PROP_OBJECT_NAME,
+    PROP_OBJECT_TYPE,
+    PROP_STATUS_FLAGS,
+    PROP_RELIABILITY,
+    PROP_OUT_OF_SERVICE,
+    PROP_NETWORK_TYPE,
+    PROP_PROTOCOL_LEVEL,
+    PROP_CHANGES_PENDING,
+    PROP_APDU_LENGTH,
+    PROP_NETWORK_NUMBER,
+    PROP_NETWORK_NUMBER_QUALITY,
+    PROP_LINK_SPEED,
+};
+
+static const uint16_t NETWORK_PORT_OPTIONAL_PROPERTIES[] = {
+    PROP_DESCRIPTION,
+    PROP_MAC_ADDRESS,
+    PROP_BACNET_IP_MODE,
+    PROP_IP_ADDRESS,
+    PROP_BACNET_IP_UDP_PORT,
+    PROP_IP_SUBNET_MASK,
+    PROP_IP_DEFAULT_GATEWAY,
+    PROP_IP_DNS_SERVER,
+    PROP_IP_DHCP_ENABLE,
+    PROP_PROPERTY_LIST,
+};
+
 static const uint16_t *selected_property_list(
     uint32_t object_type,
     uint32_t selector,
@@ -1578,6 +1830,16 @@ static const uint16_t *selected_property_list(
         optional = ANALOG_VALUE_OPTIONAL_PROPERTIES;
         optional_count = sizeof(ANALOG_VALUE_OPTIONAL_PROPERTIES) /
             sizeof(ANALOG_VALUE_OPTIONAL_PROPERTIES[0]);
+    } else if (object_type == BACNET_OBJECT_NETWORK_PORT) {
+        all = NETWORK_PORT_PROPERTIES;
+        all_count =
+            sizeof(NETWORK_PORT_PROPERTIES) / sizeof(NETWORK_PORT_PROPERTIES[0]);
+        required = NETWORK_PORT_REQUIRED_PROPERTIES;
+        required_count = sizeof(NETWORK_PORT_REQUIRED_PROPERTIES) /
+            sizeof(NETWORK_PORT_REQUIRED_PROPERTIES[0]);
+        optional = NETWORK_PORT_OPTIONAL_PROPERTIES;
+        optional_count = sizeof(NETWORK_PORT_OPTIONAL_PROPERTIES) /
+            sizeof(NETWORK_PORT_OPTIONAL_PROPERTIES[0]);
     }
 
     if (selector == BACNET_PROPERTY_ALL) {
