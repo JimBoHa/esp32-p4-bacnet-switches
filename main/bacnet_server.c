@@ -765,6 +765,9 @@ static void bacnet_server_task(void *argument)
             case BACNET_PACKET_WHO_IS:
                 diagnostics_bacnet_increment(DIAGNOSTICS_BACNET_WHO_IS);
                 break;
+            case BACNET_PACKET_WHO_HAS:
+                diagnostics_bacnet_increment(DIAGNOSTICS_BACNET_WHO_HAS);
+                break;
             case BACNET_PACKET_READ_PROPERTY:
                 diagnostics_bacnet_increment(
                     DIAGNOSTICS_BACNET_READ_PROPERTY);
@@ -802,7 +805,9 @@ static void bacnet_server_task(void *argument)
             socklen_t destination_length = source_length;
             if (packet.broadcast_response) {
                 if (!broadcast_destination(netif, &destination)) {
-                    ESP_LOGW(TAG, "cannot send I-Am without IPv4 configuration");
+                    ESP_LOGW(
+                        TAG,
+                        "cannot send BACnet broadcast response without IPv4 configuration");
                     continue;
                 }
                 destination_length = sizeof(destination);
