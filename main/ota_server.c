@@ -43,7 +43,7 @@
 #define OTA_ROLLBACK_VALIDATION_TIMEOUT_MS 60000U
 #define OTA_ROLLBACK_HEALTHY_SAMPLES 5U
 #define OTA_PROJECT_HEADER "X-Firmware-Project"
-#define OTA_STATUS_RESPONSE_BYTES 12288U
+#define OTA_STATUS_RESPONSE_BYTES 16384U
 #define OTA_SHA256_BYTES 32U
 #define OTA_SHA256_HEX_BYTES (OTA_SHA256_BYTES * 2U)
 #define CONFIG_JSON_MAX_BYTES 4096U
@@ -1116,9 +1116,15 @@ static esp_err_t status_get_handler(httpd_req_t *request)
 
     const esp_app_desc_t *app = esp_app_get_description();
     const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *boot = esp_ota_get_boot_partition();
+    const esp_partition_t *next_update = esp_ota_get_next_update_partition(NULL);
     esp_ota_img_states_t image_state = ESP_OTA_IMG_UNDEFINED;
     if (running != NULL) {
         (void)esp_ota_get_state_partition(running, &image_state);
+    }
+    char elf_sha256[OTA_SHA256_HEX_BYTES + 1U] = {0};
+    if (app != NULL) {
+        sha256_to_hex(app->app_elf_sha256, elf_sha256);
     }
     diagnostics_snapshot_t snapshot;
     if (!diagnostics_snapshot_get(&snapshot)) {
@@ -1127,6 +1133,12 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             HTTPD_500_INTERNAL_SERVER_ERROR,
             "diagnostics snapshot failed");
     }
+    const uint64_t temperature_sample_age_ms =
+        snapshot.temperature_metrics.has_sample
+        ? diagnostics_elapsed_milliseconds(
+              snapshot.uptime_ms,
+              snapshot.temperature_last_sample_uptime_ms)
+        : 0U;
     firmware_config_t active_config;
     firmware_config_t saved_config;
     network_config_t active_network_config;
@@ -1182,7 +1194,47 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             response,
             OTA_STATUS_RESPONSE_BYTES,
             &response_length,
-            ",\"free_heap_bytes\":%u,\"minimum_free_heap_bytes\":%u,"
+            ",\"temperature\":{\"valid\":%s,\"current_c\":",
+            json_bool(snapshot.chip_temperature_valid)) ||
+        !response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            snapshot.chip_temperature_valid ? "%.2f" : "null",
+            (double)snapshot.chip_temperature_c) ||
+        !response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            ",\"minimum_c\":") ||
+        !response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            snapshot.temperature_metrics.has_sample ? "%.2f" : "null",
+            (double)snapshot.temperature_metrics.minimum_c) ||
+        !response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            ",\"maximum_c\":") ||
+        !response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            snapshot.temperature_metrics.has_sample ? "%.2f" : "null",
+            (double)snapshot.temperature_metrics.maximum_c) ||
+        !response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            ",\"sample_count_since_boot\":%u,"
+            "\"error_count_since_boot\":%u,"
+            "\"sample_interval_ms\":%u,"
+            "\"last_sample_uptime_ms\":%" PRIu64 ","
+            "\"sample_age_ms\":%" PRIu64 ","
+            "\"last_result\":{\"code\":%d,\"name\":\"%s\"}},"
+            "\"free_heap_bytes\":%u,\"minimum_free_heap_bytes\":%u,"
             "\"reset_reason\":{\"code\":%u,\"name\":\"%s\"},"
             "\"boot_count\":%u,\"last_ota_result\":\"%s\","
             "\"task_watchdog\":{"
@@ -1190,6 +1242,13 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             "\"last_heartbeat_ms\":%" PRIu64 "},"
             "\"bacnet\":{\"subscribed\":%s,\"healthy\":%s,"
             "\"last_heartbeat_ms\":%" PRIu64 "}}},",
+            (unsigned)snapshot.temperature_metrics.sample_count,
+            (unsigned)snapshot.temperature_metrics.error_count,
+            (unsigned)DIAGNOSTICS_TEMPERATURE_SAMPLE_INTERVAL_MS,
+            snapshot.temperature_last_sample_uptime_ms,
+            temperature_sample_age_ms,
+            (int)snapshot.temperature_metrics.last_result,
+            esp_err_to_name(snapshot.temperature_metrics.last_result),
             (unsigned)snapshot.free_heap_bytes,
             (unsigned)snapshot.minimum_free_heap_bytes,
             (unsigned)snapshot.reset_reason,
@@ -1204,6 +1263,47 @@ static esp_err_t status_get_handler(httpd_req_t *request)
                 DIAGNOSTICS_TASK_BACNET]),
             json_bool(snapshot.task_healthy[DIAGNOSTICS_TASK_BACNET]),
             snapshot.task_last_heartbeat_ms[DIAGNOSTICS_TASK_BACNET])) {
+        goto encoding_failed;
+    }
+    if (!response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            "\"firmware\":{\"build_date\":\"%.15s\","
+            "\"build_time\":\"%.15s\",\"secure_version\":%u,"
+            "\"elf_sha256\":\"%s\",\"rollback_enabled\":%s,"
+            "\"running_partition\":{\"label\":\"%.15s\","
+            "\"address\":%u,\"size_bytes\":%u,\"state\":\"%s\","
+            "\"image_sha256\":\"%s\"},"
+            "\"boot_partition\":{\"label\":\"%.15s\","
+            "\"address\":%u,\"size_bytes\":%u,"
+            "\"matches_running\":%s},"
+            "\"next_update_partition\":{\"available\":%s,"
+            "\"label\":\"%.15s\",\"address\":%u,"
+            "\"size_bytes\":%u}},",
+            app != NULL ? app->date : "unknown",
+            app != NULL ? app->time : "unknown",
+            app != NULL ? (unsigned)app->secure_version : 0U,
+            elf_sha256,
+#if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
+            "true",
+#else
+            "false",
+#endif
+            running != NULL ? running->label : "unknown",
+            running != NULL ? (unsigned)running->address : 0U,
+            running != NULL ? (unsigned)running->size : 0U,
+            ota_state_name(image_state),
+            running_image_sha256,
+            boot != NULL ? boot->label : "unknown",
+            boot != NULL ? (unsigned)boot->address : 0U,
+            boot != NULL ? (unsigned)boot->size : 0U,
+            json_bool(running != NULL && boot != NULL &&
+                running->address == boot->address),
+            json_bool(next_update != NULL),
+            next_update != NULL ? next_update->label : "unknown",
+            next_update != NULL ? (unsigned)next_update->address : 0U,
+            next_update != NULL ? (unsigned)next_update->size : 0U)) {
         goto encoding_failed;
     }
     if (!response_append(
@@ -1487,7 +1587,48 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             response,
             OTA_STATUS_RESPONSE_BYTES,
             &response_length,
-            "],\"fault_log\":[")) {
+            "],\"fault_log_health\":{\"capacity\":%u,\"count\":%u,"
+            "\"total_event_count\":%u,\"overwritten_event_count\":%u,"
+            "\"persistence_ready\":%s,"
+            "\"write_failure_count_since_boot\":%u,"
+            "\"last_write_error\":{\"code\":%d,\"name\":\"%s\"},"
+            "\"oldest_sequence\":",
+            (unsigned)DIAGNOSTICS_FAULT_LOG_CAPACITY,
+            (unsigned)snapshot.fault_log_count,
+            (unsigned)snapshot.fault_log_metrics.total_event_count,
+            (unsigned)snapshot.fault_log_metrics.overwritten_event_count,
+            json_bool(snapshot.persistent_storage_ready),
+            (unsigned)snapshot.persistent_write_failure_count,
+            (int)snapshot.persistent_last_write_error,
+            esp_err_to_name(snapshot.persistent_last_write_error))) {
+        goto encoding_failed;
+    }
+    if (!response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            snapshot.fault_log_count > 0U ? "%u" : "null",
+            snapshot.fault_log_count > 0U
+                ? (unsigned)snapshot.fault_log[0].sequence
+                : 0U) ||
+        !response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            ",\"newest_sequence\":") ||
+        !response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            snapshot.fault_log_count > 0U ? "%u" : "null",
+            snapshot.fault_log_count > 0U
+                ? (unsigned)snapshot.fault_log[snapshot.fault_log_count - 1U].sequence
+                : 0U) ||
+        !response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            "},\"fault_log\":[")) {
         goto encoding_failed;
     }
     for (size_t index = 0; index < snapshot.fault_log_count; ++index) {
