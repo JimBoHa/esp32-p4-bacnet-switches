@@ -11,6 +11,8 @@ add_executable(
     ../main/config_model.c
     ../main/cov_retry_cache.c
     ../main/diagnostics_time.c
+    ../main/diagnostics_metrics.c
+    ../main/hardware_profile.c
     ../main/input_debounce.c
     ../main/input_line_classifier.c
     ../main/network_config_model.c
@@ -40,4 +42,12 @@ add_test(NAME bacnet_codec_tests COMMAND bacnet_codec_tests)
 add_test(
     NAME ota_tool_tests
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_ota_tools.py
+)
+add_test(
+    NAME package_release_tests
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_package_release.py
+)
+add_test(
+    NAME security_audit_tests
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/test_security_audit.py
 )

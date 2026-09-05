@@ -33,6 +33,18 @@ def healthy_values() -> tuple[dict[str, object], dict[str, object], dict[str, ob
             "free_heap_bytes": 33000000,
             "minimum_free_heap_bytes": 32900000,
             "chip_temperature_c": 35.0,
+            "temperature": {
+                "valid": True,
+                "current_c": 35.0,
+                "minimum_c": 34.0,
+                "maximum_c": 36.0,
+                "sample_count_since_boot": 20,
+                "error_count_since_boot": 0,
+                "sample_interval_ms": 1000,
+                "last_sample_uptime_ms": 99500,
+                "sample_age_ms": 500,
+                "last_result": {"code": 0, "name": "ESP_OK"},
+            },
             "task_watchdog": {
                 "bacnet": {"healthy": True},
                 "switch_inputs": {"healthy": True},
@@ -62,6 +74,44 @@ def healthy_values() -> tuple[dict[str, object], dict[str, object], dict[str, ob
             "restart_required": False,
             "trial_active": False,
         },
+        "discovery": {
+            "mdns_ready": True,
+            "hostname": "esp32-p4-bacnet",
+            "local_fqdn": "esp32-p4-bacnet.local",
+            "hostname_conflict_count": 0,
+            "last_error": {"code": 0, "name": "ESP_OK"},
+            "services": {
+                "https": {"advertised": True, "port": 443},
+                "bacnet": {"advertised": True, "port": 47808},
+            },
+        },
+        "hardware": json.loads(json.dumps(soak_monitor.EXPECTED_HARDWARE_PROFILE)),
+        "firmware": {
+            "build_date": "Sep  5 2026",
+            "build_time": "04:00:00",
+            "secure_version": 0,
+            "elf_sha256": "e" * 64,
+            "rollback_enabled": True,
+            "running_partition": {
+                "label": "ota_0",
+                "address": 131072,
+                "size_bytes": 4194304,
+                "state": "valid",
+                "image_sha256": "d" * 64,
+            },
+            "boot_partition": {
+                "label": "ota_0",
+                "address": 131072,
+                "size_bytes": 4194304,
+                "matches_running": True,
+            },
+            "next_update_partition": {
+                "available": True,
+                "label": "ota_1",
+                "address": 4325376,
+                "size_bytes": 4194304,
+            },
+        },
         "bacnet": {
             "rx": 100,
             "responses": 95,
@@ -84,6 +134,17 @@ def healthy_values() -> tuple[dict[str, object], dict[str, object], dict[str, ob
             {"gpio": 21, "fault": False, "signal": {"chattering": False}},
             {"gpio": 22, "fault": False, "signal": {"chattering": False}},
         ],
+        "fault_log_health": {
+            "capacity": 16,
+            "count": 1,
+            "total_event_count": 1,
+            "overwritten_event_count": 0,
+            "persistence_ready": True,
+            "write_failure_count_since_boot": 0,
+            "last_write_error": {"code": 0, "name": "ESP_OK"},
+            "oldest_sequence": 1,
+            "newest_sequence": 1,
+        },
         "fault_log": [{"sequence": 1, "type": "boot"}],
     }
     config = {
@@ -129,6 +190,13 @@ class SoakMonitorTests(unittest.TestCase):
         baseline = soak_monitor.Baseline.from_values(status, config, network_config)
         next_status = json.loads(json.dumps(status))
         next_status["system"]["uptime_ms"] = 160000
+        next_status["system"]["temperature"].update(
+            {
+                "last_sample_uptime_ms": 159500,
+                "sample_age_ms": 500,
+                "sample_count_since_boot": 21,
+            }
+        )
         next_status["bacnet"]["rx"] = 101
         bacnet = {
             "device_instance": 599152,
@@ -185,6 +253,75 @@ class SoakMonitorTests(unittest.TestCase):
             maximum_temperature_c=85.0,
         )
         self.assertIn("gpio-signal-missing:22", alerts)
+
+    def test_mdns_discovery_alerts(self) -> None:
+        status, config, network_config = healthy_values()
+        baseline = soak_monitor.Baseline.from_values(status, config, network_config)
+        missing = json.loads(json.dumps(status))
+        del missing["discovery"]
+        alerts = soak_monitor.evaluate_sample(
+            baseline,
+            None,
+            missing,
+            config,
+            network_config,
+            {
+                "device_instance": 599152,
+                "vendor_identifier": 999,
+                "max_apdu": 1476,
+                "segmentation": 3,
+            },
+            minimum_heap_bytes=1024,
+            maximum_temperature_c=85.0,
+        )
+        self.assertIn("mdns-discovery-missing", alerts)
+
+    def test_hardware_profile_alert(self) -> None:
+        status, config, network_config = healthy_values()
+        baseline = soak_monitor.Baseline.from_values(status, config, network_config)
+        changed = json.loads(json.dumps(status))
+        changed["hardware"]["inputs"][2]["header_position"] = None
+        alerts = soak_monitor.evaluate_sample(
+            baseline,
+            status,
+            changed,
+            config,
+            network_config,
+            {
+                "device_instance": 599152,
+                "vendor_identifier": 999,
+                "max_apdu": 1476,
+                "segmentation": 3,
+            },
+            minimum_heap_bytes=1024,
+            maximum_temperature_c=85.0,
+        )
+        self.assertIn("hardware-profile-unhealthy", alerts)
+
+    def test_runtime_and_firmware_diagnostic_alerts(self) -> None:
+        status, config, network_config = healthy_values()
+        baseline = soak_monitor.Baseline.from_values(status, config, network_config)
+        changed = json.loads(json.dumps(status))
+        changed["firmware"]["boot_partition"]["matches_running"] = False
+        changed["system"]["temperature"]["error_count_since_boot"] = 1
+        alerts = soak_monitor.evaluate_sample(
+            baseline,
+            status,
+            changed,
+            config,
+            network_config,
+            {
+                "device_instance": 599152,
+                "vendor_identifier": 999,
+                "max_apdu": 1476,
+                "segmentation": 3,
+            },
+            minimum_heap_bytes=1024,
+            maximum_temperature_c=85.0,
+        )
+        self.assertIn("firmware-diagnostics-unhealthy", alerts)
+        self.assertIn("runtime-diagnostics-unhealthy", alerts)
+        self.assertIn("temperature-error-count-increased", alerts)
 
     def test_reboot_config_network_and_resource_changes_alert(self) -> None:
         status, config, network_config = healthy_values()

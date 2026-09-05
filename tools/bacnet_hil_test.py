@@ -33,6 +33,32 @@ ANALOG_VALUE_INSTANCES = (
 COV_CAPACITY = 8
 FIRMWARE_DATABASE_REVISION_OFFSET = 3
 MAX_HTTP_RESPONSE_BYTES = 1024 * 1024
+EXPECTED_HARDWARE_PROFILE = {
+    "board_model": "Waveshare ESP32-P4-POE-ETH",
+    "header": "P1",
+    "supply": {"label": "3V3", "position": 36, "nominal_volts": 3.3},
+    "input_circuit": {
+        "contact_type": "dry-contact",
+        "internal_pull": "down",
+        "input_only": True,
+        "closed_to_supply": True,
+        "closed_raw_level": True,
+        "open_raw_level": False,
+        "recommended_external_pull_down_ohms": 10000,
+    },
+    "inputs": [
+        {
+            "channel": channel,
+            "gpio": gpio,
+            "bacnet_binary_input_instance": gpio,
+            "header_position": position,
+            "configured_active_low": False,
+            "open_state": "inactive",
+            "closed_state": "active",
+        }
+        for channel, gpio, position in ((1, 20, 35), (2, 21, 34), (3, 22, 32))
+    ],
+}
 
 
 class HilError(RuntimeError):
@@ -137,6 +163,149 @@ def revision_matches(expected: str | None, reported: object) -> bool:
     )
 
 
+def hardware_profile_valid(value: object) -> bool:
+    """Require exact field wiring metadata for the tested board/profile."""
+    return value == EXPECTED_HARDWARE_PROFILE
+
+
+def firmware_diagnostics_valid(status: dict[str, Any]) -> bool:
+    firmware = status.get("firmware")
+    ota_policy = status.get("ota_policy")
+    if not isinstance(firmware, dict) or not isinstance(ota_policy, dict):
+        return False
+    running = firmware.get("running_partition")
+    boot = firmware.get("boot_partition")
+    update = firmware.get("next_update_partition")
+    if not all(isinstance(item, dict) for item in (running, boot, update)):
+        return False
+    assert isinstance(running, dict) and isinstance(boot, dict)
+    assert isinstance(update, dict)
+    elf_sha = firmware.get("elf_sha256")
+    return (
+        isinstance(firmware.get("build_date"), str)
+        and bool(firmware["build_date"])
+        and isinstance(firmware.get("build_time"), str)
+        and bool(firmware["build_time"])
+        and isinstance(firmware.get("secure_version"), int)
+        and firmware["secure_version"] >= 0
+        and isinstance(elf_sha, str)
+        and re.fullmatch(r"[0-9a-f]{64}", elf_sha) is not None
+        and firmware.get("rollback_enabled") is True
+        and running.get("label") == status.get("partition")
+        and running.get("state") == status.get("state")
+        and running.get("image_sha256") == status.get("image_sha256")
+        and isinstance(running.get("address"), int)
+        and running["address"] > 0
+        and isinstance(running.get("size_bytes"), int)
+        and running["size_bytes"] > 0
+        and boot.get("matches_running") is True
+        and boot.get("label") == running.get("label")
+        and boot.get("address") == running.get("address")
+        and boot.get("size_bytes") == running.get("size_bytes")
+        and update.get("available") is True
+        and isinstance(update.get("label"), str)
+        and update.get("label") != running.get("label")
+        and isinstance(update.get("address"), int)
+        and update["address"] > 0
+        and update.get("address") != running.get("address")
+        and update.get("size_bytes") == running.get("size_bytes")
+        and ota_policy.get("minimum_image_bytes") == 288
+        and ota_policy.get("maximum_image_bytes") == update.get("size_bytes")
+        and ota_policy.get("upload_deadline_seconds") == 300
+        and ota_policy.get("required_content_type")
+        == "application/octet-stream"
+        and ota_policy.get("minimum_secure_version")
+        == firmware.get("secure_version")
+    )
+
+
+def runtime_diagnostics_valid(status: dict[str, Any]) -> bool:
+    system = status.get("system")
+    fault_log = status.get("fault_log")
+    fault_health = status.get("fault_log_health")
+    if (
+        not isinstance(system, dict)
+        or not isinstance(fault_log, list)
+        or not isinstance(fault_health, dict)
+    ):
+        return False
+    temperature = system.get("temperature")
+    if not isinstance(temperature, dict):
+        return False
+    current = temperature.get("current_c")
+    minimum = temperature.get("minimum_c")
+    maximum = temperature.get("maximum_c")
+    last_result = temperature.get("last_result")
+    uptime = system.get("uptime_ms")
+    last_sample = temperature.get("last_sample_uptime_ms")
+    sample_age = temperature.get("sample_age_ms")
+    sequences = [
+        event.get("sequence")
+        for event in fault_log
+        if isinstance(event, dict)
+    ]
+    temperature_ok = (
+        temperature.get("valid") is True
+        and isinstance(current, (int, float))
+        and not isinstance(current, bool)
+        and current == system.get("chip_temperature_c")
+        and isinstance(minimum, (int, float))
+        and isinstance(maximum, (int, float))
+        and minimum <= current <= maximum
+        and isinstance(temperature.get("sample_count_since_boot"), int)
+        and temperature["sample_count_since_boot"] > 0
+        and temperature.get("error_count_since_boot") == 0
+        and temperature.get("sample_interval_ms") == 1000
+        and isinstance(uptime, int)
+        and isinstance(last_sample, int)
+        and isinstance(sample_age, int)
+        and 0 <= last_sample <= uptime
+        and sample_age == uptime - last_sample
+        and sample_age <= 2000
+        and last_result == {"code": 0, "name": "ESP_OK"}
+    )
+    fault_ok = (
+        len(sequences) == len(fault_log)
+        and all(isinstance(sequence, int) and sequence > 0 for sequence in sequences)
+        and sequences == sorted(sequences)
+        and fault_health.get("capacity") == 16
+        and fault_health.get("count") == len(fault_log)
+        and isinstance(fault_health.get("total_event_count"), int)
+        and fault_health["total_event_count"] >= len(fault_log)
+        and fault_health.get("overwritten_event_count")
+        == fault_health["total_event_count"] - len(fault_log)
+        and fault_health.get("persistence_ready") is True
+        and fault_health.get("write_failure_count_since_boot") == 0
+        and fault_health.get("last_write_error")
+        == {"code": 0, "name": "ESP_OK"}
+        and fault_health.get("oldest_sequence")
+        == (sequences[0] if sequences else None)
+        and fault_health.get("newest_sequence")
+        == (sequences[-1] if sequences else None)
+    )
+    return temperature_ok and fault_ok
+
+
+def security_recovery_posture_valid(status: dict[str, Any]) -> bool:
+    return status.get("security") == {
+        "https_management": True,
+        "bearer_authentication": True,
+        "tls_private_key_embedded": True,
+        "secure_boot_enabled": False,
+        "flash_encryption_enabled": False,
+        "application_anti_rollback_enabled": False,
+    } and status.get("recovery") == {
+        "ota_rollback_enabled": True,
+        "task_watchdog_enabled": True,
+        "task_watchdog_timeout_seconds": 5,
+        "task_watchdog_panics": True,
+        "interrupt_watchdog_enabled": True,
+        "panic_reboots": True,
+        "brownout_detection_enabled": True,
+        "core_dump_destination": "disabled",
+    }
+
+
 def validate_args(args: argparse.Namespace) -> None:
     for label in ("device_instance", "client_instance"):
         value = getattr(args, label)
@@ -166,6 +335,11 @@ def validate_args(args: argparse.Namespace) -> None:
         r"[0-9a-fA-F]{64}", args.expected_image_sha256
     ):
         raise HilError("--expected-image-sha256 must contain 64 hexadecimal digits")
+    if args.mdns_hostname is not None and not re.fullmatch(
+        r"(?=.{1,63}$)[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?",
+        args.mdns_hostname,
+    ):
+        raise HilError("--mdns-hostname must be a 1-63 character RFC 1123 label")
     if args.token_file is not None and not args.certificate.is_file():
         raise HilError(f"pinned certificate not found: {args.certificate}")
     if args.token_file is not None and not args.token_file.is_file():
@@ -217,6 +391,10 @@ def build_parser() -> argparse.ArgumentParser:
         default=project_root / "main" / "ota_server_cert.pem",
         help="pinned device certificate for HTTPS checks",
     )
+    parser.add_argument(
+        "--mdns-hostname",
+        help="enable raw mDNS/DNS-SD validation for this .local hostname",
+    )
     return parser
 
 
@@ -249,6 +427,9 @@ class HilRunner:
         self.app: Any = None
         self.objects: list[str] = []
         self.database_revision: int | None = None
+        self.device_name: str | None = None
+        self.vendor_identifier: int | None = None
+        self.firmware_version: str | None = None
 
     async def operation(self, name: str, awaitable: Awaitable[Any]) -> Any:
         started = time.monotonic()
@@ -324,6 +505,14 @@ class HilRunner:
         try:
             await self.test_discovery()
             await self.test_object_model()
+            if self.args.mdns_hostname is None:
+                self.report.add(
+                    "mDNS/DNS-SD discovery",
+                    "skip",
+                    "provide --mdns-hostname to enable the multicast discovery check",
+                )
+            else:
+                await asyncio.to_thread(self.test_mdns)
             await self.test_rpm()
             await self.test_who_has()
             await self.test_cov()
@@ -418,6 +607,9 @@ class HilRunner:
             )
         }
         self.database_revision = int(metadata["database-revision"])
+        self.device_name = str(metadata["object-name"])
+        self.vendor_identifier = int(metadata["vendor-identifier"])
+        self.firmware_version = str(metadata["firmware-revision"])
         strings_ok = all(
             str(metadata[prop]).strip()
             for prop in (
@@ -549,6 +741,47 @@ class HilRunner:
             len(names) == len(set(names)),
             f"all {len(names)} object names are unique",
             "one or more Object_Name values are duplicated",
+        )
+
+    def test_mdns(self) -> None:
+        try:
+            import mdns_probe
+        except ImportError as error:
+            raise HilError("tools/mdns_probe.py is unavailable") from error
+        if (
+            self.device_name is None
+            or self.vendor_identifier is None
+            or self.firmware_version is None
+        ):
+            raise HilError("BACnet identity metadata is unavailable for mDNS validation")
+        interface = str(ipaddress.ip_interface(self.args.local_address).ip)
+        started = time.monotonic()
+        try:
+            records = mdns_probe.probe(
+                interface,
+                self.args.mdns_hostname,
+                self.args.device_address,
+                self.device_name,
+                443,
+                self.args.bacnet_port,
+                self.args.device_instance,
+                self.vendor_identifier,
+                self.firmware_version,
+                self.args.timeout,
+            )
+        except (mdns_probe.MdnsProbeError, OSError) as error:
+            self.report.add(
+                "mDNS/DNS-SD discovery",
+                "fail",
+                str(error),
+                time.monotonic() - started,
+            )
+            raise HilError("mDNS/DNS-SD discovery failed") from error
+        self.report.add(
+            "mDNS/DNS-SD discovery",
+            "pass",
+            f"{self.args.mdns_hostname}.local and HTTPS/BACnet services verified ({len(records)} records)",
+            time.monotonic() - started,
         )
 
     async def test_rpm(self) -> None:
@@ -743,6 +976,8 @@ class HilRunner:
         network = status.get("network", {})
         system = status.get("system", {})
         configuration = status.get("configuration", {})
+        discovery = status.get("discovery", {})
+        hardware = status.get("hardware", {})
         bacnet = status.get("bacnet", {})
         watchdog = system.get("task_watchdog", {}) if isinstance(system, dict) else {}
         gpio_diagnostics = status.get("gpio_diagnostics", [])
@@ -811,12 +1046,37 @@ class HilRunner:
                 for item in watchdog.values()
             )
             and signal_diagnostics_ok
+            and hardware_profile_valid(hardware)
+            and firmware_diagnostics_valid(status)
+            and runtime_diagnostics_valid(status)
+            and security_recovery_posture_valid(status)
+            and (
+                self.args.mdns_hostname is None
+                or (
+                    isinstance(discovery, dict)
+                    and discovery.get("mdns_ready") is True
+                    and discovery.get("hostname") == self.args.mdns_hostname
+                    and discovery.get("local_fqdn")
+                    == f"{self.args.mdns_hostname}.local"
+                    and discovery.get("hostname_conflict_count") == 0
+                    and discovery.get("last_error")
+                    == {"code": 0, "name": "ESP_OK"}
+                    and discovery.get("services")
+                    == {
+                        "https": {"advertised": True, "port": 443},
+                        "bacnet": {
+                            "advertised": True,
+                            "port": self.args.bacnet_port,
+                        },
+                    }
+                )
+            )
         )
         self.report.require(
             "Authenticated HTTPS health",
             healthy,
-            f"version={status.get('version')}; source={source}; image={image_sha}; watchdogs healthy",
-            "firmware identity, OTA state, network, configuration, COV cleanup, or watchdog health failed",
+            f"version={status.get('version')}; source={source}; image={image_sha}; firmware/runtime diagnostics healthy",
+            "firmware identity, OTA state, network, configuration, COV cleanup, watchdog, security/recovery posture, wiring, image, temperature, or fault-log health failed",
         )
         certificate_der = ota_client._certificate_der(self.args.certificate)
         fingerprint = hashlib.sha256(certificate_der).hexdigest()
@@ -890,6 +1150,81 @@ class HilRunner:
             "dashboard asset content, media type, or browser security headers are invalid",
         )
 
+        def authenticated_request(
+            method: str,
+            path: str,
+            body: bytes | None = None,
+        ) -> tuple[int, bytes]:
+            connection = ota_client._connection(
+                self.args.device_address,
+                443,
+                self.args.certificate,
+                self.args.timeout,
+            )
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+            }
+            if body is not None:
+                headers.update(
+                    {
+                        "Content-Type": "application/json",
+                        "Content-Length": str(len(body)),
+                    }
+                )
+            try:
+                connection.request(method, path, body=body, headers=headers)
+                response = connection.getresponse()
+                payload = response.read(MAX_HTTP_RESPONSE_BYTES + 1)
+                if len(payload) > MAX_HTTP_RESPONSE_BYTES:
+                    raise HilError(f"{method} {path} response exceeds 1 MiB")
+                return response.status, payload
+            finally:
+                connection.close()
+
+        get_status, config_payload = authenticated_request("GET", "/config")
+        try:
+            original_config = json.loads(config_payload)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise HilError("authenticated GET /config returned invalid JSON") from error
+        if get_status != 200 or not isinstance(original_config, dict):
+            raise HilError(f"authenticated GET /config returned HTTP {get_status}")
+        collision = json.loads(json.dumps(original_config))
+        inputs = collision.get("inputs")
+        if not isinstance(inputs, list) or not inputs or not isinstance(inputs[0], dict):
+            raise HilError("authenticated GET /config omitted input configuration")
+        inputs[0]["name"] = "chip temperature"
+        collision_body = json.dumps(
+            collision, separators=(",", ":"), ensure_ascii=True
+        ).encode("ascii")
+        rejection_status, rejection_payload = authenticated_request(
+            "PUT", "/config", collision_body
+        )
+        if 200 <= rejection_status < 300:
+            restore_body = json.dumps(
+                original_config, separators=(",", ":"), ensure_ascii=True
+            ).encode("ascii")
+            restore_status, _ = authenticated_request("PUT", "/config", restore_body)
+            raise HilError(
+                "fixed Object_Name collision was accepted; "
+                f"restoration returned HTTP {restore_status}"
+            )
+        unchanged_status, unchanged_payload = authenticated_request("GET", "/config")
+        try:
+            unchanged_config = json.loads(unchanged_payload)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise HilError("post-rejection GET /config returned invalid JSON") from error
+        rejection_text = rejection_payload.decode("utf-8", errors="replace").lower()
+        self.report.require(
+            "Reserved BACnet Object_Name rejection",
+            rejection_status == 400
+            and "object names must be unique" in rejection_text
+            and unchanged_status == 200
+            and unchanged_config == original_config,
+            "case-insensitive fixed-name collision rejected without changing configuration",
+            "invalid name was not rejected cleanly or saved configuration changed",
+        )
+
 
 def write_report(path: Path, report: TestReport) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -936,6 +1271,7 @@ def main(argv: list[str] | None = None) -> int:
             "expected_version": args.expected_version,
             "expected_source": args.expected_source,
             "expected_image_sha256": args.expected_image_sha256,
+            "mdns_hostname": args.mdns_hostname,
         },
     )
     exit_code = 0

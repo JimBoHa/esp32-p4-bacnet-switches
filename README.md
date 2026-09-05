@@ -13,6 +13,14 @@ instance **599152**, UDP port **47808** (`0xBAC0`). The device has most recently
 used `192.168.75.152`; a DHCP reservation remains the simplest way to keep its
 management address stable.
 
+The configured hostname is also advertised with mDNS. On the local subnet,
+`esp32-p4-bacnet.local` resolves to the controller and DNS-SD advertises
+`_bacnet._udp` on the configured BACnet port plus `_https._tcp` when the
+management server started successfully. TXT metadata contains only the public
+project/version, BACnet Device/Vendor identifiers, API path, and authentication
+method—never a bearer token or private key. mDNS is link-local convenience; it
+does not replace BACnet Who-Is/I-Am discovery or cross-VLAN routing/BBMDs.
+
 ## Wiring
 
 Each input is configured input-only with an internal pull-down. Open is
@@ -97,6 +105,8 @@ clock GPIO50. See the [Waveshare schematic](https://files.waveshare.com/wiki/ESP
 The BACnet `Database_Revision` includes a firmware object-model offset so
 clients can detect fixed objects added by a firmware upgrade as well as later
 commissioning changes.
+Configuration rejects any configurable name that duplicates a fixed diagnostic
+or Network Port `Object_Name`, case-insensitively, so Who-Has stays unambiguous.
 
 Supported services:
 
@@ -135,6 +145,7 @@ python3 tools/bacnet_hil_test.py \
   --local-address 192.168.75.191/24 \
   --device-address 192.168.75.152 \
   --device-instance 599152 \
+  --mdns-hostname esp32-p4-bacnet \
   --expect-inputs-off \
   --token-file secrets/ota_token.txt \
   --report hardware-report.json
@@ -144,6 +155,17 @@ The report contains no bearer token or private key. The suite never drives a
 GPIO or changes device configuration. Release validation should also provide
 `--expected-version`, `--expected-source`, and `--expected-image-sha256` from
 the exact OTA artifact and its verified running status.
+
+To test only multicast hostname and service discovery without BACpypes, run:
+
+```sh
+python3 tools/mdns_probe.py \
+  --interface 192.168.75.191 \
+  --hostname esp32-p4-bacnet \
+  --address 192.168.75.152 \
+  --device-instance 599152 \
+  --firmware-version 1.19.0
+```
 
 For an endurance run after the finite suite, use the append-only soak monitor.
 It samples pinned HTTPS status/configuration and a raw directed BACnet I-Am,
@@ -235,11 +257,17 @@ certificate before entering the token.
 
 The HTTPS server provides nine bearer-authenticated operations:
 
-- `GET /ota/status` — firmware/partition/rollback state, Git revision, reset
-  reason, exact running-image SHA-256, uptime, temperature, heap, watchdog
+- `GET /ota/status` — running/boot/update partition and rollback state, source
+  and ELF identity, build metadata, exact running-image SHA-256, reset reason,
+  enforced OTA size/media-type/deadline/secure-version policy,
+  explicit secure-boot/encryption/authentication posture and watchdog/panic/
+  brownout/core-dump recovery settings,
+  uptime, temperature current/minimum/maximum/error counters, heap, watchdog
   health, Ethernet negotiation, DHCP/address state, BACnet counters, input
   pad/raw/debounced/transition data, self-test results, and the persistent fault
-  log.
+  log. It also reports mDNS readiness, the active `.local` name, hostname
+  conflicts, advertised ports, initialization errors, and fault-log capacity,
+  overwrite, and persistence-write health.
 - `POST /diagnostics/input-self-test` — weak-pull line classification. It does
   not enable GPIO output drivers and may be run with field wiring connected.
 - `GET /config` — export the complete saved BACnet/input configuration and show
@@ -290,6 +318,8 @@ the authenticated reboot command activates it. Sending the active values
 again cancels a pending configuration. Each effective change increments the
 BACnet Device `Database_Revision`; the configured Device and Binary Input
 instances and object names must be unique and within BACnet limits.
+Object names also cannot duplicate any fixed status, diagnostic, or Network
+Port name, including a case-only variation.
 
 To export the network settings, edit them, and stage a change:
 
@@ -346,21 +376,43 @@ sends any HTTP data. CA and hostname checking are replaced by exact DER
 certificate pinning because the device uses a self-signed leaf certificate and
 DHCP. The server additionally requires a 32–128
 character bearer token, validates its embedded certificate/key pair and running
-image at startup, verifies each uploaded ESP image and project name, writes only
-an inactive OTA slot, and uses bootloader rollback. Uploads are blocked while a
-new image is pending so the known-good rollback slot cannot be overwritten.
+image at startup, requires an application/octet-stream body with a bounded size
+and five-minute whole-transfer deadline, verifies each uploaded ESP image,
+project name, and nondecreasing secure version, writes only an inactive OTA
+slot, and uses bootloader rollback. Uploads are blocked while a new image is
+pending so the known-good rollback slot cannot be overwritten.
 Health validation begins after ten seconds; the image must establish Ethernet,
 DHCP, HTTPS OTA, BACnet, and healthy monitored tasks for five consecutive
 samples within 60 seconds or it is marked invalid and rolled back automatically.
 
 Before uploading, the client validates the ESP segment layout, ROM checksum,
-appended SHA-256, 32 MB flash header, chip target, and project name. After
-acceptance it requires the device to echo the exact accepted-image hash, waits
-through reboot, and reports success only when that same image is running in the
-`valid` state.
+appended SHA-256, 32 MB flash header, chip target, and project name. It also
+requires a validated matching device, rejects an accidental no-op reflash, and
+bounds every device response to 1 MiB. After acceptance it requires the device
+to echo the expected version, inactive partition, exact image hash, and reboot
+intent, then reports success only when that same project/version/image is
+running from the accepted partition in the `valid` state. Use
+`--allow-same-image` only for an intentional identical-image recovery test.
 Use `--no-wait` only when another system will perform that verification. For a
 credential rotation, supply `--post-cert` and `--post-token-file` so the same
 command verifies the replacement credentials after reboot.
+
+Before a release deployment, the opt-in rejection suite can exercise wrong
+media type/project, empty/tiny/oversized/invalid images, an interrupted upload,
+and a structurally valid image with a foreign project identity:
+
+```sh
+python3 tools/ota_rejection_test.py \
+  --host 192.168.75.152 \
+  --firmware build/esp32_p4_bacnet_switches.bin \
+  --confirm-inactive-slot-overwrite
+```
+
+ESP-IDF erases and invalidates the inactive slot when these tests begin. They
+never select it for boot, and they require the running image identity to remain
+unchanged, but rollback redundancy is temporarily reduced. Immediately install
+a fully tested valid update after the suite; do not run it when power is
+unstable or recovery access is unavailable.
 
 ### Credential rotation and security boundary
 
@@ -368,28 +420,46 @@ To rotate remotely, first preserve the currently deployed certificate/token in
 a secure temporary location. Generate replacement credentials, build the new
 application, upload it using the old client credentials, then verify status
 using the replacements. Confirm the former certificate/token are rejected
-before destroying the temporary copy.
+before destroying the temporary copy. Credential generation stages and
+validates the complete replacement set before replacing existing files and
+refuses symbolic-link outputs. Token files must have mode 0600 on POSIX hosts.
 
 The private key and token are embedded in each device image, so generated
 application or merged binaries are also secrets and must not be committed or
 attached to a public release. Secure Boot and flash encryption are not enabled
 because eFuse provisioning is irreversible and device-specific. Someone with
 physical flash access can therefore recover credentials unless those controls
-are provisioned separately.
+are provisioned separately. Flash core dumps are intentionally disabled: an
+unencrypted dump could retain the bearer token, TLS private key, or field data.
+Authenticated status reports these limitations directly instead of implying
+that rollback or HTTPS provides physical-device security.
 
 ### Persistent diagnostics
 
 The NVS-backed 16-entry fault log survives reboot and records boot/reset,
 abnormal reset (panic, brownout, watchdog, power glitch, or CPU lockup), link/IP
-loss, OTA accepted/failed/validated, input-test failures, temperature setup
-failure, BACnet socket failure, HTTPS server startup failure, task-watchdog
-registration failure, and authenticated remote-reboot requests. Entries include
-sequence, boot count, boot-relative time, type, and error code.
+loss, OTA accepted/failed/validated/rolled-back, input-test failures,
+temperature setup failure, BACnet socket failure, HTTPS server startup failure,
+task-watchdog registration failure, and authenticated remote-reboot requests.
+Entries include sequence, boot count, boot-relative time, type, and error code.
+An mDNS initialization or service-advertisement failure is also persisted; a
+runtime hostname conflict is counted in authenticated status.
+Status reports retained/overwritten event counts and NVS write failures. It also
+tracks chip-temperature minimum, maximum, sample count, read/setup failures,
+and the most recent sensor result without confusing die temperature with room
+temperature.
 
-The switch-input and BACnet tasks are registered with ESP-IDF's task watchdog.
-The status endpoint reports their registration, most recent heartbeat, and
-health. Firmware version and the source Git revision are independently exposed
-through HTTPS and BACnet `Application_Software_Version`.
+Authenticated status also exposes machine-readable board, P1 header, 3.3 V
+supply, dry-contact circuit, pull-down recommendation, GPIO-to-header, and
+GPIO-to-BACnet mappings. HIL and soak tests require that profile exactly, so a
+pin-map regression fails release acceptance.
+
+The switch-input and BACnet tasks are registered with ESP-IDF's five-second task
+watchdog. A missed deadline now causes a panic/reboot instead of only printing a
+warning; an unvalidated OTA image then rolls back on that reboot. The status
+endpoint reports registration, most recent heartbeat, health, timeout, and
+panic behavior. Firmware version and the source Git revision are independently
+exposed through HTTPS and BACnet `Application_Software_Version`.
 
 All millisecond uptime, heartbeat, IP-age, transition, and fault-log timestamps
 are 64-bit JSON integers, so they do not wrap after 49.7 days.
@@ -406,7 +476,8 @@ The host suite compiles with warnings-as-errors plus AddressSanitizer and
 UndefinedBehaviorSanitizer. It covers reference discovery vectors,
 ReadProperty, ReadPropertyMultiple, COV, error/reject/abort paths, bounded
 output buffers, malformed/truncated/random frames, constant-time bearer
-authentication, and secure credential tooling:
+authentication, DNS packet parsing/advertisement validation, and secure
+credential tooling:
 
 ```sh
 cmake -S tests -B build-tests
@@ -420,3 +491,19 @@ The full target check is:
 idf.py reconfigure
 idf.py build
 ```
+
+## Operations and release
+
+- [Security policy and threat model](SECURITY.md)
+- [Commissioning and recovery](docs/COMMISSIONING.md)
+- [Development and private release packaging](docs/DEVELOPMENT.md)
+- [Hardware acceptance testing](docs/HARDWARE_TESTING.md)
+- [Soak testing](docs/SOAK_TESTING.md)
+- [BACnet implementation/PICS summary](docs/BACNET_PICS.md)
+- [Third-party notices](THIRD_PARTY_NOTICES.md)
+
+Production firmware and recovery binaries are credential-bearing secrets. The
+least-privilege CI workflow builds only an OTA-disabled target and publishes no
+binary. Create device-specific artifacts locally with
+`python3 tools/package_release.py`; they are permission-restricted below the
+ignored `release/private/` directory.

@@ -57,17 +57,17 @@ static const uint32_t ANALOG_VALUE_INSTANCES[BACNET_ANALOG_VALUE_COUNT] = {
     1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010,
 };
 static const char *const ANALOG_VALUE_NAMES[BACNET_ANALOG_VALUE_COUNT] = {
-    "Chip Temperature",
-    "System Uptime",
-    "Free Heap",
-    "Minimum Free Heap",
-    "Ethernet Link Losses",
-    "Ethernet Reconnects",
-    "BACnet RX Packets",
-    "BACnet Protocol Errors",
-    "Last Reset Reason",
-    "Active COV Subscriptions",
-    "Boot Count",
+    BACNET_CHIP_TEMPERATURE_VALUE_NAME,
+    BACNET_SYSTEM_UPTIME_VALUE_NAME,
+    BACNET_FREE_HEAP_VALUE_NAME,
+    BACNET_MINIMUM_FREE_HEAP_VALUE_NAME,
+    BACNET_ETHERNET_LINK_LOSSES_VALUE_NAME,
+    BACNET_ETHERNET_RECONNECTS_VALUE_NAME,
+    BACNET_RX_PACKETS_VALUE_NAME,
+    BACNET_PROTOCOL_ERRORS_VALUE_NAME,
+    BACNET_LAST_RESET_REASON_VALUE_NAME,
+    BACNET_ACTIVE_COV_SUBSCRIPTIONS_VALUE_NAME,
+    BACNET_BOOT_COUNT_VALUE_NAME,
 };
 static const char *const ANALOG_VALUE_DESCRIPTIONS[
     BACNET_ANALOG_VALUE_COUNT] = {
@@ -312,7 +312,7 @@ static void snapshot_device_state(bacnet_device_state_t *state)
                 : BACNET_RELIABILITY_UNRELIABLE_OTHER,
         },
         .network_port_instance = 1U,
-        .network_port_name = "BACnet/IP Ethernet",
+        .network_port_name = BACNET_NETWORK_PORT_NAME,
         .network_port_description =
             "Primary BACnet/IPv4 Ethernet interface",
         .network_port_reliability =
