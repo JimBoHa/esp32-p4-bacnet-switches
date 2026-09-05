@@ -6,6 +6,7 @@
 #include <string.h>
 
 #include "bacnet_codec.h"
+#include "cov_retry_cache.h"
 #include "diagnostics_time.h"
 #include "ota_auth.h"
 #include "ota_health.h"
@@ -1432,6 +1433,30 @@ static void test_diagnostics_time_rollover(void)
     CHECK(!diagnostics_heartbeat_is_healthy(true, 100U, 101U, 2500U));
 }
 
+static void test_cov_retry_payload_cache(void)
+{
+    cov_retry_cache_t cache = {0};
+    uint8_t original[] = {0x81, 0x0A, 0x00, 0x09, 0x01, 0x00, 0x20, 0x61, 0x01};
+    const uint8_t expected[sizeof(original)] = {
+        0x81, 0x0A, 0x00, 0x09, 0x01, 0x00, 0x20, 0x61, 0x01,
+    };
+
+    CHECK(cov_retry_cache_data(&cache) == NULL);
+    CHECK(cov_retry_cache_length(&cache) == 0U);
+    CHECK(cov_retry_cache_capture(&cache, original, sizeof(original)));
+    memset(original, 0, sizeof(original));
+    CHECK(cov_retry_cache_length(&cache) == sizeof(expected));
+    CHECK(memcmp(cov_retry_cache_data(&cache), expected, sizeof(expected)) == 0);
+    CHECK(!cov_retry_cache_capture(&cache, NULL, sizeof(expected)));
+    CHECK(!cov_retry_cache_capture(&cache, expected, 0U));
+    CHECK(!cov_retry_cache_capture(
+        &cache, expected, COV_RETRY_PAYLOAD_CAPACITY + 1U));
+    cov_retry_cache_clear(&cache);
+    CHECK(cov_retry_cache_data(&cache) == NULL);
+    CHECK(cov_retry_cache_length(&cache) == 0U);
+    cov_retry_cache_clear(NULL);
+}
+
 int main(void)
 {
     test_reference_vectors();
@@ -1443,6 +1468,7 @@ int main(void)
     test_ota_bearer_authentication();
     test_ota_rollback_health_gate();
     test_diagnostics_time_rollover();
+    test_cov_retry_payload_cache();
     printf("bacnet_codec_tests: %u checks passed\n", tests_run);
     return EXIT_SUCCESS;
 }
