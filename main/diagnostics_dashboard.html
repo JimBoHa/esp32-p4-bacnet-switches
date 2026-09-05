@@ -72,6 +72,18 @@
         </div>
       </section>
 
+      <section class="panel" aria-labelledby="headerPinsTitle">
+        <h2 id="headerPinsTitle">P1 header: all 40 positions</h2>
+        <p class="muted">Physical P1 position is not the GPIO number. Sequential digital snapshots on each refresh, not voltage measurements or debounced switch states. Floating pins and shared buses may read HIGH without a switch being on. Existing pulls and outputs are preserved; USB/JTAG, power, ground, and control pins are not sampled. GPIO inputs are 3.3 V only; never connect them to 5 V.</p>
+        <p id="headerPinsStatus" class="muted" aria-live="polite"></p>
+        <div class="table-wrap" tabindex="0" role="region" aria-label="P1 header pin readings">
+          <table>
+            <thead><tr><th>P1 position</th><th>Board label</th><th>GPIO</th><th>Raw level</th><th>Read status</th><th>Internal pulls</th><th>Output configuration</th><th>Notes</th></tr></thead>
+            <tbody id="headerPinRows"></tbody>
+          </table>
+        </div>
+      </section>
+
       <section class="panel" aria-labelledby="inputHistoryTitle">
         <h2 id="inputHistoryTitle">Recent input events</h2>
         <p class="muted">Newest first · This boot only · Timing resolution 10 ms</p>

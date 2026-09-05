@@ -83,6 +83,15 @@ automatically. Reserve the address and check for conflicts first.
 
 ## 6. Check inputs and BACnet
 
+If the wiring position is uncertain, open the no-login diagnostics dashboard's
+**P1 header: all 40 positions** table first. Physical position is not a GPIO
+number: for example, P1-22 is GPIO47, while GPIO22 is P1-32. Consult the
+[complete header map and reserved-pin limitations](HEADER_DIAGNOSTICS.md).
+Operate one switch and compare repeated readings on the matching GPIO; a HIGH
+alone does not establish that a floating or shared-bus pin is a driven switch.
+Only GPIO20/21/22 are configured BACnet switch channels. Additional header
+readings do not add BACnet objects or change that mapping.
+
 With field wires disconnected, GPIO20/GPIO21/GPIO22 must all show raw and stable
 false and BACnet `Inactive`. Run `input-self-test`; an open line should classify
 `floating-open`. `externally-high` and `externally-low` are valid driven states;
@@ -91,7 +100,7 @@ an output driver.
 
 Then connect one protected switch at a time. Measure voltage at the controller
 GPIO-to-GND, operate the switch, and verify raw, debounced, and BACnet values.
-Send directed and broadcast Who-Is, scan the complete 18-object list, read all
+Send directed and broadcast Who-Is, scan the complete 27-object list, read all
 properties, and verify COV. This firmware has no physical outputs to actuate.
 
 ## 7. Ethernet OTA
