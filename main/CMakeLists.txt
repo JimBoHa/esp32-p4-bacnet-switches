@@ -25,6 +25,11 @@ endif()
 get_filename_component(project_root "${CMAKE_CURRENT_LIST_DIR}/.." ABSOLUTE)
 set(ota_embed_files)
 if(CONFIG_OTA_HTTPS_ENABLED)
+    list(APPEND ota_embed_files
+        "diagnostics_dashboard.html"
+        "diagnostics_dashboard.css"
+        "diagnostics_dashboard.js"
+    )
     set(ota_secrets_dir "${project_root}/secrets")
     if(DEFINED ENV{ESP32_P4_OTA_SECRETS_DIR})
         set(ota_secrets_dir "$ENV{ESP32_P4_OTA_SECRETS_DIR}")

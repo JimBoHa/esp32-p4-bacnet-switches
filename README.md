@@ -225,6 +225,14 @@ the board schematic.
 
 ## Authenticated Ethernet management
 
+Open `https://DEVICE-IP/diagnostics` for the read-only field dashboard. Its
+HTML/CSS/JavaScript shell contains no device data and is intentionally public;
+the page asks for the bearer token before it requests `/ota/status`. The token
+is held only in page memory, never placed in a URL, cookie, or browser storage.
+All assets are same-origin and carry restrictive CSP, framing, MIME-sniffing,
+referrer, permissions, and caching headers. Verify the self-signed device
+certificate before entering the token.
+
 The HTTPS server provides nine bearer-authenticated operations:
 
 - `GET /ota/status` — firmware/partition/rollback state, Git revision, reset
