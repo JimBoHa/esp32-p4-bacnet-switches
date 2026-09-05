@@ -12,6 +12,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "sdkconfig.h"
+#include "input_debounce.h"
 
 #ifndef CONFIG_TOGGLE_INPUT_1_ACTIVE_LOW
 #define CONFIG_TOGGLE_INPUT_1_ACTIVE_LOW 0
@@ -41,9 +42,8 @@ _Static_assert(
 static atomic_uint_fast32_t stable_input_bits;
 static atomic_uint_fast32_t input_fault_bits;
 static atomic_bool self_test_active;
-static atomic_uint_fast32_t transition_counts[SWITCH_INPUT_COUNT];
-static uint64_t last_transition_ms[SWITCH_INPUT_COUNT];
-static portMUX_TYPE transition_time_lock = portMUX_INITIALIZER_UNLOCKED;
+static input_debounce_state_t debounce_states[SWITCH_INPUT_COUNT];
+static portMUX_TYPE debounce_state_lock = portMUX_INITIALIZER_UNLOCKED;
 static atomic_bool self_test_run[SWITCH_INPUT_COUNT];
 static atomic_bool self_test_passed[SWITCH_INPUT_COUNT];
 static atomic_bool self_test_pull_down_levels[SWITCH_INPUT_COUNT];
@@ -141,20 +141,19 @@ static void switch_poll_task(void *argument)
     ESP_ERROR_CHECK_WITHOUT_ABORT(
         diagnostics_task_watchdog_subscribe(
             DIAGNOSTICS_TASK_SWITCH_INPUTS));
-    bool stable[SWITCH_INPUT_COUNT];
-    bool candidate[SWITCH_INPUT_COUNT];
-    uint32_t candidate_time_ms[SWITCH_INPUT_COUNT] = {0};
     const uint32_t initial_bits = read_input_bits();
 
     for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
-        stable[index] = (initial_bits & (1U << index)) != 0;
-        candidate[index] = stable[index];
-        store_input(index, stable[index]);
+        const bool initial = (initial_bits & (1U << index)) != 0;
+        portENTER_CRITICAL(&debounce_state_lock);
+        input_debounce_init(&debounce_states[index], initial);
+        portEXIT_CRITICAL(&debounce_state_lock);
+        store_input(index, initial);
         ESP_LOGI(
             TAG,
             "GPIO%d initial state: %s",
             (int)INPUT_GPIOS[index],
-            stable[index] ? "ACTIVE" : "INACTIVE");
+            initial ? "ACTIVE" : "INACTIVE");
     }
 
     for (;;) {
@@ -165,39 +164,32 @@ static void switch_poll_task(void *argument)
             continue;
         }
         const uint32_t sampled_bits = read_input_bits();
+        const uint64_t uptime_ms =
+            (uint64_t)esp_timer_get_time() / 1000U;
 
         for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
             const bool sampled = (sampled_bits & (1U << index)) != 0;
-
-            if (sampled == stable[index]) {
-                candidate[index] = sampled;
-                candidate_time_ms[index] = 0;
-                continue;
-            }
-            if (sampled != candidate[index]) {
-                candidate[index] = sampled;
-                candidate_time_ms[index] = INPUT_POLL_MS;
-                continue;
-            }
-
-            if (candidate_time_ms[index] < input_debounce_ms) {
-                candidate_time_ms[index] += INPUT_POLL_MS;
-            }
-            if (candidate_time_ms[index] >= input_debounce_ms) {
-                stable[index] = sampled;
-                candidate_time_ms[index] = 0;
-                store_input(index, stable[index]);
-                atomic_fetch_add_explicit(
-                    &transition_counts[index], 1U, memory_order_relaxed);
-                portENTER_CRITICAL(&transition_time_lock);
-                last_transition_ms[index] =
-                    (uint64_t)esp_timer_get_time() / 1000U;
-                portEXIT_CRITICAL(&transition_time_lock);
+            portENTER_CRITICAL(&debounce_state_lock);
+            const input_debounce_result_t result = input_debounce_sample(
+                &debounce_states[index],
+                sampled,
+                INPUT_POLL_MS,
+                input_debounce_ms,
+                uptime_ms);
+            portEXIT_CRITICAL(&debounce_state_lock);
+            if (result.accepted_transition) {
+                store_input(index, result.stable);
                 ESP_LOGI(
                     TAG,
                     "GPIO%d changed to %s",
                     (int)INPUT_GPIOS[index],
-                    stable[index] ? "ACTIVE" : "INACTIVE");
+                    result.stable ? "ACTIVE" : "INACTIVE");
+            }
+            if (result.chatter_started) {
+                ESP_LOGW(
+                    TAG,
+                    "GPIO%d repeated short pulses detected",
+                    (int)INPUT_GPIOS[index]);
             }
         }
     }
@@ -240,8 +232,7 @@ void switch_inputs_init(const firmware_config_t *config)
     atomic_init(&input_fault_bits, 0U);
     atomic_init(&self_test_active, false);
     for (size_t index = 0; index < SWITCH_INPUT_COUNT; ++index) {
-        atomic_init(&transition_counts[index], 0U);
-        last_transition_ms[index] = 0U;
+        debounce_states[index] = (input_debounce_state_t){0};
         atomic_init(&self_test_run[index], false);
         atomic_init(&self_test_passed[index], false);
         atomic_init(&self_test_pull_down_levels[index], false);
@@ -424,9 +415,11 @@ bool switch_input_diagnostics_get(
         return false;
     }
 
-    portENTER_CRITICAL(&transition_time_lock);
-    const uint64_t last_transition_uptime_ms = last_transition_ms[index];
-    portEXIT_CRITICAL(&transition_time_lock);
+    const uint64_t uptime_ms =
+        (uint64_t)esp_timer_get_time() / 1000U;
+    portENTER_CRITICAL(&debounce_state_lock);
+    const input_debounce_state_t debounce = debounce_states[index];
+    portEXIT_CRITICAL(&debounce_state_lock);
 
     *diagnostics = (switch_input_diagnostics_t){
         .gpio = (int)INPUT_GPIOS[index],
@@ -439,9 +432,22 @@ bool switch_input_diagnostics_get(
         .current_config = read_pad_config(INPUT_GPIOS[index]),
         .current_raw = gpio_get_level(INPUT_GPIOS[index]) != 0,
         .stable = switch_input_get(index),
-        .transition_count = (uint32_t)atomic_load_explicit(
-            &transition_counts[index], memory_order_relaxed),
-        .last_transition_uptime_ms = last_transition_uptime_ms,
+        .transition_count = debounce.accepted_transition_count,
+        .last_transition_uptime_ms =
+            debounce.last_accepted_transition_uptime_ms,
+        .raw_edge_count = debounce.raw_edge_count,
+        .accepted_transition_count = debounce.accepted_transition_count,
+        .rejected_pulse_count = debounce.rejected_pulse_count,
+        .chatter_event_count = debounce.chatter_event_count,
+        .chattering = input_debounce_is_chattering(&debounce, uptime_ms),
+        .candidate_active = debounce.candidate_active,
+        .candidate_level = debounce.candidate_level,
+        .candidate_age_ms = debounce.candidate_age_ms,
+        .last_rejected_pulse_width_ms =
+            debounce.last_rejected_pulse_width_ms,
+        .last_raw_edge_uptime_ms = debounce.last_raw_edge_uptime_ms,
+        .last_rejected_pulse_uptime_ms =
+            debounce.last_rejected_pulse_uptime_ms,
         .self_test_run = atomic_load_explicit(
             &self_test_run[index], memory_order_acquire),
         .self_test_passed = atomic_load_explicit(

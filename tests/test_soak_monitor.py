@@ -80,9 +80,9 @@ def healthy_values() -> tuple[dict[str, object], dict[str, object], dict[str, ob
             "active_cov_subscriptions": 0,
         },
         "gpio_diagnostics": [
-            {"gpio": 20, "fault": False},
-            {"gpio": 21, "fault": False},
-            {"gpio": 22, "fault": False},
+            {"gpio": 20, "fault": False, "signal": {"chattering": False}},
+            {"gpio": 21, "fault": False, "signal": {"chattering": False}},
+            {"gpio": 22, "fault": False, "signal": {"chattering": False}},
         ],
         "fault_log": [{"sequence": 1, "type": "boot"}],
     }
@@ -147,6 +147,44 @@ class SoakMonitorTests(unittest.TestCase):
             maximum_temperature_c=85.0,
         )
         self.assertEqual(alerts, [])
+
+    def test_gpio_signal_diagnostic_alerts(self) -> None:
+        status, config, network_config = healthy_values()
+        baseline = soak_monitor.Baseline.from_values(status, config, network_config)
+        bacnet = {
+            "device_instance": 599152,
+            "vendor_identifier": 999,
+            "max_apdu": 1476,
+            "segmentation": 3,
+        }
+
+        chattering = json.loads(json.dumps(status))
+        chattering["gpio_diagnostics"][1]["signal"]["chattering"] = True
+        alerts = soak_monitor.evaluate_sample(
+            baseline,
+            status,
+            chattering,
+            config,
+            network_config,
+            bacnet,
+            minimum_heap_bytes=1_000_000,
+            maximum_temperature_c=85.0,
+        )
+        self.assertIn("gpio-chattering:21", alerts)
+
+        missing = json.loads(json.dumps(status))
+        del missing["gpio_diagnostics"][2]["signal"]
+        alerts = soak_monitor.evaluate_sample(
+            baseline,
+            status,
+            missing,
+            config,
+            network_config,
+            bacnet,
+            minimum_heap_bytes=1_000_000,
+            maximum_temperature_c=85.0,
+        )
+        self.assertIn("gpio-signal-missing:22", alerts)
 
     def test_reboot_config_network_and_resource_changes_alert(self) -> None:
         status, config, network_config = healthy_values()

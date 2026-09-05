@@ -171,6 +171,16 @@ The input debounce default is 50 ms. Per-input polarity can be reversed in
 line conditions; only an unstable/invalid test sets BACnet `Reliability` to
 `unreliable-other` and the `fault` bit in `Status_Flags`.
 
+Authenticated status also distinguishes sampled raw edges, accepted debounced
+transitions, rejected short pulses, and repeated-pulse chatter episodes for
+each input. It reports the live debounce candidate and timestamps/width of the
+last raw edge and rejection. Counts saturate instead of wrapping; the
+`transition_count` field remains as a compatibility alias for
+`accepted_transition_count`. Internal weak-pull self-tests are excluded from
+these signal counters.
+Four rejected pulses inside two seconds start one chatter episode; the live
+`chattering` flag remains set until the line has been quiet for five seconds.
+
 ## Build and initial flash
 
 Use ESP-IDF **5.5.4**. The defaults target ESP32-P4 revision 0.x/1.x, matching

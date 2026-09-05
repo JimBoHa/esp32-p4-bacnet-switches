@@ -80,6 +80,14 @@ class BacnetHilTests(unittest.TestCase):
             ("object", "unknown-object"),
         )
 
+    def test_revision_match_accepts_full_and_abbreviated_forms(self) -> None:
+        full = "ad7a24fdb9dc81e07c5f3a5e35afdb7ba6b8a887"
+        self.assertTrue(bacnet_hil_test.revision_matches(full, "1.11.0 (ad7a24fdb9dc)"))
+        self.assertTrue(bacnet_hil_test.revision_matches(full[:12], full))
+        self.assertTrue(bacnet_hil_test.revision_matches(None, "unknown"))
+        self.assertFalse(bacnet_hil_test.revision_matches(full, "1.11.0 (b583bcdbe73e)"))
+        self.assertFalse(bacnet_hil_test.revision_matches(full, "ad7a24fdb9dc-dirty"))
+
     def test_report_is_machine_readable(self) -> None:
         report = bacnet_hil_test.TestReport(
             started_at="2026-01-01T00:00:00Z",
