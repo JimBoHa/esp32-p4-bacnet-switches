@@ -144,6 +144,26 @@ GPIO or changes device configuration. Release validation should also provide
 `--expected-version`, `--expected-source`, and `--expected-image-sha256` from
 the exact OTA artifact and its verified running status.
 
+For an endurance run after the finite suite, use the append-only soak monitor.
+It samples pinned HTTPS status/configuration and a raw directed BACnet I-Am,
+detecting reboot or image drift, configuration changes, watchdog/link faults,
+heap or temperature limits, protocol errors, and counter regressions:
+
+```sh
+python3 tools/soak_monitor.py \
+  --device-address 192.168.75.152 \
+  --device-instance 599152 \
+  --duration 86400 \
+  --interval 60 \
+  --timeout 5 \
+  --output soak-24h.jsonl
+```
+
+The output file must not already exist. It is flushed after every sample and
+contains no bearer token or private key. Input values may change during a soak;
+input faults, controller health faults, unexpected COV subscribers, and changes
+to the persistent configuration are failures.
+
 The input debounce default is 50 ms. Per-input polarity can be reversed in
 `menuconfig`. The electrical test classifies each line as `floating-open`,
 `externally-high`, `externally-low`, or `unstable`. The first three are valid
