@@ -86,6 +86,23 @@ static const bacnet_device_state_t STATE = {
     },
     .analog_value_units = {62, 73, 95, 95, 95, 95, 95, 95, 95, 95},
     .analog_value_reliability = {0, 0, 0, 0, 0, 0, 0, 7, 0, 0},
+    .network_port_instance = 1U,
+    .network_port_name = "BACnet/IP Ethernet",
+    .network_port_description = "Primary BACnet/IPv4 Ethernet interface",
+    .network_port_reliability = 0U,
+    .network_port_out_of_service = false,
+    .network_port_changes_pending = true,
+    .network_port_link_speed_bps = 100000000.0F,
+    .network_port_udp_port = 47808U,
+    .network_port_dhcp_enabled = true,
+    .network_port_ipv4 = {192U, 168U, 75U, 152U},
+    .network_port_netmask = {255U, 255U, 255U, 0U},
+    .network_port_gateway = {192U, 168U, 75U, 1U},
+    .network_port_dns = {
+        {192U, 168U, 75U, 1U},
+        {8U, 8U, 8U, 8U},
+        {1U, 1U, 1U, 1U},
+    },
 };
 
 static bool bytes_equal(
@@ -201,6 +218,39 @@ static size_t read_property_request(
         append_context_unsigned(frame, &length, 2, array_index);
     }
     return finish_request(frame, length);
+}
+
+static void check_read_property_tail(
+    const bacnet_device_state_t *state,
+    uint32_t object_type,
+    uint32_t object_instance,
+    uint32_t property,
+    bool has_array_index,
+    uint32_t array_index,
+    const uint8_t *expected,
+    size_t expected_length)
+{
+    uint8_t request[BACNET_MAX_REQUEST_BYTES];
+    uint8_t response[1500];
+    const size_t request_length = read_property_request(
+        request,
+        object_type,
+        object_instance,
+        property,
+        has_array_index,
+        array_index);
+    const bacnet_packet_result_t result = bacnet_handle_packet(
+        request,
+        request_length,
+        state,
+        response,
+        sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_READ_PROPERTY);
+    CHECK(result.response_length >= expected_length);
+    CHECK(memcmp(
+        response + result.response_length - expected_length,
+        expected,
+        expected_length) == 0);
 }
 
 static void append_context_character_string(
@@ -683,7 +733,7 @@ static void test_device_and_binary_input_properties(void)
         &STATE,
         response,
         sizeof(response));
-    static const uint8_t object_count_tail[] = {0x21, 0x0E, 0x3F};
+    static const uint8_t object_count_tail[] = {0x21, 0x0F, 0x3F};
     CHECK(result.response_length >= sizeof(object_count_tail));
     CHECK(memcmp(
         response + result.response_length - sizeof(object_count_tail),
@@ -865,6 +915,263 @@ static void test_device_and_binary_input_properties(void)
         result.response_length,
         (const uint8_t *)STATE.application_software_version,
         strlen(STATE.application_software_version)));
+}
+
+static void test_network_port_object(void)
+{
+    static const uint8_t protocol_revision[] = {0x21U, 0x11U, 0x3FU};
+    check_read_property_tail(
+        &STATE,
+        8U,
+        STATE.device_instance,
+        139U,
+        false,
+        0U,
+        protocol_revision,
+        sizeof(protocol_revision));
+
+    static const uint8_t object_types[] = {
+        0x85U, 0x09U, 0x07U, 0x30U, 0x80U, 0x00U, 0x00U,
+        0x00U, 0x00U, 0x00U, 0x80U, 0x3FU,
+    };
+    check_read_property_tail(
+        &STATE,
+        8U,
+        STATE.device_instance,
+        96U,
+        false,
+        0U,
+        object_types,
+        sizeof(object_types));
+
+    static const uint8_t object_list_item[] = {
+        0xC4U, 0x0EU, 0x00U, 0x00U, 0x01U, 0x3FU,
+    };
+    check_read_property_tail(
+        &STATE,
+        8U,
+        STATE.device_instance,
+        76U,
+        true,
+        15U,
+        object_list_item,
+        sizeof(object_list_item));
+
+    static const uint8_t object_identifier[] = {
+        0xC4U, 0x0EU, 0x00U, 0x00U, 0x01U, 0x3FU,
+    };
+    static const uint8_t object_type[] = {0x91U, 0x38U, 0x3FU};
+    static const uint8_t normal_status[] = {0x82U, 0x04U, 0x00U, 0x3FU};
+    static const uint8_t no_fault[] = {0x91U, 0x00U, 0x3FU};
+    static const uint8_t zero_unsigned[] = {0x21U, 0x00U, 0x3FU};
+    static const uint8_t three_unsigned[] = {0x21U, 0x03U, 0x3FU};
+    static const uint8_t false_value[] = {0x10U, 0x3FU};
+    static const uint8_t true_value[] = {0x11U, 0x3FU};
+    static const uint8_t network_type[] = {0x91U, 0x05U, 0x3FU};
+    static const uint8_t protocol_level[] = {0x91U, 0x02U, 0x3FU};
+    static const uint8_t apdu_length[] = {0x22U, 0x05U, 0xC4U, 0x3FU};
+    static const uint8_t link_speed[] = {
+        0x44U, 0x4CU, 0xBEU, 0xBCU, 0x20U, 0x3FU,
+    };
+    static const uint8_t bacnet_mac[] = {
+        0x65U, 0x06U, 0xC0U, 0xA8U, 0x4BU,
+        0x98U, 0xBAU, 0xC0U, 0x3FU,
+    };
+    static const uint8_t ipv4[] = {
+        0x64U, 0xC0U, 0xA8U, 0x4BU, 0x98U, 0x3FU,
+    };
+    static const uint8_t netmask[] = {
+        0x64U, 0xFFU, 0xFFU, 0xFFU, 0x00U, 0x3FU,
+    };
+    static const uint8_t gateway[] = {
+        0x64U, 0xC0U, 0xA8U, 0x4BU, 0x01U, 0x3FU,
+    };
+    static const uint8_t dns_servers[] = {
+        0x64U, 0xC0U, 0xA8U, 0x4BU, 0x01U,
+        0x64U, 0x08U, 0x08U, 0x08U, 0x08U,
+        0x64U, 0x01U, 0x01U, 0x01U, 0x01U,
+        0x3FU,
+    };
+    static const uint8_t dns_backup[] = {
+        0x64U, 0x08U, 0x08U, 0x08U, 0x08U, 0x3FU,
+    };
+    static const uint8_t dns_fallback[] = {
+        0x64U, 0x01U, 0x01U, 0x01U, 0x01U, 0x3FU,
+    };
+    static const uint8_t udp_port[] = {0x22U, 0xBAU, 0xC0U, 0x3FU};
+    static const uint8_t property_count[] = {0x21U, 0x17U, 0x3FU};
+
+    check_read_property_tail(
+        &STATE, 56U, 1U, 75U, false, 0U,
+        object_identifier, sizeof(object_identifier));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 79U, false, 0U, object_type, sizeof(object_type));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 111U, false, 0U,
+        normal_status, sizeof(normal_status));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 103U, false, 0U, no_fault, sizeof(no_fault));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 81U, false, 0U,
+        false_value, sizeof(false_value));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 427U, false, 0U,
+        network_type, sizeof(network_type));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 482U, false, 0U,
+        protocol_level, sizeof(protocol_level));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 416U, false, 0U,
+        true_value, sizeof(true_value));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 399U, false, 0U,
+        apdu_length, sizeof(apdu_length));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 425U, false, 0U,
+        zero_unsigned, sizeof(zero_unsigned));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 426U, false, 0U, no_fault, sizeof(no_fault));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 420U, false, 0U,
+        link_speed, sizeof(link_speed));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 423U, false, 0U,
+        bacnet_mac, sizeof(bacnet_mac));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 408U, false, 0U, no_fault, sizeof(no_fault));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 400U, false, 0U, ipv4, sizeof(ipv4));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 412U, false, 0U,
+        udp_port, sizeof(udp_port));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 411U, false, 0U,
+        netmask, sizeof(netmask));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 401U, false, 0U,
+        gateway, sizeof(gateway));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 406U, false, 0U,
+        dns_servers, sizeof(dns_servers));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 406U, true, 0U,
+        three_unsigned, sizeof(three_unsigned));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 406U, true, 1U,
+        gateway, sizeof(gateway));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 406U, true, 2U,
+        dns_backup, sizeof(dns_backup));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 406U, true, 3U,
+        dns_fallback, sizeof(dns_fallback));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 402U, false, 0U,
+        true_value, sizeof(true_value));
+    check_read_property_tail(
+        &STATE, 56U, 1U, 371U, true, 0U,
+        property_count, sizeof(property_count));
+
+    uint8_t request[BACNET_MAX_REQUEST_BYTES];
+    uint8_t response[1500];
+    size_t length = read_property_request(
+        request, 56U, 1U, 77U, false, 0U);
+    bacnet_packet_result_t result = bacnet_handle_packet(
+        request, length, &STATE, response, sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_READ_PROPERTY);
+    CHECK(contains_bytes(
+        response,
+        result.response_length,
+        (const uint8_t *)STATE.network_port_name,
+        strlen(STATE.network_port_name)));
+
+    length = read_property_request(request, 56U, 1U, 28U, false, 0U);
+    result = bacnet_handle_packet(
+        request, length, &STATE, response, sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_READ_PROPERTY);
+    CHECK(contains_bytes(
+        response,
+        result.response_length,
+        (const uint8_t *)STATE.network_port_description,
+        strlen(STATE.network_port_description)));
+
+    length = read_property_request(request, 56U, 1U, 406U, true, 4U);
+    result = bacnet_handle_packet(
+        request, length, &STATE, response, sizeof(response));
+    static const uint8_t invalid_array_error[] = {
+        0x50U, 0x01U, 0x0CU, 0x91U, 0x02U, 0x91U, 0x2AU,
+    };
+    CHECK(result.kind == BACNET_PACKET_READ_PROPERTY);
+    CHECK(result.response_length >= sizeof(invalid_array_error));
+    CHECK(memcmp(
+        response + result.response_length - sizeof(invalid_array_error),
+        invalid_array_error,
+        sizeof(invalid_array_error)) == 0);
+
+    bacnet_device_state_t failed = STATE;
+    failed.network_port_reliability = 12U;
+    failed.network_port_out_of_service = true;
+    static const uint8_t failed_status[] = {0x82U, 0x04U, 0x50U, 0x3FU};
+    check_read_property_tail(
+        &failed, 56U, 1U, 111U, false, 0U,
+        failed_status, sizeof(failed_status));
+
+    static const test_property_reference_t selectors[] = {
+        {8U, false, 0U},
+        {105U, false, 0U},
+        {80U, false, 0U},
+    };
+    length = begin_confirmed_request(request, 0x5AU, 14U);
+    append_rpm_object(
+        request, &length, 56U, 1U, selectors, ARRAY_LENGTH(selectors));
+    length = finish_request(request, length);
+    result = bacnet_handle_packet(
+        request, length, &STATE, response, sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_READ_PROPERTY_MULTIPLE);
+    CHECK(contains_bytes(
+        response,
+        result.response_length,
+        (const uint8_t *)STATE.network_port_name,
+        strlen(STATE.network_port_name)));
+    CHECK(contains_bytes(
+        response, result.response_length, bacnet_mac, sizeof(bacnet_mac) - 1U));
+
+    length = who_has_request(
+        request,
+        0x0AU,
+        false,
+        false,
+        0U,
+        0U,
+        false,
+        56U,
+        1U,
+        NULL);
+    result = bacnet_handle_packet(
+        request, length, &STATE, response, sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_WHO_HAS);
+    CHECK(result.response_length > 20U);
+    CHECK(contains_bytes(
+        response,
+        result.response_length,
+        (const uint8_t *)STATE.network_port_name,
+        strlen(STATE.network_port_name)));
+
+    length = who_has_request(
+        request,
+        0x0AU,
+        false,
+        false,
+        0U,
+        0U,
+        true,
+        0U,
+        0U,
+        STATE.network_port_name);
+    result = bacnet_handle_packet(
+        request, length, &STATE, response, sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_WHO_HAS);
+    CHECK(result.response_length > 20U);
 }
 
 static void test_read_property_multiple(void)
@@ -1338,7 +1645,7 @@ static void test_errors_and_malformed_input(void)
         sizeof(unknown_property_tail)) == 0);
 
     request_length = read_property_request(
-        request, 8, STATE.device_instance, 76, true, 15);
+        request, 8, STATE.device_instance, 76, true, 16);
     result = bacnet_handle_packet(
         request,
         request_length,
@@ -1937,6 +2244,7 @@ int main(void)
     test_reference_vectors();
     test_who_has_i_have();
     test_device_and_binary_input_properties();
+    test_network_port_object();
     test_read_property_multiple();
     test_subscribe_cov_and_notifications();
     test_errors_and_malformed_input();

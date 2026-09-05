@@ -9,6 +9,7 @@
 #define BACNET_MAX_REQUEST_BYTES 512U
 #define BACNET_BINARY_INPUT_COUNT 3U
 #define BACNET_ANALOG_VALUE_COUNT 10U
+#define BACNET_NETWORK_PORT_COUNT 1U
 #define BACNET_MAX_INSTANCE 4194303U
 
 typedef struct {
@@ -34,6 +35,19 @@ typedef struct {
     float analog_value_values[BACNET_ANALOG_VALUE_COUNT];
     uint32_t analog_value_units[BACNET_ANALOG_VALUE_COUNT];
     uint32_t analog_value_reliability[BACNET_ANALOG_VALUE_COUNT];
+    uint32_t network_port_instance;
+    const char *network_port_name;
+    const char *network_port_description;
+    uint32_t network_port_reliability;
+    bool network_port_out_of_service;
+    bool network_port_changes_pending;
+    float network_port_link_speed_bps;
+    uint16_t network_port_udp_port;
+    bool network_port_dhcp_enabled;
+    uint8_t network_port_ipv4[4];
+    uint8_t network_port_netmask[4];
+    uint8_t network_port_gateway[4];
+    uint8_t network_port_dns[3][4];
 } bacnet_device_state_t;
 
 typedef enum {
