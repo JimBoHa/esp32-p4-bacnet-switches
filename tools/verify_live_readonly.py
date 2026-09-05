@@ -57,6 +57,9 @@ def validate_status(args: argparse.Namespace, status: object) -> dict:
         or not bacnet_hil_test.revision_matches(args.expected_source, status.get("git_revision"))
         or not bacnet_hil_test.header_diagnostics_valid(status.get("header_diagnostics"))):
         raise ValueError("firmware identity, anonymous role, or complete P1 snapshot failed")
+    if any(not {"gpio", "pad", "initialization_preserved_config"}.issubset(pin)
+           for pin in status["header_diagnostics"]["pins"]):
+        raise ValueError("P1 rows must include explicit nullable GPIO/pad/configuration fields")
     system = status.get("system")
     if (not isinstance(system, dict) or type(system.get("boot_count")) is not int
         or system["boot_count"] < 0):

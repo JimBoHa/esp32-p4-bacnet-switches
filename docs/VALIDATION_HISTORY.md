@@ -26,6 +26,10 @@ application descriptor's `image_sha256`, not the whole `.bin` file SHA-256.
   import failure; fixed by supporting both package and direct-script imports.
   The 17 new tests and the full suite then passed. This was a host import
   issue, not a device failure.
+- Expanded malformed-row subtests then reproduced an uncaught missing-key
+  error for omitted nullable P1 fields. The checker now rejects those rows
+  with a clear validation failure; the regression matrix and full suite passed
+  after the fix. No firmware changes were needed.
 - `tools/verify_live_readonly.py` with the v1.28.0 identity below,
   `--samples 5 --interval 2`: passed all 40 P1 positions/25 readable GPIOs,
   anonymous reads, report structure, exact served assets, unchanged
