@@ -27,6 +27,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "hardware_profile.h"
 #include "network_config_store.h"
 #include "ota_auth.h"
 #include "ota_health.h"
@@ -1258,6 +1259,69 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             (unsigned)discovery.https_port,
             json_bool(discovery.bacnet_advertised),
             (unsigned)discovery.bacnet_port)) {
+        goto encoding_failed;
+    }
+    if (!response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            "\"hardware\":{\"board_model\":\"%s\","
+            "\"header\":\"%s\","
+            "\"supply\":{\"label\":\"3V3\",\"position\":%d,"
+            "\"nominal_volts\":3.3},"
+            "\"input_circuit\":{\"contact_type\":\"dry-contact\","
+            "\"internal_pull\":\"down\",\"input_only\":true,"
+            "\"closed_to_supply\":true,\"closed_raw_level\":true,"
+            "\"open_raw_level\":false,"
+            "\"recommended_external_pull_down_ohms\":%d},"
+            "\"inputs\":[",
+            HARDWARE_PROFILE_BOARD_MODEL,
+            HARDWARE_PROFILE_HEADER_NAME,
+            HARDWARE_PROFILE_3V3_POSITION,
+            HARDWARE_PROFILE_EXTERNAL_PULL_DOWN_OHMS)) {
+        goto encoding_failed;
+    }
+    for (size_t index = 0U; index < SWITCH_INPUT_COUNT; ++index) {
+        switch_input_diagnostics_t input;
+        if (!switch_input_diagnostics_get(index, &input) ||
+            !response_append(
+                response,
+                OTA_STATUS_RESPONSE_BYTES,
+                &response_length,
+                "%s{\"channel\":%u,\"gpio\":%d,"
+                "\"bacnet_binary_input_instance\":%u,"
+                "\"header_position\":",
+                index == 0U ? "" : ",",
+                (unsigned)(index + 1U),
+                input.gpio,
+                (unsigned)active_config.input_instances[index])) {
+            goto encoding_failed;
+        }
+        const int header_position =
+            hardware_profile_p1_position(input.gpio);
+        if (!response_append(
+                response,
+                OTA_STATUS_RESPONSE_BYTES,
+                &response_length,
+                header_position >= 0 ? "%d" : "null",
+                header_position) ||
+            !response_append(
+                response,
+                OTA_STATUS_RESPONSE_BYTES,
+                &response_length,
+                ",\"configured_active_low\":%s,"
+                "\"open_state\":\"%s\",\"closed_state\":\"%s\"}",
+                json_bool(input.active_low),
+                hardware_profile_binary_state(false, input.active_low),
+                hardware_profile_binary_state(true, input.active_low))) {
+            goto encoding_failed;
+        }
+    }
+    if (!response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            "]},")) {
         goto encoding_failed;
     }
 

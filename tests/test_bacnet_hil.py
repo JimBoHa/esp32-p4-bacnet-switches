@@ -91,6 +91,12 @@ class BacnetHilTests(unittest.TestCase):
         self.assertFalse(bacnet_hil_test.revision_matches(full, "1.11.0 (b583bcdbe73e)"))
         self.assertFalse(bacnet_hil_test.revision_matches(full, "ad7a24fdb9dc-dirty"))
 
+    def test_hardware_profile_validation_is_exact(self) -> None:
+        profile = json.loads(json.dumps(bacnet_hil_test.EXPECTED_HARDWARE_PROFILE))
+        self.assertTrue(bacnet_hil_test.hardware_profile_valid(profile))
+        profile["inputs"][0]["header_position"] = 36
+        self.assertFalse(bacnet_hil_test.hardware_profile_valid(profile))
+
     def test_report_is_machine_readable(self) -> None:
         report = bacnet_hil_test.TestReport(
             started_at="2026-01-01T00:00:00Z",

@@ -33,6 +33,32 @@ ANALOG_VALUE_INSTANCES = (
 COV_CAPACITY = 8
 FIRMWARE_DATABASE_REVISION_OFFSET = 3
 MAX_HTTP_RESPONSE_BYTES = 1024 * 1024
+EXPECTED_HARDWARE_PROFILE = {
+    "board_model": "Waveshare ESP32-P4-POE-ETH",
+    "header": "P1",
+    "supply": {"label": "3V3", "position": 36, "nominal_volts": 3.3},
+    "input_circuit": {
+        "contact_type": "dry-contact",
+        "internal_pull": "down",
+        "input_only": True,
+        "closed_to_supply": True,
+        "closed_raw_level": True,
+        "open_raw_level": False,
+        "recommended_external_pull_down_ohms": 10000,
+    },
+    "inputs": [
+        {
+            "channel": channel,
+            "gpio": gpio,
+            "bacnet_binary_input_instance": gpio,
+            "header_position": position,
+            "configured_active_low": False,
+            "open_state": "inactive",
+            "closed_state": "active",
+        }
+        for channel, gpio, position in ((1, 20, 35), (2, 21, 34), (3, 22, 32))
+    ],
+}
 
 
 class HilError(RuntimeError):
@@ -135,6 +161,11 @@ def revision_matches(expected: str | None, reported: object) -> bool:
         revision.startswith(expected_lower) or expected_lower.startswith(revision)
         for revision in revisions
     )
+
+
+def hardware_profile_valid(value: object) -> bool:
+    """Require exact field wiring metadata for the tested board/profile."""
+    return value == EXPECTED_HARDWARE_PROFILE
 
 
 def validate_args(args: argparse.Namespace) -> None:
@@ -808,6 +839,7 @@ class HilRunner:
         system = status.get("system", {})
         configuration = status.get("configuration", {})
         discovery = status.get("discovery", {})
+        hardware = status.get("hardware", {})
         bacnet = status.get("bacnet", {})
         watchdog = system.get("task_watchdog", {}) if isinstance(system, dict) else {}
         gpio_diagnostics = status.get("gpio_diagnostics", [])
@@ -873,6 +905,7 @@ class HilRunner:
                 for item in watchdog.values()
             )
             and signal_diagnostics_ok
+            and hardware_profile_valid(hardware)
             and (
                 self.args.mdns_hostname is None
                 or (
@@ -898,8 +931,8 @@ class HilRunner:
         self.report.require(
             "Authenticated HTTPS health",
             healthy,
-            f"version={status.get('version')}; source={source}; image={image_sha}; watchdogs healthy",
-            "firmware identity, OTA state, network, configuration, COV cleanup, or watchdog health failed",
+            f"version={status.get('version')}; source={source}; image={image_sha}; watchdogs and wiring profile healthy",
+            "firmware identity, OTA state, network, configuration, COV cleanup, watchdog health, or wiring profile failed",
         )
         certificate_der = ota_client._certificate_der(self.args.certificate)
         fingerprint = hashlib.sha256(certificate_der).hexdigest()
