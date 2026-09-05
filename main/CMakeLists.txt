@@ -70,6 +70,8 @@ idf_component_register(
         "diagnostics.c"
         "diagnostics_time.c"
         "input_line_classifier.c"
+        "network_config_model.c"
+        "network_config_store.c"
         "ota_auth.c"
         "ota_health.c"
         "ota_server.c"

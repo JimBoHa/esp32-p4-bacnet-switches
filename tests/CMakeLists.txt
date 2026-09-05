@@ -12,6 +12,7 @@ add_executable(
     ../main/cov_retry_cache.c
     ../main/diagnostics_time.c
     ../main/input_line_classifier.c
+    ../main/network_config_model.c
     ../main/ota_auth.c
     ../main/ota_health.c
 )

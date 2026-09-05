@@ -26,6 +26,7 @@
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "network_config_store.h"
 #include "ota_auth.h"
 #include "ota_health.h"
 #include "sdkconfig.h"
@@ -712,6 +713,385 @@ static esp_err_t config_put_handler(httpd_req_t *request)
     return send_config_json(request, true, changed);
 }
 
+static bool parse_ipv4_text(
+    const char *text,
+    uint8_t address[4])
+{
+    unsigned octets[4];
+    char trailing;
+    if (text == NULL || sscanf(
+            text,
+            "%u.%u.%u.%u%c",
+            &octets[0],
+            &octets[1],
+            &octets[2],
+            &octets[3],
+            &trailing) != 4) {
+        return false;
+    }
+    for (size_t index = 0U; index < 4U; ++index) {
+        if (octets[index] > UINT8_MAX) {
+            return false;
+        }
+        address[index] = (uint8_t)octets[index];
+    }
+    return true;
+}
+
+static bool json_required_ipv4(
+    const cJSON *object,
+    const char *name,
+    uint8_t address[4],
+    char *reason,
+    size_t reason_capacity)
+{
+    const cJSON *item = cJSON_GetObjectItemCaseSensitive(object, name);
+    if (!cJSON_IsString(item) ||
+        !parse_ipv4_text(item->valuestring, address)) {
+        (void)snprintf(
+            reason, reason_capacity, "%s must be an IPv4 address", name);
+        return false;
+    }
+    return true;
+}
+
+static bool parse_network_config_json(
+    const cJSON *root,
+    network_config_t *config,
+    char *reason,
+    size_t reason_capacity)
+{
+    if (!cJSON_IsObject(root) || config == NULL) {
+        (void)snprintf(
+            reason, reason_capacity, "network configuration must be an object");
+        return false;
+    }
+    memset(config, 0, sizeof(*config));
+    uint32_t schema = 0U;
+    if (!json_required_unsigned(
+            root,
+            "schema",
+            NETWORK_CONFIG_SCHEMA,
+            &schema,
+            reason,
+            reason_capacity) ||
+        schema != NETWORK_CONFIG_SCHEMA) {
+        (void)snprintf(
+            reason,
+            reason_capacity,
+            "schema must be %u",
+            (unsigned)NETWORK_CONFIG_SCHEMA);
+        return false;
+    }
+    if (!json_required_string(
+            root,
+            "hostname",
+            config->hostname,
+            sizeof(config->hostname),
+            reason,
+            reason_capacity)) {
+        return false;
+    }
+    const cJSON *mode = cJSON_GetObjectItemCaseSensitive(root, "mode");
+    const cJSON *static_addresses =
+        cJSON_GetObjectItemCaseSensitive(root, "static");
+    if (!cJSON_IsString(mode) || mode->valuestring == NULL) {
+        (void)snprintf(reason, reason_capacity, "mode must be dhcp or static");
+        return false;
+    }
+    if (strcmp(mode->valuestring, "dhcp") == 0) {
+        config->mode = NETWORK_ADDRESS_DHCP;
+        if (!cJSON_IsNull(static_addresses)) {
+            (void)snprintf(
+                reason, reason_capacity, "static must be null in DHCP mode");
+            return false;
+        }
+    } else if (strcmp(mode->valuestring, "static") == 0) {
+        config->mode = NETWORK_ADDRESS_STATIC;
+        if (!cJSON_IsObject(static_addresses) ||
+            !json_required_ipv4(
+                static_addresses,
+                "ipv4",
+                config->ipv4,
+                reason,
+                reason_capacity) ||
+            !json_required_ipv4(
+                static_addresses,
+                "netmask",
+                config->netmask,
+                reason,
+                reason_capacity) ||
+            !json_required_ipv4(
+                static_addresses,
+                "gateway",
+                config->gateway,
+                reason,
+                reason_capacity) ||
+            !json_required_ipv4(
+                static_addresses,
+                "dns",
+                config->dns,
+                reason,
+                reason_capacity)) {
+            if (!cJSON_IsObject(static_addresses)) {
+                (void)snprintf(
+                    reason,
+                    reason_capacity,
+                    "static must contain IPv4 settings in static mode");
+            }
+            return false;
+        }
+    } else {
+        (void)snprintf(reason, reason_capacity, "mode must be dhcp or static");
+        return false;
+    }
+    return network_config_validate(config, reason, reason_capacity);
+}
+
+static cJSON *network_config_json(
+    const network_config_t *saved,
+    const network_config_t *active,
+    const network_config_t *confirmed,
+    bool include_result,
+    bool changed)
+{
+    cJSON *root = cJSON_CreateObject();
+    if (root == NULL ||
+        cJSON_AddNumberToObject(root, "schema", NETWORK_CONFIG_SCHEMA) == NULL ||
+        cJSON_AddNumberToObject(root, "revision", saved->revision) == NULL ||
+        cJSON_AddNumberToObject(
+            root, "active_revision", active->revision) == NULL ||
+        cJSON_AddNumberToObject(
+            root, "confirmed_revision", confirmed->revision) == NULL ||
+        cJSON_AddBoolToObject(
+            root,
+            "restart_required",
+            network_config_restart_required()) == NULL ||
+        cJSON_AddBoolToObject(
+            root, "trial_active", network_config_trial_active()) == NULL ||
+        cJSON_AddNumberToObject(
+            root,
+            "trial_seconds_remaining",
+            network_config_trial_seconds_remaining()) == NULL ||
+        cJSON_AddNumberToObject(
+            root,
+            "trial_timeout_seconds",
+            NETWORK_CONFIG_TRIAL_TIMEOUT_SECONDS) == NULL ||
+        cJSON_AddStringToObject(
+            root,
+            "mode",
+            saved->mode == NETWORK_ADDRESS_DHCP ? "dhcp" : "static") == NULL ||
+        cJSON_AddStringToObject(root, "hostname", saved->hostname) == NULL) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    if (include_result &&
+        (cJSON_AddBoolToObject(root, "accepted", true) == NULL ||
+         cJSON_AddBoolToObject(root, "changed", changed) == NULL)) {
+        cJSON_Delete(root);
+        return NULL;
+    }
+    if (saved->mode == NETWORK_ADDRESS_DHCP) {
+        if (cJSON_AddNullToObject(root, "static") == NULL) {
+            cJSON_Delete(root);
+            return NULL;
+        }
+    } else {
+        char ipv4[16];
+        char netmask[16];
+        char gateway[16];
+        char dns[16];
+        (void)snprintf(
+            ipv4,
+            sizeof(ipv4),
+            "%u.%u.%u.%u",
+            saved->ipv4[0],
+            saved->ipv4[1],
+            saved->ipv4[2],
+            saved->ipv4[3]);
+        (void)snprintf(
+            netmask,
+            sizeof(netmask),
+            "%u.%u.%u.%u",
+            saved->netmask[0],
+            saved->netmask[1],
+            saved->netmask[2],
+            saved->netmask[3]);
+        (void)snprintf(
+            gateway,
+            sizeof(gateway),
+            "%u.%u.%u.%u",
+            saved->gateway[0],
+            saved->gateway[1],
+            saved->gateway[2],
+            saved->gateway[3]);
+        (void)snprintf(
+            dns,
+            sizeof(dns),
+            "%u.%u.%u.%u",
+            saved->dns[0],
+            saved->dns[1],
+            saved->dns[2],
+            saved->dns[3]);
+        cJSON *addresses = cJSON_CreateObject();
+        if (addresses == NULL ||
+            cJSON_AddStringToObject(addresses, "ipv4", ipv4) == NULL ||
+            cJSON_AddStringToObject(addresses, "netmask", netmask) == NULL ||
+            cJSON_AddStringToObject(addresses, "gateway", gateway) == NULL ||
+            cJSON_AddStringToObject(addresses, "dns", dns) == NULL ||
+            !cJSON_AddItemToObject(root, "static", addresses)) {
+            cJSON_Delete(addresses);
+            cJSON_Delete(root);
+            return NULL;
+        }
+    }
+    return root;
+}
+
+static esp_err_t send_network_config_json(
+    httpd_req_t *request,
+    bool include_result,
+    bool changed)
+{
+    network_config_t saved;
+    network_config_t active;
+    network_config_t confirmed;
+    network_config_get_saved(&saved);
+    network_config_get_active(&active);
+    network_config_get_confirmed(&confirmed);
+    cJSON *root = network_config_json(
+        &saved, &active, &confirmed, include_result, changed);
+    if (root == NULL) {
+        return httpd_resp_send_err(
+            request,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "network configuration encoding failed");
+    }
+    char *encoded = cJSON_PrintUnformatted(root);
+    cJSON_Delete(root);
+    if (encoded == NULL) {
+        return httpd_resp_send_err(
+            request,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "network configuration encoding failed");
+    }
+    httpd_resp_set_type(request, "application/json");
+    httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    const esp_err_t result = httpd_resp_sendstr(request, encoded);
+    cJSON_free(encoded);
+    return result;
+}
+
+static esp_err_t network_config_get_handler(httpd_req_t *request)
+{
+    if (!request_authenticated(request)) {
+        return send_unauthorized(request);
+    }
+    return send_network_config_json(request, false, false);
+}
+
+static esp_err_t network_config_put_handler(httpd_req_t *request)
+{
+    if (!request_authenticated(request)) {
+        return send_unauthorized(request);
+    }
+    char content_type[64];
+    const size_t content_type_length =
+        httpd_req_get_hdr_value_len(request, "Content-Type");
+    if (content_type_length == 0U ||
+        content_type_length >= sizeof(content_type) ||
+        httpd_req_get_hdr_value_str(
+            request,
+            "Content-Type",
+            content_type,
+            sizeof(content_type)) != ESP_OK ||
+        strncasecmp(content_type, "application/json", 16U) != 0 ||
+        (content_type[16] != '\0' && content_type[16] != ';' &&
+         content_type[16] != ' ' && content_type[16] != '\t')) {
+        httpd_resp_set_status(request, "415 Unsupported Media Type");
+        return httpd_resp_sendstr(
+            request, "Content-Type must be application/json");
+    }
+    if (request->content_len == 0U ||
+        request->content_len > CONFIG_JSON_MAX_BYTES) {
+        return httpd_resp_send_err(
+            request,
+            HTTPD_400_BAD_REQUEST,
+            "network configuration body must be 1..4096 bytes");
+    }
+    char *body = malloc(request->content_len + 1U);
+    if (body == NULL) {
+        return httpd_resp_send_err(
+            request, HTTPD_500_INTERNAL_SERVER_ERROR, "not enough memory");
+    }
+    size_t received_total = 0U;
+    unsigned timeouts = 0U;
+    while (received_total < request->content_len) {
+        const int received = httpd_req_recv(
+            request,
+            body + received_total,
+            request->content_len - received_total);
+        if (received == HTTPD_SOCK_ERR_TIMEOUT && timeouts++ < 5U) {
+            continue;
+        }
+        if (received <= 0) {
+            free(body);
+            return httpd_resp_send_err(
+                request,
+                HTTPD_400_BAD_REQUEST,
+                "incomplete network configuration body");
+        }
+        received_total += (size_t)received;
+    }
+    body[received_total] = '\0';
+    cJSON *root = cJSON_ParseWithLengthOpts(
+        body, received_total + 1U, NULL, true);
+    free(body);
+    char reason[160] = "invalid JSON";
+    network_config_t candidate;
+    if (root == NULL || !parse_network_config_json(
+            root, &candidate, reason, sizeof(reason))) {
+        cJSON_Delete(root);
+        return httpd_resp_send_err(request, HTTPD_400_BAD_REQUEST, reason);
+    }
+    cJSON_Delete(root);
+
+    bool changed = false;
+    const esp_err_t result = network_config_update(&candidate, &changed);
+    if (result == ESP_ERR_INVALID_STATE) {
+        httpd_resp_set_status(request, "409 Conflict");
+        return httpd_resp_sendstr(
+            request, "confirm the active network trial before making changes");
+    }
+    if (result != ESP_OK) {
+        return httpd_resp_send_err(
+            request,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "failed to persist network configuration");
+    }
+    httpd_resp_set_status(request, "202 Accepted");
+    return send_network_config_json(request, true, changed);
+}
+
+static esp_err_t network_config_confirm_handler(httpd_req_t *request)
+{
+    if (!request_authenticated(request)) {
+        return send_unauthorized(request);
+    }
+    const esp_err_t result = network_config_confirm_trial();
+    if (result == ESP_ERR_INVALID_STATE) {
+        httpd_resp_set_status(request, "409 Conflict");
+        return httpd_resp_sendstr(request, "no active network trial");
+    }
+    if (result != ESP_OK) {
+        return httpd_resp_send_err(
+            request,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "failed to confirm network configuration");
+    }
+    return send_network_config_json(request, true, false);
+}
+
 static const char *dhcp_status_name(uint32_t status)
 {
     switch ((esp_netif_dhcp_status_t)status) {
@@ -746,8 +1126,14 @@ static esp_err_t status_get_handler(httpd_req_t *request)
     }
     firmware_config_t active_config;
     firmware_config_t saved_config;
+    network_config_t active_network_config;
+    network_config_t saved_network_config;
+    network_config_t confirmed_network_config;
     config_store_get_active(&active_config);
     config_store_get_saved(&saved_config);
+    network_config_get_active(&active_network_config);
+    network_config_get_saved(&saved_network_config);
+    network_config_get_confirmed(&confirmed_network_config);
 
     char *response = malloc(OTA_STATUS_RESPONSE_BYTES);
     if (response == NULL) {
@@ -819,6 +1205,27 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             (unsigned)active_config.database_revision,
             (unsigned)saved_config.database_revision,
             json_bool(config_store_restart_required()))) {
+        goto encoding_failed;
+    }
+    if (!response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            "\"network_configuration\":{\"mode\":\"%s\","
+            "\"hostname\":\"%s\",\"active_revision\":%u,"
+            "\"saved_revision\":%u,\"confirmed_revision\":%u,"
+            "\"restart_required\":%s,\"trial_active\":%s,"
+            "\"trial_seconds_remaining\":%u},",
+            active_network_config.mode == NETWORK_ADDRESS_DHCP
+                ? "dhcp"
+                : "static",
+            active_network_config.hostname,
+            (unsigned)active_network_config.revision,
+            (unsigned)saved_network_config.revision,
+            (unsigned)confirmed_network_config.revision,
+            json_bool(network_config_restart_required()),
+            json_bool(network_config_trial_active()),
+            (unsigned)network_config_trial_seconds_remaining())) {
         goto encoding_failed;
     }
 
@@ -1272,7 +1679,7 @@ esp_err_t ota_server_start(void)
 
     httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
     config.port_secure = CONFIG_OTA_HTTPS_PORT;
-    config.httpd.max_uri_handlers = 5;
+    config.httpd.max_uri_handlers = 8;
     config.httpd.max_open_sockets = 2;
     config.httpd.lru_purge_enable = true;
     config.httpd.stack_size = 12288;
@@ -1314,6 +1721,21 @@ esp_err_t ota_server_start(void)
         .method = HTTP_PUT,
         .handler = config_put_handler,
     };
+    const httpd_uri_t network_config_get_uri = {
+        .uri = "/network/config",
+        .method = HTTP_GET,
+        .handler = network_config_get_handler,
+    };
+    const httpd_uri_t network_config_put_uri = {
+        .uri = "/network/config",
+        .method = HTTP_PUT,
+        .handler = network_config_put_handler,
+    };
+    const httpd_uri_t network_config_confirm_uri = {
+        .uri = "/network/config/confirm",
+        .method = HTTP_POST,
+        .handler = network_config_confirm_handler,
+    };
     esp_err_t result =
         httpd_register_uri_handler(created_server, &status_uri);
     if (result == ESP_OK) {
@@ -1330,6 +1752,18 @@ esp_err_t ota_server_start(void)
     if (result == ESP_OK) {
         result = httpd_register_uri_handler(
             created_server, &config_put_uri);
+    }
+    if (result == ESP_OK) {
+        result = httpd_register_uri_handler(
+            created_server, &network_config_get_uri);
+    }
+    if (result == ESP_OK) {
+        result = httpd_register_uri_handler(
+            created_server, &network_config_put_uri);
+    }
+    if (result == ESP_OK) {
+        result = httpd_register_uri_handler(
+            created_server, &network_config_confirm_uri);
     }
     if (result != ESP_OK) {
         (void)httpd_ssl_stop(created_server);
