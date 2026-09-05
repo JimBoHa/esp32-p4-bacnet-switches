@@ -5,16 +5,20 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import os
 import secrets
 import shutil
 import ssl
 import subprocess
+import sys
+import tempfile
 from pathlib import Path
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SECRETS_DIRECTORY = PROJECT_ROOT / "secrets"
 DEFAULT_CERTIFICATE = PROJECT_ROOT / "main" / "ota_server_cert.pem"
+VALIDATOR = PROJECT_ROOT / "tools" / "validate_ota_credentials.py"
 
 
 def _arguments() -> argparse.Namespace:
@@ -40,6 +44,15 @@ def _arguments() -> argparse.Namespace:
 
 
 def _require_replaceable(paths: list[Path], force: bool) -> None:
+    resolved = [path.resolve(strict=False) for path in paths]
+    if len(set(resolved)) != len(resolved):
+        raise ValueError("private key, token, and certificate outputs must be distinct")
+    symlinks = [str(path) for path in paths if path.is_symlink()]
+    if symlinks:
+        raise ValueError(
+            "refusing credential output through symbolic link: "
+            + ", ".join(symlinks)
+        )
     existing = [str(path) for path in paths if path.exists()]
     if existing and not force:
         joined = ", ".join(existing)
@@ -56,51 +69,85 @@ def main() -> int:
     token_file = args.secrets_dir / "ota_token.txt"
     _require_replaceable([private_key, token_file, args.certificate], args.force)
 
+    args.secrets_dir.parent.mkdir(parents=True, exist_ok=True)
     args.secrets_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     args.secrets_dir.chmod(0o700)
     args.certificate.parent.mkdir(parents=True, exist_ok=True)
 
-    subprocess.run(
-        [
-            openssl,
-            "genpkey",
-            "-algorithm",
-            "EC",
-            "-pkeyopt",
-            "ec_paramgen_curve:P-256",
-            "-out",
-            str(private_key),
-        ],
-        check=True,
-    )
-    subprocess.run(
-        [
-            openssl,
-            "req",
-            "-x509",
-            "-new",
-            "-sha256",
-            "-key",
-            str(private_key),
-            "-out",
-            str(args.certificate),
-            "-days",
-            "3650",
-            "-subj",
-            "/CN=esp32-p4-bacnet",
-            "-addext",
-            "basicConstraints=critical,CA:FALSE",
-            "-addext",
-            "keyUsage=critical,digitalSignature",
-            "-addext",
-            "extendedKeyUsage=serverAuth",
-            "-addext",
-            "subjectAltName=DNS:esp32-p4-bacnet",
-        ],
-        check=True,
-    )
+    if os.stat(args.secrets_dir).st_dev != os.stat(args.certificate.parent).st_dev:
+        raise ValueError(
+            "secrets and certificate outputs must be on the same filesystem for "
+            "replacement-safe installation"
+        )
 
-    token_file.write_text(secrets.token_urlsafe(48), encoding="ascii")
+    with tempfile.TemporaryDirectory(
+        prefix=".ota-credentials-", dir=args.secrets_dir
+    ) as temporary:
+        staging = Path(temporary)
+        staging.chmod(0o700)
+        staged_private_key = staging / "ota_server_key.pem"
+        staged_token_file = staging / "ota_token.txt"
+        staged_certificate = staging / "ota_server_cert.pem"
+        subprocess.run(
+            [
+                openssl,
+                "genpkey",
+                "-algorithm",
+                "EC",
+                "-pkeyopt",
+                "ec_paramgen_curve:P-256",
+                "-out",
+                str(staged_private_key),
+            ],
+            check=True,
+        )
+        subprocess.run(
+            [
+                openssl,
+                "req",
+                "-x509",
+                "-new",
+                "-sha256",
+                "-key",
+                str(staged_private_key),
+                "-out",
+                str(staged_certificate),
+                "-days",
+                "3650",
+                "-subj",
+                "/CN=esp32-p4-bacnet",
+                "-addext",
+                "basicConstraints=critical,CA:FALSE",
+                "-addext",
+                "keyUsage=critical,digitalSignature",
+                "-addext",
+                "extendedKeyUsage=serverAuth",
+                "-addext",
+                "subjectAltName=DNS:esp32-p4-bacnet",
+            ],
+            check=True,
+        )
+        staged_token_file.write_text(secrets.token_urlsafe(48), encoding="ascii")
+        staged_private_key.chmod(0o600)
+        staged_token_file.chmod(0o600)
+        subprocess.run(
+            [
+                sys.executable,
+                str(VALIDATOR),
+                "--certificate",
+                str(staged_certificate),
+                "--private-key",
+                str(staged_private_key),
+                "--token-file",
+                str(staged_token_file),
+            ],
+            check=True,
+            capture_output=True,
+        )
+        os.replace(staged_private_key, private_key)
+        os.replace(staged_token_file, token_file)
+        os.replace(staged_certificate, args.certificate)
+
     private_key.chmod(0o600)
     token_file.chmod(0o600)
 

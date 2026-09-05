@@ -103,6 +103,13 @@ class BacnetHilTests(unittest.TestCase):
             "partition": "ota_0",
             "state": "valid",
             "image_sha256": image_sha,
+            "ota_policy": {
+                "minimum_image_bytes": 288,
+                "maximum_image_bytes": 4194304,
+                "upload_deadline_seconds": 300,
+                "required_content_type": "application/octet-stream",
+                "minimum_secure_version": 0,
+            },
             "firmware": {
                 "build_date": "Sep  5 2026",
                 "build_time": "04:00:00",

@@ -25,6 +25,7 @@
 #include "esp_partition.h"
 #include "esp_random.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "hardware_profile.h"
@@ -38,6 +39,8 @@
 
 #define OTA_RECEIVE_BUFFER_BYTES 4096U
 #define OTA_MAX_CONSECUTIVE_TIMEOUTS 5U
+#define OTA_RECEIVE_DEADLINE_US (5LL * 60LL * 1000LL * 1000LL)
+#define OTA_MINIMUM_IMAGE_BYTES 288U
 #define OTA_ROLLBACK_VALIDATION_INITIAL_DELAY_MS 10000U
 #define OTA_ROLLBACK_VALIDATION_POLL_MS 1000U
 #define OTA_ROLLBACK_VALIDATION_TIMEOUT_MS 60000U
@@ -278,6 +281,23 @@ static bool project_header_matches(httpd_req_t *request)
     return bounded_string_length(
                running->project_name, sizeof(running->project_name)) == length &&
         memcmp(project, running->project_name, length) == 0;
+}
+
+static bool ota_content_type_valid(httpd_req_t *request)
+{
+    static const char EXPECTED[] = "application/octet-stream";
+    const size_t length =
+        httpd_req_get_hdr_value_len(request, "Content-Type");
+    if (length != sizeof(EXPECTED) - 1U) {
+        return false;
+    }
+    char content_type[sizeof(EXPECTED)];
+    return httpd_req_get_hdr_value_str(
+               request,
+               "Content-Type",
+               content_type,
+               sizeof(content_type)) == ESP_OK &&
+        strcasecmp(content_type, EXPECTED) == 0;
 }
 
 static bool running_image_allows_update(
@@ -1310,6 +1330,21 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             response,
             OTA_STATUS_RESPONSE_BYTES,
             &response_length,
+            "\"ota_policy\":{\"minimum_image_bytes\":%u,"
+            "\"maximum_image_bytes\":%u,"
+            "\"upload_deadline_seconds\":%u,"
+            "\"required_content_type\":\"application/octet-stream\","
+            "\"minimum_secure_version\":%u},",
+            (unsigned)OTA_MINIMUM_IMAGE_BYTES,
+            next_update != NULL ? (unsigned)next_update->size : 0U,
+            (unsigned)(OTA_RECEIVE_DEADLINE_US / 1000000LL),
+            app != NULL ? (unsigned)app->secure_version : 0U)) {
+        goto encoding_failed;
+    }
+    if (!response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
             "\"configuration\":{\"active_database_revision\":%u,"
             "\"saved_database_revision\":%u,\"restart_required\":%s},",
             (unsigned)active_config.database_revision,
@@ -1750,6 +1785,11 @@ static esp_err_t ota_post_handler(httpd_req_t *request)
             HTTPD_400_BAD_REQUEST,
             "missing or incorrect X-Firmware-Project header");
     }
+    if (!ota_content_type_valid(request)) {
+        httpd_resp_set_status(request, "415 Unsupported Media Type");
+        return httpd_resp_sendstr(
+            request, "Content-Type must be application/octet-stream");
+    }
     if (atomic_exchange_explicit(
             &upload_in_progress, true, memory_order_acq_rel)) {
         httpd_resp_set_status(request, "409 Conflict");
@@ -1772,6 +1812,11 @@ static esp_err_t ota_post_handler(httpd_req_t *request)
     if (request->content_len == 0U) {
         http_error = HTTPD_411_LENGTH_REQUIRED;
         error_message = "firmware Content-Length required";
+        goto fail;
+    }
+    if (request->content_len < OTA_MINIMUM_IMAGE_BYTES) {
+        http_error = HTTPD_400_BAD_REQUEST;
+        error_message = "firmware image is too small";
         goto fail;
     }
     if (request->content_len > update_partition->size) {
@@ -1800,7 +1845,14 @@ static esp_err_t ota_post_handler(httpd_req_t *request)
         update_partition->label);
     size_t remaining = request->content_len;
     unsigned consecutive_timeouts = 0;
+    const int64_t receive_deadline_us =
+        esp_timer_get_time() + OTA_RECEIVE_DEADLINE_US;
     while (remaining > 0U) {
+        if (esp_timer_get_time() >= receive_deadline_us) {
+            http_error = HTTPD_408_REQ_TIMEOUT;
+            error_message = "firmware upload exceeded five-minute deadline";
+            goto fail;
+        }
         const size_t wanted = remaining < OTA_RECEIVE_BUFFER_BYTES
             ? remaining
             : OTA_RECEIVE_BUFFER_BYTES;
@@ -1823,7 +1875,12 @@ static esp_err_t ota_post_handler(httpd_req_t *request)
         consecutive_timeouts = 0;
         result = esp_ota_write(ota_handle, buffer, (size_t)received);
         if (result != ESP_OK) {
-            error_message = "firmware flash write failed";
+            if (result == ESP_ERR_OTA_VALIDATE_FAILED) {
+                http_error = HTTPD_400_BAD_REQUEST;
+                error_message = "firmware image validation failed";
+            } else {
+                error_message = "firmware flash write failed";
+            }
             goto fail;
         }
         remaining -= (size_t)received;
@@ -1834,6 +1891,10 @@ static esp_err_t ota_post_handler(httpd_req_t *request)
     result = esp_ota_end(ota_handle);
     ota_started = false;
     if (result != ESP_OK) {
+        if (result == ESP_ERR_OTA_VALIDATE_FAILED ||
+            result == ESP_ERR_INVALID_ARG) {
+            http_error = HTTPD_400_BAD_REQUEST;
+        }
         error_message = "firmware image validation failed";
         goto fail;
     }
@@ -1861,6 +1922,11 @@ static esp_err_t ota_post_handler(httpd_req_t *request)
             sizeof(candidate.project_name)) != 0) {
         http_error = HTTPD_400_BAD_REQUEST;
         error_message = "firmware belongs to a different project";
+        goto fail;
+    }
+    if (candidate.secure_version < running->secure_version) {
+        http_error = HTTPD_400_BAD_REQUEST;
+        error_message = "firmware secure version is older than running firmware";
         goto fail;
     }
 
