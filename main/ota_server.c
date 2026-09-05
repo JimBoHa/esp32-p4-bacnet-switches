@@ -1174,7 +1174,25 @@ static bool append_input_history(
     return response_append(response, capacity, length, "]}");
 }
 
-static esp_err_t status_get_handler(httpd_req_t *request)
+/* Only explicit configuration fields are exported; never serialize NVS or credentials. */
+static bool append_report_object(
+    char *response, size_t capacity, size_t *length, const char *name, cJSON *object)
+{
+    if (object == NULL) {
+        return false;
+    }
+    char *encoded = cJSON_PrintUnformatted(object);
+    cJSON_Delete(object);
+    if (encoded == NULL) {
+        return false;
+    }
+    const bool result = response_append(
+        response, capacity, length, ",\"%s\":%s", name, encoded);
+    cJSON_free(encoded);
+    return result;
+}
+
+static esp_err_t send_status_json(httpd_req_t *request, bool report)
 {
     if (!request_authenticated(request)) {
         return send_unauthorized(request);
@@ -1229,6 +1247,14 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             request, HTTPD_500_INTERNAL_SERVER_ERROR, "not enough memory");
     }
     size_t response_length = 0;
+    if (report && !response_append(
+            response, OTA_STATUS_RESPONSE_BYTES, &response_length,
+            "{\"schema\":1,\"report_type\":\"esp32-p4-diagnostics\","
+            "\"notice\":\"Contains site configuration and network addresses; "
+            "review before sharing. Credentials are excluded. Counters may advance "
+            "during capture.\",\"status\":")) {
+        goto encoding_failed;
+    }
     if (!response_append(
             response,
             OTA_STATUS_RESPONSE_BYTES,
@@ -1820,8 +1846,35 @@ static esp_err_t status_get_handler(httpd_req_t *request)
         !response_append(response, OTA_STATUS_RESPONSE_BYTES, &response_length, "}")) {
         goto encoding_failed;
     }
+    if (report &&
+        (!append_report_object(response, OTA_STATUS_RESPONSE_BYTES, &response_length,
+             "active_configuration",
+             config_json(&active_config, &active_config, false, false)) ||
+         !append_report_object(response, OTA_STATUS_RESPONSE_BYTES, &response_length,
+             "saved_configuration",
+             config_json(&saved_config, &active_config, false, false)) ||
+         !append_report_object(response, OTA_STATUS_RESPONSE_BYTES, &response_length,
+             "active_network_configuration", network_config_json(
+                 &active_network_config, &active_network_config,
+                 &confirmed_network_config, false, false)) ||
+         !append_report_object(response, OTA_STATUS_RESPONSE_BYTES, &response_length,
+             "saved_network_configuration", network_config_json(
+                 &saved_network_config, &active_network_config,
+                 &confirmed_network_config, false, false)) ||
+         !append_report_object(response, OTA_STATUS_RESPONSE_BYTES, &response_length,
+             "confirmed_network_configuration", network_config_json(
+                 &confirmed_network_config, &active_network_config,
+                 &confirmed_network_config, false, false)) ||
+         !response_append(response, OTA_STATUS_RESPONSE_BYTES, &response_length, "}"))) {
+        goto encoding_failed;
+    }
     httpd_resp_set_type(request, "application/json");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    if (report) {
+        httpd_resp_set_hdr(request, "Content-Disposition",
+            "attachment; filename=esp32-p4-diagnostics.json");
+        httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
+    }
     const esp_err_t send_result =
         httpd_resp_send(request, response, response_length);
     free(response);
@@ -1831,6 +1884,16 @@ encoding_failed:
     free(response);
     return httpd_resp_send_err(
         request, HTTPD_500_INTERNAL_SERVER_ERROR, "status encoding failed");
+}
+
+static esp_err_t status_get_handler(httpd_req_t *request)
+{
+    return send_status_json(request, false);
+}
+
+static esp_err_t diagnostics_report_get_handler(httpd_req_t *request)
+{
+    return send_status_json(request, true);
 }
 
 static esp_err_t input_self_test_post_handler(httpd_req_t *request)
@@ -2267,7 +2330,7 @@ esp_err_t ota_server_start(void)
 
     httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
     config.port_secure = CONFIG_OTA_HTTPS_PORT;
-    config.httpd.max_uri_handlers = 12;
+    config.httpd.max_uri_handlers = 13;
     config.httpd.max_resp_headers = 8;
     config.httpd.max_open_sockets = 2;
     config.httpd.lru_purge_enable = true;
@@ -2289,6 +2352,11 @@ esp_err_t ota_server_start(void)
         .uri = "/ota/status",
         .method = HTTP_GET,
         .handler = status_get_handler,
+    };
+    const httpd_uri_t report_uri = {
+        .uri = "/diagnostics/report",
+        .method = HTTP_GET,
+        .handler = diagnostics_report_get_handler,
     };
     const httpd_uri_t update_uri = {
         .uri = "/ota",
@@ -2347,6 +2415,9 @@ esp_err_t ota_server_start(void)
     };
     esp_err_t result =
         httpd_register_uri_handler(created_server, &status_uri);
+    if (result == ESP_OK) {
+        result = httpd_register_uri_handler(created_server, &report_uri);
+    }
     if (result == ESP_OK) {
         result = httpd_register_uri_handler(created_server, &update_uri);
     }
