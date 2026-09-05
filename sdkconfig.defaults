@@ -24,6 +24,7 @@ CONFIG_FREERTOS_HZ=1000
 # Monitor the input and BACnet tasks in addition to both idle tasks.
 CONFIG_ESP_TASK_WDT_EN=y
 CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_PANIC=y
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=5
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=y
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=y
@@ -43,6 +44,27 @@ CONFIG_OTA_HTTPS_PORT=443
 CONFIG_ESP_HTTPS_SERVER_ENABLE=y
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024
 
+# Credential-bearing core dumps must never be written to unencrypted flash.
+CONFIG_ESP_COREDUMP_ENABLE_TO_NONE=y
+# Secure Boot, flash encryption, and eFuse anti-rollback require a separate,
+# device-specific key provisioning and recovery lifecycle.
+# CONFIG_SECURE_BOOT is not set
+# CONFIG_SECURE_FLASH_ENC_ENABLED is not set
+# CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK is not set
+
 # BACnet/IP owns one UDP socket and needs directed-broadcast transmission.
 CONFIG_LWIP_MAX_SOCKETS=10
 CONFIG_LWIP_SO_REUSE=y
+
+# Advertise only this Ethernet controller and its two implemented services.
+# Query, browse, Wi-Fi, and console surfaces are intentionally excluded.
+# mDNS 1.12.0 internally inspects two slots during duplicate detection.
+CONFIG_MDNS_MAX_INTERFACES=2
+CONFIG_MDNS_MAX_SERVICES=2
+CONFIG_MDNS_ACTION_QUEUE_LEN=8
+# CONFIG_MDNS_ENABLE_CONSOLE_CLI is not set
+# CONFIG_MDNS_ENABLE_BROWSE is not set
+# CONFIG_MDNS_MULTIPLE_INSTANCE is not set
+# CONFIG_MDNS_PREDEF_NETIF_STA is not set
+# CONFIG_MDNS_PREDEF_NETIF_AP is not set
+CONFIG_MDNS_PREDEF_NETIF_ETH=y

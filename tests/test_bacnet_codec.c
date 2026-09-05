@@ -9,6 +9,8 @@
 #include "config_model.h"
 #include "cov_retry_cache.h"
 #include "diagnostics_time.h"
+#include "diagnostics_metrics.h"
+#include "hardware_profile.h"
 #include "input_line_classifier.h"
 #include "input_debounce.h"
 #include "network_config_model.h"
@@ -2382,6 +2384,48 @@ static void test_config_model(void)
         "%s",
         BACNET_IPV4_READY_INPUT_NAME);
     CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
+    const char *const fixed_names[] = {
+        BACNET_ETHERNET_LINK_INPUT_NAME,
+        BACNET_IPV4_READY_INPUT_NAME,
+        BACNET_CHIP_TEMPERATURE_VALUE_NAME,
+        BACNET_SYSTEM_UPTIME_VALUE_NAME,
+        BACNET_FREE_HEAP_VALUE_NAME,
+        BACNET_MINIMUM_FREE_HEAP_VALUE_NAME,
+        BACNET_ETHERNET_LINK_LOSSES_VALUE_NAME,
+        BACNET_ETHERNET_RECONNECTS_VALUE_NAME,
+        BACNET_RX_PACKETS_VALUE_NAME,
+        BACNET_PROTOCOL_ERRORS_VALUE_NAME,
+        BACNET_LAST_RESET_REASON_VALUE_NAME,
+        BACNET_ACTIVE_COV_SUBSCRIPTIONS_VALUE_NAME,
+        BACNET_BOOT_COUNT_VALUE_NAME,
+        BACNET_NETWORK_PORT_NAME,
+    };
+    for (size_t index = 0U;
+         index < sizeof(fixed_names) / sizeof(fixed_names[0]);
+         ++index) {
+        invalid = config;
+        (void)snprintf(
+            invalid.input_names[index % FIRMWARE_CONFIG_INPUT_COUNT],
+            sizeof(invalid.input_names[0]),
+            "%s",
+            fixed_names[index]);
+        CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
+        CHECK(strcmp(reason, "BACnet object names must be unique") == 0);
+    }
+    invalid = config;
+    (void)snprintf(
+        invalid.device_name,
+        sizeof(invalid.device_name),
+        "%s",
+        BACNET_NETWORK_PORT_NAME);
+    CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
+    invalid = config;
+    (void)snprintf(
+        invalid.input_names[0],
+        sizeof(invalid.input_names[0]),
+        "chip temperature");
+    CHECK(!config_model_validate(&invalid, reason, sizeof(reason)));
+    CHECK(strcmp(reason, "BACnet object names must be unique") == 0);
     invalid = config;
     (void)snprintf(
         invalid.input_names[2],
@@ -2487,6 +2531,67 @@ static void test_network_config_model(void)
     CHECK(network_config_crc32(NULL) == 0U);
 }
 
+static void test_hardware_profile(void)
+{
+    CHECK(hardware_profile_p1_position(20) == 35);
+    CHECK(hardware_profile_p1_position(21) == 34);
+    CHECK(hardware_profile_p1_position(22) == 32);
+    CHECK(hardware_profile_p1_position(23) == -1);
+    CHECK(strcmp(hardware_profile_binary_state(false, false), "inactive") == 0);
+    CHECK(strcmp(hardware_profile_binary_state(true, false), "active") == 0);
+    CHECK(strcmp(hardware_profile_binary_state(false, true), "active") == 0);
+    CHECK(strcmp(hardware_profile_binary_state(true, true), "inactive") == 0);
+}
+
+static void test_diagnostics_metrics(void)
+{
+    diagnostics_temperature_metrics_t temperature = {0};
+    diagnostics_temperature_metrics_record(
+        &temperature, true, 35.5F, 0);
+    CHECK(temperature.has_sample);
+    CHECK(temperature.minimum_c == 35.5F);
+    CHECK(temperature.maximum_c == 35.5F);
+    CHECK(temperature.sample_count == 1U);
+    CHECK(temperature.error_count == 0U);
+    CHECK(temperature.last_result == 0);
+
+    diagnostics_temperature_metrics_record(
+        &temperature, true, 31.25F, 0);
+    diagnostics_temperature_metrics_record(
+        &temperature, true, 42.75F, 0);
+    diagnostics_temperature_metrics_record(
+        &temperature, false, 0.0F, -7);
+    CHECK(temperature.minimum_c == 31.25F);
+    CHECK(temperature.maximum_c == 42.75F);
+    CHECK(temperature.sample_count == 3U);
+    CHECK(temperature.error_count == 1U);
+    CHECK(temperature.last_result == -7);
+
+    temperature.sample_count = UINT32_MAX;
+    temperature.error_count = UINT32_MAX;
+    diagnostics_temperature_metrics_record(
+        &temperature, true, 36.0F, 0);
+    diagnostics_temperature_metrics_record(
+        &temperature, false, 0.0F, -1);
+    CHECK(temperature.sample_count == UINT32_MAX);
+    CHECK(temperature.error_count == UINT32_MAX);
+    diagnostics_temperature_metrics_record(NULL, true, 1.0F, 0);
+
+    diagnostics_fault_log_metrics_t fault_log =
+        diagnostics_fault_log_metrics(1U, 0U);
+    CHECK(fault_log.total_event_count == 0U);
+    CHECK(fault_log.overwritten_event_count == 0U);
+    fault_log = diagnostics_fault_log_metrics(97U, 16U);
+    CHECK(fault_log.total_event_count == 96U);
+    CHECK(fault_log.overwritten_event_count == 80U);
+    fault_log = diagnostics_fault_log_metrics(4U, 16U);
+    CHECK(fault_log.total_event_count == 3U);
+    CHECK(fault_log.overwritten_event_count == 0U);
+    fault_log = diagnostics_fault_log_metrics(0U, 16U);
+    CHECK(fault_log.total_event_count == UINT32_MAX);
+    CHECK(fault_log.overwritten_event_count == UINT32_MAX - 16U);
+}
+
 static void test_subscribe_cov_capacity_error(void)
 {
     uint8_t response[32];
@@ -2522,6 +2627,8 @@ int main(void)
     test_input_line_classifier();
     test_config_model();
     test_network_config_model();
+    test_hardware_profile();
+    test_diagnostics_metrics();
     printf("bacnet_codec_tests: %u checks passed\n", tests_run);
     return EXIT_SUCCESS;
 }

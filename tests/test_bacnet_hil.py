@@ -26,6 +26,7 @@ def args(**overrides: object) -> argparse.Namespace:
         "expected_image_sha256": None,
         "token_file": None,
         "certificate": Path("main/ota_server_cert.pem"),
+        "mdns_hostname": None,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -58,6 +59,8 @@ class BacnetHilTests(unittest.TestCase):
             bacnet_hil_test.validate_args(args(client_instance=599152))
         with self.assertRaisesRegex(bacnet_hil_test.HilError, "greater than zero"):
             bacnet_hil_test.validate_args(args(timeout=0))
+        with self.assertRaisesRegex(bacnet_hil_test.HilError, "RFC 1123"):
+            bacnet_hil_test.validate_args(args(mdns_hostname="bad hostname"))
 
     def test_expected_identity_format_validation(self) -> None:
         bacnet_hil_test.validate_args(
@@ -87,6 +90,123 @@ class BacnetHilTests(unittest.TestCase):
         self.assertTrue(bacnet_hil_test.revision_matches(None, "unknown"))
         self.assertFalse(bacnet_hil_test.revision_matches(full, "1.11.0 (b583bcdbe73e)"))
         self.assertFalse(bacnet_hil_test.revision_matches(full, "ad7a24fdb9dc-dirty"))
+
+    def test_hardware_profile_validation_is_exact(self) -> None:
+        profile = json.loads(json.dumps(bacnet_hil_test.EXPECTED_HARDWARE_PROFILE))
+        self.assertTrue(bacnet_hil_test.hardware_profile_valid(profile))
+        profile["inputs"][0]["header_position"] = 36
+        self.assertFalse(bacnet_hil_test.hardware_profile_valid(profile))
+
+    def test_firmware_diagnostics_validation(self) -> None:
+        image_sha = "a" * 64
+        status = {
+            "partition": "ota_0",
+            "state": "valid",
+            "image_sha256": image_sha,
+            "ota_policy": {
+                "minimum_image_bytes": 288,
+                "maximum_image_bytes": 4194304,
+                "upload_deadline_seconds": 300,
+                "required_content_type": "application/octet-stream",
+                "minimum_secure_version": 0,
+            },
+            "firmware": {
+                "build_date": "Sep  5 2026",
+                "build_time": "04:00:00",
+                "secure_version": 0,
+                "elf_sha256": "b" * 64,
+                "rollback_enabled": True,
+                "running_partition": {
+                    "label": "ota_0",
+                    "address": 131072,
+                    "size_bytes": 4194304,
+                    "state": "valid",
+                    "image_sha256": image_sha,
+                },
+                "boot_partition": {
+                    "label": "ota_0",
+                    "address": 131072,
+                    "size_bytes": 4194304,
+                    "matches_running": True,
+                },
+                "next_update_partition": {
+                    "available": True,
+                    "label": "ota_1",
+                    "address": 4325376,
+                    "size_bytes": 4194304,
+                },
+            },
+        }
+        self.assertTrue(bacnet_hil_test.firmware_diagnostics_valid(status))
+        status["firmware"]["next_update_partition"]["label"] = "ota_0"
+        self.assertFalse(bacnet_hil_test.firmware_diagnostics_valid(status))
+
+    def test_runtime_diagnostics_validation(self) -> None:
+        status = {
+            "system": {
+                "chip_temperature_c": 36.5,
+                "uptime_ms": 10000,
+                "temperature": {
+                    "valid": True,
+                    "current_c": 36.5,
+                    "minimum_c": 35.0,
+                    "maximum_c": 37.0,
+                    "sample_count_since_boot": 9,
+                    "error_count_since_boot": 0,
+                    "sample_interval_ms": 1000,
+                    "last_sample_uptime_ms": 9500,
+                    "sample_age_ms": 500,
+                    "last_result": {"code": 0, "name": "ESP_OK"},
+                },
+            },
+            "fault_log": [
+                {"sequence": 8, "type": "boot"},
+                {"sequence": 9, "type": "ota-validated"},
+            ],
+            "fault_log_health": {
+                "capacity": 16,
+                "count": 2,
+                "total_event_count": 9,
+                "overwritten_event_count": 7,
+                "persistence_ready": True,
+                "write_failure_count_since_boot": 0,
+                "last_write_error": {"code": 0, "name": "ESP_OK"},
+                "oldest_sequence": 8,
+                "newest_sequence": 9,
+            },
+        }
+        self.assertTrue(bacnet_hil_test.runtime_diagnostics_valid(status))
+        status["system"]["temperature"]["maximum_c"] = 30.0
+        self.assertFalse(bacnet_hil_test.runtime_diagnostics_valid(status))
+
+    def test_security_recovery_posture_validation(self) -> None:
+        status = {
+            "security": {
+                "https_management": True,
+                "bearer_authentication": True,
+                "tls_private_key_embedded": True,
+                "secure_boot_enabled": False,
+                "flash_encryption_enabled": False,
+                "application_anti_rollback_enabled": False,
+            },
+            "recovery": {
+                "ota_rollback_enabled": True,
+                "task_watchdog_enabled": True,
+                "task_watchdog_timeout_seconds": 5,
+                "task_watchdog_panics": True,
+                "interrupt_watchdog_enabled": True,
+                "panic_reboots": True,
+                "brownout_detection_enabled": True,
+                "core_dump_destination": "disabled",
+            },
+        }
+        self.assertTrue(
+            bacnet_hil_test.security_recovery_posture_valid(status)
+        )
+        status["recovery"]["task_watchdog_panics"] = False
+        self.assertFalse(
+            bacnet_hil_test.security_recovery_posture_valid(status)
+        )
 
     def test_report_is_machine_readable(self) -> None:
         report = bacnet_hil_test.TestReport(

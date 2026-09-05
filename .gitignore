@@ -1,11 +1,12 @@
 /build/
+/build-*/
 /build-tests/
 /sdkconfig
 /sdkconfig.old
-/dependencies.lock
 /managed_components/
 /.cache/
 /secrets/
+/release/private/
 /release/*.bin
 /release/SHA256SUMS
 __pycache__/

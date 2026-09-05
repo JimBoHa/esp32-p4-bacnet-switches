@@ -16,6 +16,7 @@
 #include "config_store.h"
 #include "diagnostics.h"
 #include "diagnostics_time.h"
+#include "discovery_service.h"
 #include "esp_app_desc.h"
 #include "esp_check.h"
 #include "esp_https_server.h"
@@ -24,8 +25,10 @@
 #include "esp_partition.h"
 #include "esp_random.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "hardware_profile.h"
 #include "network_config_store.h"
 #include "ota_auth.h"
 #include "ota_health.h"
@@ -36,12 +39,14 @@
 
 #define OTA_RECEIVE_BUFFER_BYTES 4096U
 #define OTA_MAX_CONSECUTIVE_TIMEOUTS 5U
+#define OTA_RECEIVE_DEADLINE_US (5LL * 60LL * 1000LL * 1000LL)
+#define OTA_MINIMUM_IMAGE_BYTES 288U
 #define OTA_ROLLBACK_VALIDATION_INITIAL_DELAY_MS 10000U
 #define OTA_ROLLBACK_VALIDATION_POLL_MS 1000U
 #define OTA_ROLLBACK_VALIDATION_TIMEOUT_MS 60000U
 #define OTA_ROLLBACK_HEALTHY_SAMPLES 5U
 #define OTA_PROJECT_HEADER "X-Firmware-Project"
-#define OTA_STATUS_RESPONSE_BYTES 12288U
+#define OTA_STATUS_RESPONSE_BYTES 16384U
 #define OTA_SHA256_BYTES 32U
 #define OTA_SHA256_HEX_BYTES (OTA_SHA256_BYTES * 2U)
 #define CONFIG_JSON_MAX_BYTES 4096U
@@ -288,6 +293,23 @@ static bool project_header_matches(httpd_req_t *request)
     return bounded_string_length(
                running->project_name, sizeof(running->project_name)) == length &&
         memcmp(project, running->project_name, length) == 0;
+}
+
+static bool ota_content_type_valid(httpd_req_t *request)
+{
+    static const char EXPECTED[] = "application/octet-stream";
+    const size_t length =
+        httpd_req_get_hdr_value_len(request, "Content-Type");
+    if (length != sizeof(EXPECTED) - 1U) {
+        return false;
+    }
+    char content_type[sizeof(EXPECTED)];
+    return httpd_req_get_hdr_value_str(
+               request,
+               "Content-Type",
+               content_type,
+               sizeof(content_type)) == ESP_OK &&
+        strcasecmp(content_type, EXPECTED) == 0;
 }
 
 static bool running_image_allows_update(
@@ -1126,9 +1148,15 @@ static esp_err_t status_get_handler(httpd_req_t *request)
 
     const esp_app_desc_t *app = esp_app_get_description();
     const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *boot = esp_ota_get_boot_partition();
+    const esp_partition_t *next_update = esp_ota_get_next_update_partition(NULL);
     esp_ota_img_states_t image_state = ESP_OTA_IMG_UNDEFINED;
     if (running != NULL) {
         (void)esp_ota_get_state_partition(running, &image_state);
+    }
+    char elf_sha256[OTA_SHA256_HEX_BYTES + 1U] = {0};
+    if (app != NULL) {
+        sha256_to_hex(app->app_elf_sha256, elf_sha256);
     }
     diagnostics_snapshot_t snapshot;
     if (!diagnostics_snapshot_get(&snapshot)) {
@@ -1137,6 +1165,12 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             HTTPD_500_INTERNAL_SERVER_ERROR,
             "diagnostics snapshot failed");
     }
+    const uint64_t temperature_sample_age_ms =
+        snapshot.temperature_metrics.has_sample
+        ? diagnostics_elapsed_milliseconds(
+              snapshot.uptime_ms,
+              snapshot.temperature_last_sample_uptime_ms)
+        : 0U;
     firmware_config_t active_config;
     firmware_config_t saved_config;
     network_config_t active_network_config;
@@ -1147,6 +1181,13 @@ static esp_err_t status_get_handler(httpd_req_t *request)
     network_config_get_active(&active_network_config);
     network_config_get_saved(&saved_network_config);
     network_config_get_confirmed(&confirmed_network_config);
+    discovery_service_snapshot_t discovery;
+    if (!discovery_service_snapshot_get(&discovery)) {
+        return httpd_resp_send_err(
+            request,
+            HTTPD_500_INTERNAL_SERVER_ERROR,
+            "discovery snapshot failed");
+    }
 
     char *response = malloc(OTA_STATUS_RESPONSE_BYTES);
     if (response == NULL) {
@@ -1185,7 +1226,47 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             response,
             OTA_STATUS_RESPONSE_BYTES,
             &response_length,
-            ",\"free_heap_bytes\":%u,\"minimum_free_heap_bytes\":%u,"
+            ",\"temperature\":{\"valid\":%s,\"current_c\":",
+            json_bool(snapshot.chip_temperature_valid)) ||
+        !response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            snapshot.chip_temperature_valid ? "%.2f" : "null",
+            (double)snapshot.chip_temperature_c) ||
+        !response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            ",\"minimum_c\":") ||
+        !response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            snapshot.temperature_metrics.has_sample ? "%.2f" : "null",
+            (double)snapshot.temperature_metrics.minimum_c) ||
+        !response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            ",\"maximum_c\":") ||
+        !response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            snapshot.temperature_metrics.has_sample ? "%.2f" : "null",
+            (double)snapshot.temperature_metrics.maximum_c) ||
+        !response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            ",\"sample_count_since_boot\":%u,"
+            "\"error_count_since_boot\":%u,"
+            "\"sample_interval_ms\":%u,"
+            "\"last_sample_uptime_ms\":%" PRIu64 ","
+            "\"sample_age_ms\":%" PRIu64 ","
+            "\"last_result\":{\"code\":%d,\"name\":\"%s\"}},"
+            "\"free_heap_bytes\":%u,\"minimum_free_heap_bytes\":%u,"
             "\"reset_reason\":{\"code\":%u,\"name\":\"%s\"},"
             "\"boot_count\":%u,\"last_ota_result\":\"%s\","
             "\"task_watchdog\":{"
@@ -1193,6 +1274,13 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             "\"last_heartbeat_ms\":%" PRIu64 "},"
             "\"bacnet\":{\"subscribed\":%s,\"healthy\":%s,"
             "\"last_heartbeat_ms\":%" PRIu64 "}}},",
+            (unsigned)snapshot.temperature_metrics.sample_count,
+            (unsigned)snapshot.temperature_metrics.error_count,
+            (unsigned)DIAGNOSTICS_TEMPERATURE_SAMPLE_INTERVAL_MS,
+            snapshot.temperature_last_sample_uptime_ms,
+            temperature_sample_age_ms,
+            (int)snapshot.temperature_metrics.last_result,
+            esp_err_to_name(snapshot.temperature_metrics.last_result),
             (unsigned)snapshot.free_heap_bytes,
             (unsigned)snapshot.minimum_free_heap_bytes,
             (unsigned)snapshot.reset_reason,
@@ -1207,6 +1295,137 @@ static esp_err_t status_get_handler(httpd_req_t *request)
                 DIAGNOSTICS_TASK_BACNET]),
             json_bool(snapshot.task_healthy[DIAGNOSTICS_TASK_BACNET]),
             snapshot.task_last_heartbeat_ms[DIAGNOSTICS_TASK_BACNET])) {
+        goto encoding_failed;
+    }
+    if (!response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            "\"firmware\":{\"build_date\":\"%.15s\","
+            "\"build_time\":\"%.15s\",\"secure_version\":%u,"
+            "\"elf_sha256\":\"%s\",\"rollback_enabled\":%s,"
+            "\"running_partition\":{\"label\":\"%.15s\","
+            "\"address\":%u,\"size_bytes\":%u,\"state\":\"%s\","
+            "\"image_sha256\":\"%s\"},"
+            "\"boot_partition\":{\"label\":\"%.15s\","
+            "\"address\":%u,\"size_bytes\":%u,"
+            "\"matches_running\":%s},"
+            "\"next_update_partition\":{\"available\":%s,"
+            "\"label\":\"%.15s\",\"address\":%u,"
+            "\"size_bytes\":%u}},",
+            app != NULL ? app->date : "unknown",
+            app != NULL ? app->time : "unknown",
+            app != NULL ? (unsigned)app->secure_version : 0U,
+            elf_sha256,
+#if CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
+            "true",
+#else
+            "false",
+#endif
+            running != NULL ? running->label : "unknown",
+            running != NULL ? (unsigned)running->address : 0U,
+            running != NULL ? (unsigned)running->size : 0U,
+            ota_state_name(image_state),
+            running_image_sha256,
+            boot != NULL ? boot->label : "unknown",
+            boot != NULL ? (unsigned)boot->address : 0U,
+            boot != NULL ? (unsigned)boot->size : 0U,
+            json_bool(running != NULL && boot != NULL &&
+                running->address == boot->address),
+            json_bool(next_update != NULL),
+            next_update != NULL ? next_update->label : "unknown",
+            next_update != NULL ? (unsigned)next_update->address : 0U,
+            next_update != NULL ? (unsigned)next_update->size : 0U)) {
+        goto encoding_failed;
+    }
+    if (!response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            "\"ota_policy\":{\"minimum_image_bytes\":%u,"
+            "\"maximum_image_bytes\":%u,"
+            "\"upload_deadline_seconds\":%u,"
+            "\"required_content_type\":\"application/octet-stream\","
+            "\"minimum_secure_version\":%u},",
+            (unsigned)OTA_MINIMUM_IMAGE_BYTES,
+            next_update != NULL ? (unsigned)next_update->size : 0U,
+            (unsigned)(OTA_RECEIVE_DEADLINE_US / 1000000LL),
+            app != NULL ? (unsigned)app->secure_version : 0U)) {
+        goto encoding_failed;
+    }
+    if (!response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            "\"security\":{\"https_management\":true,"
+            "\"bearer_authentication\":true,"
+            "\"tls_private_key_embedded\":true,"
+            "\"secure_boot_enabled\":%s,"
+            "\"flash_encryption_enabled\":%s,"
+            "\"application_anti_rollback_enabled\":%s},"
+            "\"recovery\":{\"ota_rollback_enabled\":%s,"
+            "\"task_watchdog_enabled\":%s,"
+            "\"task_watchdog_timeout_seconds\":%u,"
+            "\"task_watchdog_panics\":%s,"
+            "\"interrupt_watchdog_enabled\":%s,"
+            "\"panic_reboots\":%s,"
+            "\"brownout_detection_enabled\":%s,"
+            "\"core_dump_destination\":\"%s\"},",
+#ifdef CONFIG_SECURE_BOOT
+            "true",
+#else
+            "false",
+#endif
+#ifdef CONFIG_SECURE_FLASH_ENC_ENABLED
+            "true",
+#else
+            "false",
+#endif
+#ifdef CONFIG_BOOTLOADER_APP_ANTI_ROLLBACK
+            "true",
+#else
+            "false",
+#endif
+#ifdef CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
+            "true",
+#else
+            "false",
+#endif
+#ifdef CONFIG_ESP_TASK_WDT_INIT
+            "true",
+#else
+            "false",
+#endif
+            (unsigned)CONFIG_ESP_TASK_WDT_TIMEOUT_S,
+#ifdef CONFIG_ESP_TASK_WDT_PANIC
+            "true",
+#else
+            "false",
+#endif
+#ifdef CONFIG_ESP_INT_WDT
+            "true",
+#else
+            "false",
+#endif
+#if defined(CONFIG_ESP_SYSTEM_PANIC_PRINT_REBOOT) || \
+    defined(CONFIG_ESP_SYSTEM_PANIC_SILENT_REBOOT)
+            "true",
+#else
+            "false",
+#endif
+#ifdef CONFIG_ESP_BROWNOUT_DET
+            "true",
+#else
+            "false",
+#endif
+#ifdef CONFIG_ESP_COREDUMP_ENABLE_TO_FLASH
+            "flash"
+#elif defined(CONFIG_ESP_COREDUMP_ENABLE_TO_UART)
+            "uart"
+#else
+            "disabled"
+#endif
+            )) {
         goto encoding_failed;
     }
     if (!response_append(
@@ -1239,6 +1458,92 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             json_bool(network_config_restart_required()),
             json_bool(network_config_trial_active()),
             (unsigned)network_config_trial_seconds_remaining())) {
+        goto encoding_failed;
+    }
+    if (!response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            "\"discovery\":{\"mdns_ready\":%s,"
+            "\"hostname\":\"%s\",\"local_fqdn\":\"%s.local\","
+            "\"hostname_conflict_count\":%u,"
+            "\"last_error\":{\"code\":%d,\"name\":\"%s\"},"
+            "\"services\":{"
+            "\"https\":{\"advertised\":%s,\"port\":%u},"
+            "\"bacnet\":{\"advertised\":%s,\"port\":%u}}},",
+            json_bool(discovery.ready),
+            discovery.hostname,
+            discovery.hostname,
+            (unsigned)discovery.hostname_conflict_count,
+            (int)discovery.last_error,
+            esp_err_to_name(discovery.last_error),
+            json_bool(discovery.https_advertised),
+            (unsigned)discovery.https_port,
+            json_bool(discovery.bacnet_advertised),
+            (unsigned)discovery.bacnet_port)) {
+        goto encoding_failed;
+    }
+    if (!response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            "\"hardware\":{\"board_model\":\"%s\","
+            "\"header\":\"%s\","
+            "\"supply\":{\"label\":\"3V3\",\"position\":%d,"
+            "\"nominal_volts\":3.3},"
+            "\"input_circuit\":{\"contact_type\":\"dry-contact\","
+            "\"internal_pull\":\"down\",\"input_only\":true,"
+            "\"closed_to_supply\":true,\"closed_raw_level\":true,"
+            "\"open_raw_level\":false,"
+            "\"recommended_external_pull_down_ohms\":%d},"
+            "\"inputs\":[",
+            HARDWARE_PROFILE_BOARD_MODEL,
+            HARDWARE_PROFILE_HEADER_NAME,
+            HARDWARE_PROFILE_3V3_POSITION,
+            HARDWARE_PROFILE_EXTERNAL_PULL_DOWN_OHMS)) {
+        goto encoding_failed;
+    }
+    for (size_t index = 0U; index < SWITCH_INPUT_COUNT; ++index) {
+        switch_input_diagnostics_t input;
+        if (!switch_input_diagnostics_get(index, &input) ||
+            !response_append(
+                response,
+                OTA_STATUS_RESPONSE_BYTES,
+                &response_length,
+                "%s{\"channel\":%u,\"gpio\":%d,"
+                "\"bacnet_binary_input_instance\":%u,"
+                "\"header_position\":",
+                index == 0U ? "" : ",",
+                (unsigned)(index + 1U),
+                input.gpio,
+                (unsigned)active_config.input_instances[index])) {
+            goto encoding_failed;
+        }
+        const int header_position =
+            hardware_profile_p1_position(input.gpio);
+        if (!response_append(
+                response,
+                OTA_STATUS_RESPONSE_BYTES,
+                &response_length,
+                header_position >= 0 ? "%d" : "null",
+                header_position) ||
+            !response_append(
+                response,
+                OTA_STATUS_RESPONSE_BYTES,
+                &response_length,
+                ",\"configured_active_low\":%s,"
+                "\"open_state\":\"%s\",\"closed_state\":\"%s\"}",
+                json_bool(input.active_low),
+                hardware_profile_binary_state(false, input.active_low),
+                hardware_profile_binary_state(true, input.active_low))) {
+            goto encoding_failed;
+        }
+    }
+    if (!response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            "]},")) {
         goto encoding_failed;
     }
 
@@ -1409,7 +1714,48 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             response,
             OTA_STATUS_RESPONSE_BYTES,
             &response_length,
-            "],\"fault_log\":[")) {
+            "],\"fault_log_health\":{\"capacity\":%u,\"count\":%u,"
+            "\"total_event_count\":%u,\"overwritten_event_count\":%u,"
+            "\"persistence_ready\":%s,"
+            "\"write_failure_count_since_boot\":%u,"
+            "\"last_write_error\":{\"code\":%d,\"name\":\"%s\"},"
+            "\"oldest_sequence\":",
+            (unsigned)DIAGNOSTICS_FAULT_LOG_CAPACITY,
+            (unsigned)snapshot.fault_log_count,
+            (unsigned)snapshot.fault_log_metrics.total_event_count,
+            (unsigned)snapshot.fault_log_metrics.overwritten_event_count,
+            json_bool(snapshot.persistent_storage_ready),
+            (unsigned)snapshot.persistent_write_failure_count,
+            (int)snapshot.persistent_last_write_error,
+            esp_err_to_name(snapshot.persistent_last_write_error))) {
+        goto encoding_failed;
+    }
+    if (!response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            snapshot.fault_log_count > 0U ? "%u" : "null",
+            snapshot.fault_log_count > 0U
+                ? (unsigned)snapshot.fault_log[0].sequence
+                : 0U) ||
+        !response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            ",\"newest_sequence\":") ||
+        !response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            snapshot.fault_log_count > 0U ? "%u" : "null",
+            snapshot.fault_log_count > 0U
+                ? (unsigned)snapshot.fault_log[snapshot.fault_log_count - 1U].sequence
+                : 0U) ||
+        !response_append(
+            response,
+            OTA_STATUS_RESPONSE_BYTES,
+            &response_length,
+            "},\"fault_log\":[")) {
         goto encoding_failed;
     }
     for (size_t index = 0; index < snapshot.fault_log_count; ++index) {
@@ -1531,6 +1877,11 @@ static esp_err_t ota_post_handler(httpd_req_t *request)
             HTTPD_400_BAD_REQUEST,
             "missing or incorrect X-Firmware-Project header");
     }
+    if (!ota_content_type_valid(request)) {
+        httpd_resp_set_status(request, "415 Unsupported Media Type");
+        return httpd_resp_sendstr(
+            request, "Content-Type must be application/octet-stream");
+    }
     if (atomic_exchange_explicit(
             &upload_in_progress, true, memory_order_acq_rel)) {
         httpd_resp_set_status(request, "409 Conflict");
@@ -1553,6 +1904,11 @@ static esp_err_t ota_post_handler(httpd_req_t *request)
     if (request->content_len == 0U) {
         http_error = HTTPD_411_LENGTH_REQUIRED;
         error_message = "firmware Content-Length required";
+        goto fail;
+    }
+    if (request->content_len < OTA_MINIMUM_IMAGE_BYTES) {
+        http_error = HTTPD_400_BAD_REQUEST;
+        error_message = "firmware image is too small";
         goto fail;
     }
     if (request->content_len > update_partition->size) {
@@ -1581,7 +1937,14 @@ static esp_err_t ota_post_handler(httpd_req_t *request)
         update_partition->label);
     size_t remaining = request->content_len;
     unsigned consecutive_timeouts = 0;
+    const int64_t receive_deadline_us =
+        esp_timer_get_time() + OTA_RECEIVE_DEADLINE_US;
     while (remaining > 0U) {
+        if (esp_timer_get_time() >= receive_deadline_us) {
+            http_error = HTTPD_408_REQ_TIMEOUT;
+            error_message = "firmware upload exceeded five-minute deadline";
+            goto fail;
+        }
         const size_t wanted = remaining < OTA_RECEIVE_BUFFER_BYTES
             ? remaining
             : OTA_RECEIVE_BUFFER_BYTES;
@@ -1604,7 +1967,12 @@ static esp_err_t ota_post_handler(httpd_req_t *request)
         consecutive_timeouts = 0;
         result = esp_ota_write(ota_handle, buffer, (size_t)received);
         if (result != ESP_OK) {
-            error_message = "firmware flash write failed";
+            if (result == ESP_ERR_OTA_VALIDATE_FAILED) {
+                http_error = HTTPD_400_BAD_REQUEST;
+                error_message = "firmware image validation failed";
+            } else {
+                error_message = "firmware flash write failed";
+            }
             goto fail;
         }
         remaining -= (size_t)received;
@@ -1615,6 +1983,10 @@ static esp_err_t ota_post_handler(httpd_req_t *request)
     result = esp_ota_end(ota_handle);
     ota_started = false;
     if (result != ESP_OK) {
+        if (result == ESP_ERR_OTA_VALIDATE_FAILED ||
+            result == ESP_ERR_INVALID_ARG) {
+            http_error = HTTPD_400_BAD_REQUEST;
+        }
         error_message = "firmware image validation failed";
         goto fail;
     }
@@ -1642,6 +2014,11 @@ static esp_err_t ota_post_handler(httpd_req_t *request)
             sizeof(candidate.project_name)) != 0) {
         http_error = HTTPD_400_BAD_REQUEST;
         error_message = "firmware belongs to a different project";
+        goto fail;
+    }
+    if (candidate.secure_version < running->secure_version) {
+        http_error = HTTPD_400_BAD_REQUEST;
+        error_message = "firmware secure version is older than running firmware";
         goto fail;
     }
 

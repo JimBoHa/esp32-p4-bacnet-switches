@@ -14,6 +14,7 @@ set(private_dependencies
     esp_timer
     lwip
     mbedtls
+    mdns
     nvs_flash
     json
 )
@@ -73,7 +74,10 @@ idf_component_register(
         "config_store.c"
         "cov_retry_cache.c"
         "diagnostics.c"
+        "diagnostics_metrics.c"
         "diagnostics_time.c"
+        "discovery_service.c"
+        "hardware_profile.c"
         "input_debounce.c"
         "input_line_classifier.c"
         "network_config_model.c"
@@ -114,4 +118,8 @@ endif()
 target_compile_definitions(
     ${COMPONENT_LIB}
     PRIVATE PROJECT_GIT_REVISION="${project_git_revision}"
+)
+file(WRITE
+    "${CMAKE_BINARY_DIR}/project_git_revision.txt"
+    "${project_git_revision}\n"
 )

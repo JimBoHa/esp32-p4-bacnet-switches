@@ -8,9 +8,11 @@
 #include "esp_eth.h"
 #include "esp_netif.h"
 #include "esp_system.h"
+#include "diagnostics_metrics.h"
 
 #define DIAGNOSTICS_FAULT_LOG_CAPACITY 16U
 #define DIAGNOSTICS_TASK_COUNT 2U
+#define DIAGNOSTICS_TEMPERATURE_SAMPLE_INTERVAL_MS 1000U
 
 typedef enum {
     DIAGNOSTICS_EVENT_BOOT = 1,
@@ -26,6 +28,8 @@ typedef enum {
     DIAGNOSTICS_EVENT_TASK_WATCHDOG_FAILED,
     DIAGNOSTICS_EVENT_OTA_SERVER_FAILED,
     DIAGNOSTICS_EVENT_REMOTE_REBOOT_REQUESTED,
+    DIAGNOSTICS_EVENT_MDNS_FAILED,
+    DIAGNOSTICS_EVENT_OTA_ROLLED_BACK,
 } diagnostics_event_type_t;
 
 typedef enum {
@@ -33,6 +37,7 @@ typedef enum {
     DIAGNOSTICS_OTA_ACCEPTED,
     DIAGNOSTICS_OTA_FAILED,
     DIAGNOSTICS_OTA_VALIDATED,
+    DIAGNOSTICS_OTA_ROLLED_BACK,
 } diagnostics_ota_result_t;
 
 typedef enum {
@@ -89,6 +94,8 @@ typedef struct {
     uint64_t uptime_ms;
     float chip_temperature_c;
     bool chip_temperature_valid;
+    diagnostics_temperature_metrics_t temperature_metrics;
+    uint64_t temperature_last_sample_uptime_ms;
     uint32_t free_heap_bytes;
     uint32_t minimum_free_heap_bytes;
     esp_reset_reason_t reset_reason;
@@ -102,6 +109,10 @@ typedef struct {
     uint64_t task_last_heartbeat_ms[DIAGNOSTICS_TASK_COUNT];
     diagnostics_fault_event_t fault_log[DIAGNOSTICS_FAULT_LOG_CAPACITY];
     size_t fault_log_count;
+    diagnostics_fault_log_metrics_t fault_log_metrics;
+    bool persistent_storage_ready;
+    uint32_t persistent_write_failure_count;
+    int32_t persistent_last_write_error;
 } diagnostics_snapshot_t;
 
 esp_err_t diagnostics_init(void);
