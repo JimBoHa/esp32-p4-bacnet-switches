@@ -1013,28 +1013,39 @@ static property_result_t encode_array_item(
     uint32_t index)
 {
     if (object_list) {
+        const uint32_t physical_input_end =
+            1U + BACNET_PHYSICAL_BINARY_INPUT_COUNT;
+        const uint32_t analog_value_end =
+            physical_input_end + BACNET_ANALOG_VALUE_COUNT;
+        const uint32_t network_port_index = analog_value_end + 1U;
         if (index == 1U) {
             encode_application_object_id(
                 writer, BACNET_OBJECT_DEVICE, state->device_instance);
-        } else if (index <= 1U + BACNET_BINARY_INPUT_COUNT) {
+        } else if (index <= physical_input_end) {
             const size_t input_index = index - 2U;
             encode_application_object_id(
                 writer,
                 BACNET_OBJECT_BINARY_INPUT,
                 state->binary_input_instances[input_index]);
-        } else if (index <= 1U + BACNET_BINARY_INPUT_COUNT +
-                BACNET_ANALOG_VALUE_COUNT) {
+        } else if (index <= analog_value_end) {
             const size_t value_index =
-                index - 2U - BACNET_BINARY_INPUT_COUNT;
+                index - 2U - BACNET_PHYSICAL_BINARY_INPUT_COUNT;
             encode_application_object_id(
                 writer,
                 BACNET_OBJECT_ANALOG_VALUE,
                 state->analog_value_instances[value_index]);
-        } else {
+        } else if (index == network_port_index) {
             encode_application_object_id(
                 writer,
                 BACNET_OBJECT_NETWORK_PORT,
                 state->network_port_instance);
+        } else {
+            const size_t status_index = BACNET_PHYSICAL_BINARY_INPUT_COUNT +
+                index - network_port_index - 1U;
+            encode_application_object_id(
+                writer,
+                BACNET_OBJECT_BINARY_INPUT,
+                state->binary_input_instances[status_index]);
         }
         return property_ok();
     }
