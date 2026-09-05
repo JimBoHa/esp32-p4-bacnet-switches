@@ -24,16 +24,8 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Audit repository security policy and history
-        run: python3 tools/security_audit.py --history
-      - name: Build native tests
-        run: cmake -S tests -B build-tests
-      - name: Run native tests
-        run: |
-          cmake --build build-tests --parallel
-          ctest --test-dir build-tests --output-on-failure
-      - name: Run Python tests
-        run: python3 -m unittest discover -s tests -p 'test_*.py'
+      - name: Run the same host checks used by contributors and agents
+        run: python3 tools/run_host_tests.py
 
   esp32p4-build:
     runs-on: ubuntu-latest
