@@ -91,7 +91,8 @@ clock GPIO50. See the [Waveshare schematic](https://files.waveshare.com/wiki/ESP
 
 Supported services:
 
-- Who-Is / I-Am, including the routed global-broadcast form used by Metasys
+- Who-Is / I-Am, with unicast replies for direct requests and broadcast replies
+  for subnet/global discovery, including the routed form used by Metasys
 - confirmed ReadProperty
 - confirmed ReadPropertyMultiple, including All/Required/Optional selectors
 - confirmed SubscribeCOV for the three Binary Inputs
