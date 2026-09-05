@@ -112,6 +112,7 @@ esp_err_t discovery_service_start(
         mdns_txt_item_t https_txt[] = {
             {"path", "/ota/status"},
             {"auth", "bearer"},
+            {"read_auth", "none"},
             common_txt[0],
             common_txt[1],
         };

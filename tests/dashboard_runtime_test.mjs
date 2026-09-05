@@ -9,7 +9,7 @@ class FakeElement {
     this.checked = id === "autoRefresh";
     this.children = [];
     this.className = "";
-    this.hidden = id === "connectedControls" || id === "dashboard";
+    this.hidden = id === "dashboard";
     this.listeners = new Map();
     this.textContent = "";
     this.value = "";
@@ -58,20 +58,36 @@ const document = {
   getElementById: element,
 };
 
-let fetchImplementation = () => {
-  throw new Error("unexpected fetch");
+let finishFirstFetch;
+let firstOptions;
+let fetchImplementation = (url, options) => {
+  assert.equal(url, "/ota/status");
+  firstOptions = options;
+  return new Promise((resolve) => { finishFirstFetch = resolve; });
 };
 let nextTimer = 1;
 const timers = new Map();
 let downloadedBlob;
 const revokedUrls = [];
+const pageListeners = new Map();
+const requests = [];
 const window = {
+  addEventListener: (type, callback) => pageListeners.set(type, callback),
   URL: {
     createObjectURL: (blob) => { downloadedBlob = blob; return "blob:test-report"; },
     revokeObjectURL: (url) => revokedUrls.push(url),
   },
   clearTimeout: (id) => timers.delete(id),
-  fetch: (...arguments_) => fetchImplementation(...arguments_),
+  fetch: (url, options) => {
+    assert.equal(options.method, "GET");
+    assert.equal(options.headers.Authorization, undefined);
+    assert.equal(options.headers.Accept, "application/json");
+    assert.equal(options.credentials, "omit");
+    assert.equal(options.cache, "no-store");
+    assert.equal(options.redirect, "error");
+    requests.push({url, options});
+    return fetchImplementation(url, options);
+  },
   setTimeout: (callback, delay) => {
     const id = nextTimer++;
     timers.set(id, {callback, delay});
@@ -83,30 +99,30 @@ const source = readFileSync(
   new URL("../main/diagnostics_dashboard.js", import.meta.url),
   "utf8",
 );
-vm.runInNewContext(source, {AbortController, Blob, document, window});
+vm.runInNewContext(source, {AbortController, Blob, document, Error, window});
 
 const listener = (id, type) => {
   const value = element(id).listeners.get(type);
   assert.equal(typeof value, "function", `${id} has no ${type} listener`);
   return value;
 };
-const submit = (token) => {
-  element("token").value = token;
-  listener("connectForm", "submit")({preventDefault() {}});
-};
 const flush = () => new Promise((resolve) => setImmediate(resolve));
-
-let finishFirstFetch;
-let firstOptions;
-fetchImplementation = (_url, options) => {
-  firstOptions = options;
-  return new Promise((resolve) => {
-    finishFirstFetch = resolve;
-  });
+const pageHide = () => pageListeners.get("pagehide")();
+const pageShow = () => pageListeners.get("pageshow")({persisted: true});
+const fireTimer = (delay) => {
+  const match = [...timers].find(([, timer]) => timer.delay === delay);
+  assert(match, `no ${delay} ms timer`);
+  const [id, timer] = match;
+  timers.delete(id);
+  timer.callback();
 };
-submit("A".repeat(32));
+
+// First request starts automatically, with no form, token, or user interaction.
+assert.equal(requests.length, 1);
 assert(firstOptions.signal instanceof AbortSignal);
-listener("disconnect", "click")();
+await listener("refresh", "click")();
+assert.equal(requests.length, 1, "overlapping refresh was not suppressed");
+pageHide();
 assert.equal(firstOptions.signal.aborted, true);
 finishFirstFetch({
   ok: true,
@@ -116,16 +132,17 @@ finishFirstFetch({
 await flush();
 await flush();
 assert.equal(element("dashboard").hidden, true);
-assert.equal(element("connectedControls").hidden, true);
+assert.equal(element("connectedControls").hidden, false);
 assert.equal(element("overallHealth").textContent, "Not connected");
+assert.equal(timers.size, 0);
 
 const healthyStatus = {
   state: "valid",
-  access_role: "viewer",
-  security: {software_signature_verification: true},
+  access_role: "anonymous",
+  security: {software_signature_verification: true, anonymous_read_only: true},
   clock: {utc_unix_ms: 1577836800000, clock_quality: "synchronized",
           configured_server: "site.ntp", sync_count: 1, rejected_sync_count: 0},
-  version: "1.20.0",
+  version: "1.27.0",
   system: {
     chip_temperature_c: 36.4,
     task_watchdog: {
@@ -158,12 +175,12 @@ fetchImplementation = async () => ({
   status: 200,
   json: async () => healthyStatus,
 });
-submit("B".repeat(32));
+pageShow();
 await flush();
 await flush();
 assert.equal(element("dashboard").hidden, false);
 assert.equal(element("overallHealth").textContent, "Healthy");
-assert.match(element("connectionStatus").textContent, /Authenticated as viewer/);
+assert.match(element("connectionStatus").textContent, /Read-only access. No login required/);
 assert.match(element("signaturePolicy").textContent, /Signed OTA required/);
 assert.equal(element("inputHistoryRows").children.length, 2);
 assert.equal(element("inputHistoryRows").children[0].children[0].textContent, "2");
@@ -173,17 +190,30 @@ assert.match(element("faultRows").children[0].children[3].textContent, /2020-01-
 assert(element("clockDetails").children.some(child => child.textContent === "2020-01-01T00:00:00.000Z"));
 assert.match(element("inputHistoryStatus").textContent, /2 events shown/);
 
+// Polling can be disabled; manual refresh works without restarting it.
+assert.equal([...timers.values()].filter(timer => timer.delay === 5000).length, 1);
+element("autoRefresh").checked = false;
+listener("autoRefresh", "change")();
+assert.equal(timers.size, 0);
+await listener("refresh", "click")();
+assert.equal(timers.size, 0);
+element("autoRefresh").checked = true;
+listener("autoRefresh", "change")();
+const countBeforePoll = requests.length;
+fireTimer(5000);
+await flush();
+assert.equal(requests.length, countBeforePoll + 1);
+
 const diagnosticReport = {schema: 1, report_type: "esp32-p4-diagnostics", status: healthyStatus};
 fetchImplementation = async (url, options) => {
   assert.equal(url, "/diagnostics/report");
-  assert.equal(options.headers.Authorization, `Bearer ${"B".repeat(32)}`);
+  assert.equal(options.headers.Authorization, undefined);
   assert.equal(options.redirect, "error");
   return {ok: true, status: 200, json: async () => diagnosticReport};
 };
 await listener("downloadReport", "click")();
 assert.equal(downloadedBlob.type, "application/json");
 assert.deepEqual(JSON.parse(await downloadedBlob.text()), diagnosticReport);
-assert.equal((await downloadedBlob.text()).includes("B".repeat(32)), false);
 const downloadLink = document.body.children.at(-1);
 assert.equal(downloadLink.clicked, true);
 assert.equal(downloadLink.removed, true);
@@ -201,7 +231,10 @@ fetchImplementation = (_url, options) => {
 };
 const cancelledDownload = listener("downloadReport", "click")();
 assert.equal(element("downloadReport").disabled, true);
-listener("disconnect", "click")();
+const countBeforeDuplicate = requests.length;
+await listener("downloadReport", "click")();
+assert.equal(requests.length, countBeforeDuplicate);
+pageHide();
 assert.equal(reportOptions.signal.aborted, true);
 finishReport({ok: true, status: 200, json: async () => diagnosticReport});
 await cancelledDownload;
@@ -209,24 +242,72 @@ assert.equal(document.body.children.length, 1);
 assert.equal(element("downloadReport").disabled, false);
 
 fetchImplementation = async () => ({ok: true, status: 200, json: async () => healthyStatus});
-submit("B".repeat(32));
+pageShow();
 await flush();
 await flush();
 fetchImplementation = async () => ({ok: false, status: 401});
 await listener("downloadReport", "click")();
-assert.equal(element("dashboard").hidden, true);
+assert.equal(element("dashboard").hidden, false);
 assert.match(element("reportStatus").textContent, /HTTP 401/);
 
-fetchImplementation = async () => ({ok: true, status: 200, json: async () => healthyStatus});
-submit("B".repeat(32));
-await flush();
-await flush();
-
+// Failed reads hide stale live data and remain retryable without a login form.
 fetchImplementation = async () => ({ok: false, status: 401});
 await listener("refresh", "click")();
 assert.equal(element("dashboard").hidden, true);
-assert.equal(element("connectedControls").hidden, true);
-assert.equal(element("overallHealth").textContent, "Not connected");
+assert.equal(element("connectedControls").hidden, false);
+assert.equal(element("overallHealth").textContent, "Connection error");
 assert.match(element("connectionStatus").textContent, /HTTP 401/);
+fetchImplementation = async () => ({ok: true, status: 200, json: async () => healthyStatus});
+fireTimer(5000);
+await flush();
+assert.equal(element("dashboard").hidden, false);
 
-console.log("dashboard cancellation and authentication runtime checks passed");
+fetchImplementation = async () => { throw new Error("network unavailable"); };
+await listener("refresh", "click")();
+assert.equal(element("dashboard").hidden, true);
+assert.match(element("connectionStatus").textContent, /network unavailable/);
+
+// A late JSON body cannot restore live data after the request deadline.
+let finishStatusBody;
+let timedStatusOptions;
+fetchImplementation = async (_url, options) => {
+  timedStatusOptions = options;
+  return {ok: true, status: 200, json: () => new Promise(resolve => { finishStatusBody = resolve; })};
+};
+const timedStatus = listener("refresh", "click")();
+await flush();
+fireTimer(10000);
+assert.equal(timedStatusOptions.signal.aborted, true);
+finishStatusBody(healthyStatus);
+await timedStatus;
+assert.equal(element("dashboard").hidden, true);
+assert.match(element("connectionStatus").textContent, /request timed out/);
+
+let finishReportBody;
+fetchImplementation = async () => ({
+  ok: true, status: 200,
+  json: () => new Promise(resolve => { finishReportBody = resolve; }),
+});
+const timedReport = listener("downloadReport", "click")();
+await flush();
+fireTimer(15000);
+finishReportBody(diagnosticReport);
+await timedReport;
+assert.equal(document.body.children.length, 1);
+assert.equal(element("downloadReport").disabled, false);
+assert.match(element("reportStatus").textContent, /request timed out/);
+
+fetchImplementation = async () => ({ok: true, status: 200, json: async () => []});
+await listener("refresh", "click")();
+assert.match(element("connectionStatus").textContent, /invalid status document/);
+await listener("downloadReport", "click")();
+assert.match(element("reportStatus").textContent, /invalid report document/);
+
+pageHide();
+const finalRequestCount = requests.length;
+await listener("refresh", "click")();
+await listener("downloadReport", "click")();
+assert.equal(requests.length, finalRequestCount);
+assert.equal(timers.size, 0);
+
+console.log("dashboard automatic anonymous reads, polling, downloads, errors, and cancellation checks passed");

@@ -271,7 +271,10 @@ static ota_role_t request_role(httpd_req_t *request)
 {
     const size_t length =
         httpd_req_get_hdr_value_len(request, "Authorization");
-    if (length == 0U || length > OTA_AUTHORIZATION_MAX_LENGTH) {
+    if (length == 0U) {
+        return ota_authorization_role(NULL, 0U, bearer_token, viewer_token);
+    }
+    if (length > OTA_AUTHORIZATION_MAX_LENGTH) {
         return OTA_ROLE_NONE;
     }
 
@@ -287,9 +290,9 @@ static ota_role_t request_role(httpd_req_t *request)
         authorization, length, bearer_token, viewer_token);
 }
 
-static bool request_authenticated(httpd_req_t *request)
+static bool request_authorized(httpd_req_t *request)
 {
-    /* All registered GET handlers are read-only; all mutations require admin. */
+    /* Registered GET handlers allow anonymous reads; every mutation needs admin. */
     return ota_role_allows(request_role(request), request->method == HTTP_GET);
 }
 
@@ -691,6 +694,8 @@ static esp_err_t send_config_json(
     }
     httpd_resp_set_type(request, "application/json");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
+    httpd_resp_set_hdr(request, "Cross-Origin-Resource-Policy", "same-origin");
     const esp_err_t result = httpd_resp_sendstr(request, encoded);
     cJSON_free(encoded);
     return result;
@@ -698,7 +703,7 @@ static esp_err_t send_config_json(
 
 static esp_err_t config_get_handler(httpd_req_t *request)
 {
-    if (!request_authenticated(request)) {
+    if (!request_authorized(request)) {
         return send_unauthorized(request);
     }
     return send_config_json(request, false, false);
@@ -706,7 +711,7 @@ static esp_err_t config_get_handler(httpd_req_t *request)
 
 static esp_err_t config_put_handler(httpd_req_t *request)
 {
-    if (!request_authenticated(request)) {
+    if (!request_authorized(request)) {
         return send_unauthorized(request);
     }
     char content_type[64];
@@ -1043,6 +1048,8 @@ static esp_err_t send_network_config_json(
     }
     httpd_resp_set_type(request, "application/json");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
+    httpd_resp_set_hdr(request, "Cross-Origin-Resource-Policy", "same-origin");
     const esp_err_t result = httpd_resp_sendstr(request, encoded);
     cJSON_free(encoded);
     return result;
@@ -1050,7 +1057,7 @@ static esp_err_t send_network_config_json(
 
 static esp_err_t network_config_get_handler(httpd_req_t *request)
 {
-    if (!request_authenticated(request)) {
+    if (!request_authorized(request)) {
         return send_unauthorized(request);
     }
     return send_network_config_json(request, false, false);
@@ -1058,7 +1065,7 @@ static esp_err_t network_config_get_handler(httpd_req_t *request)
 
 static esp_err_t network_config_put_handler(httpd_req_t *request)
 {
-    if (!request_authenticated(request)) {
+    if (!request_authorized(request)) {
         return send_unauthorized(request);
     }
     char content_type[64];
@@ -1141,7 +1148,7 @@ static esp_err_t network_config_put_handler(httpd_req_t *request)
 
 static esp_err_t network_config_confirm_handler(httpd_req_t *request)
 {
-    if (!request_authenticated(request)) {
+    if (!request_authorized(request)) {
         return send_unauthorized(request);
     }
     const esp_err_t result = network_config_confirm_trial();
@@ -1267,7 +1274,7 @@ static bool append_report_object(
 
 static esp_err_t send_status_json(httpd_req_t *request, bool report)
 {
-    if (!request_authenticated(request)) {
+    if (!request_authorized(request)) {
         return send_unauthorized(request);
     }
 
@@ -1346,7 +1353,8 @@ static esp_err_t send_status_json(httpd_req_t *request, bool report)
             (unsigned)CONFIG_OTA_HTTPS_PORT,
             diagnostics_git_revision(),
             running_image_sha256,
-            request_role(request) == OTA_ROLE_ADMIN ? "admin" : "viewer",
+            request_role(request) == OTA_ROLE_ADMIN ? "admin" :
+                request_role(request) == OTA_ROLE_VIEWER ? "viewer" : "anonymous",
             snapshot.uptime_ms)) {
         goto encoding_failed;
     }
@@ -1496,6 +1504,7 @@ static esp_err_t send_status_json(httpd_req_t *request, bool report)
             &response_length,
             "\"security\":{\"https_management\":true,"
             "\"bearer_authentication\":true,"
+            "\"anonymous_read_only\":true,"
             "\"viewer_admin_separation\":true,\"mutations_require_admin\":true,"
             "\"tls_private_key_embedded\":true,"
             "\"software_signature_verification\":true,"
@@ -1961,10 +1970,11 @@ static esp_err_t send_status_json(httpd_req_t *request, bool report)
     }
     httpd_resp_set_type(request, "application/json");
     httpd_resp_set_hdr(request, "Cache-Control", "no-store");
+    httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
+    httpd_resp_set_hdr(request, "Cross-Origin-Resource-Policy", "same-origin");
     if (report) {
         httpd_resp_set_hdr(request, "Content-Disposition",
             "attachment; filename=esp32-p4-diagnostics.json");
-        httpd_resp_set_hdr(request, "X-Content-Type-Options", "nosniff");
     }
     const esp_err_t send_result =
         httpd_resp_send(request, response, response_length);
@@ -1989,7 +1999,7 @@ static esp_err_t diagnostics_report_get_handler(httpd_req_t *request)
 
 static esp_err_t input_self_test_post_handler(httpd_req_t *request)
 {
-    if (!request_authenticated(request)) {
+    if (!request_authorized(request)) {
         return send_unauthorized(request);
     }
     const esp_err_t result = switch_inputs_run_self_test();
@@ -2054,7 +2064,7 @@ static esp_err_t input_self_test_post_handler(httpd_req_t *request)
 
 static esp_err_t ota_post_handler(httpd_req_t *request)
 {
-    if (!request_authenticated(request)) {
+    if (!request_authorized(request)) {
         return send_unauthorized(request);
     }
     esp_err_t rejection_result = ESP_OK;
@@ -2265,7 +2275,7 @@ fail:
 
 static esp_err_t reboot_post_handler(httpd_req_t *request)
 {
-    if (!request_authenticated(request)) {
+    if (!request_authorized(request)) {
         return send_unauthorized(request);
     }
     if (request->content_len != 0U) {
