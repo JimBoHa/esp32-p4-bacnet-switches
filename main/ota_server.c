@@ -46,7 +46,7 @@
 #define OTA_ROLLBACK_VALIDATION_TIMEOUT_MS 60000U
 #define OTA_ROLLBACK_HEALTHY_SAMPLES 5U
 #define OTA_PROJECT_HEADER "X-Firmware-Project"
-#define OTA_STATUS_RESPONSE_BYTES 16384U
+#define OTA_STATUS_RESPONSE_BYTES 32768U
 #define OTA_SHA256_BYTES 32U
 #define OTA_SHA256_HEX_BYTES (OTA_SHA256_BYTES * 2U)
 #define CONFIG_JSON_MAX_BYTES 4096U
@@ -1140,6 +1140,40 @@ static const char *dhcp_status_name(uint32_t status)
     }
 }
 
+static bool append_input_history(
+    char *response, size_t capacity, size_t *length)
+{
+    input_history_t history;
+    if (!switch_inputs_history_get(&history) ||
+        !response_append(
+            response, capacity, length,
+            "\"input_history\":{\"capacity\":%u,\"count\":%u,"
+            "\"total_events\":%" PRIu64 ",\"overwritten_events\":%" PRIu64
+            ",\"persistent\":false,\"sample_interval_ms\":10,"
+            "\"captured_uptime_ms\":%" PRIu64 ",\"events\":[",
+            (unsigned)INPUT_HISTORY_CAPACITY, (unsigned)history.count,
+            history.total_events, history.total_events - history.count,
+            (uint64_t)esp_timer_get_time() / 1000U)) {
+        return false;
+    }
+    for (size_t index = 0; index < history.count; ++index) {
+        input_history_event_t event;
+        if (!input_history_get(&history, index, &event) ||
+            !response_append(
+                response, capacity, length,
+                "%s{\"sequence\":%" PRIu64 ",\"uptime_ms\":%" PRIu64
+                ",\"gpio\":%u,\"type\":\"%s\",\"active\":%s,"
+                "\"pulse_width_ms\":%u}",
+                index == 0U ? "" : ",", event.sequence, event.uptime_ms,
+                (unsigned)event.gpio,
+                input_history_kind_name((input_history_kind_t)event.kind),
+                json_bool(event.active), (unsigned)event.pulse_width_ms)) {
+            return false;
+        }
+    }
+    return response_append(response, capacity, length, "]}");
+}
+
 static esp_err_t status_get_handler(httpd_req_t *request)
 {
     if (!request_authenticated(request)) {
@@ -1781,7 +1815,9 @@ static esp_err_t status_get_handler(httpd_req_t *request)
             response,
             OTA_STATUS_RESPONSE_BYTES,
             &response_length,
-            "]}")) {
+            "],") ||
+        !append_input_history(response, OTA_STATUS_RESPONSE_BYTES, &response_length) ||
+        !response_append(response, OTA_STATUS_RESPONSE_BYTES, &response_length, "}")) {
         goto encoding_failed;
     }
     httpd_resp_set_type(request, "application/json");

@@ -141,6 +141,29 @@ class BacnetHilTests(unittest.TestCase):
         status["firmware"]["next_update_partition"]["label"] = "ota_0"
         self.assertFalse(bacnet_hil_test.firmware_diagnostics_valid(status))
 
+    def test_input_history_validation(self) -> None:
+        history = {
+            "capacity": 64, "count": 2, "total_events": 4,
+            "overwritten_events": 2, "persistent": False,
+            "sample_interval_ms": 10, "captured_uptime_ms": 5000000000,
+            "events": [
+                {"sequence": 3, "uptime_ms": 4300000000, "gpio": 20,
+                 "type": "state-changed", "active": True, "pulse_width_ms": 0},
+                {"sequence": 4, "uptime_ms": 4300000040, "gpio": 21,
+                 "type": "rejected-pulse", "active": False, "pulse_width_ms": 20},
+            ],
+        }
+        self.assertTrue(bacnet_hil_test.input_history_valid({"input_history": history}))
+        for field, value in (("count", 3), ("total_events", 1), ("persistent", True),
+                             ("captured_uptime_ms", 100), ("count", True)):
+            invalid = {**history, field: value}
+            self.assertFalse(bacnet_hil_test.input_history_valid({"input_history": invalid}))
+        for field, value in (("sequence", 9), ("uptime_ms", -1), ("gpio", 23),
+                             ("type", "unknown"), ("active", 1), ("pulse_width_ms", 1)):
+            invalid = json.loads(json.dumps(history))
+            invalid["events"][0][field] = value
+            self.assertFalse(bacnet_hil_test.input_history_valid({"input_history": invalid}))
+
     def test_runtime_diagnostics_validation(self) -> None:
         status = {
             "system": {
