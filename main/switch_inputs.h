@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "esp_err.h"
+#include "input_line_classifier.h"
 
 #define SWITCH_INPUT_COUNT 3U
 
@@ -40,6 +41,9 @@ typedef struct {
     bool self_test_passed;
     bool self_test_pull_down_level;
     bool self_test_pull_up_level;
+    bool self_test_pull_down_stable;
+    bool self_test_pull_up_stable;
+    input_line_classification_t self_test_classification;
 } switch_input_diagnostics_t;
 
 void switch_inputs_init(void);
