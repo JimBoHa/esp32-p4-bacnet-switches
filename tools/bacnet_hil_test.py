@@ -170,7 +170,8 @@ def hardware_profile_valid(value: object) -> bool:
 
 def firmware_diagnostics_valid(status: dict[str, Any]) -> bool:
     firmware = status.get("firmware")
-    if not isinstance(firmware, dict):
+    ota_policy = status.get("ota_policy")
+    if not isinstance(firmware, dict) or not isinstance(ota_policy, dict):
         return False
     running = firmware.get("running_partition")
     boot = firmware.get("boot_partition")
@@ -208,6 +209,13 @@ def firmware_diagnostics_valid(status: dict[str, Any]) -> bool:
         and update["address"] > 0
         and update.get("address") != running.get("address")
         and update.get("size_bytes") == running.get("size_bytes")
+        and ota_policy.get("minimum_image_bytes") == 288
+        and ota_policy.get("maximum_image_bytes") == update.get("size_bytes")
+        and ota_policy.get("upload_deadline_seconds") == 300
+        and ota_policy.get("required_content_type")
+        == "application/octet-stream"
+        and ota_policy.get("minimum_secure_version")
+        == firmware.get("secure_version")
     )
 
 
