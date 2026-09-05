@@ -100,11 +100,24 @@ clock GPIO50. See the [Waveshare schematic](https://files.waveshare.com/wiki/ESP
 | Analog Value | 1008 | Last Reset Reason | Numeric ESP-IDF reset reason |
 | Analog Value | 1009 | Active COV Subscriptions | Current subscription count |
 | Analog Value | 1010 | Boot Count | Persistent successful-start count |
+| Analog Value | 1011 / 1014 / 1017 | GPIO20 / GPIO21 / GPIO22 Chatter | 1 while sampled chatter is active; otherwise 0 |
+| Analog Value | 1012 / 1015 / 1018 | GPIO20 / GPIO21 / GPIO22 Rejected Pulses | Sampled pulses rejected by debounce since boot |
+| Analog Value | 1013 / 1016 / 1019 | GPIO20 / GPIO21 / GPIO22 Transition Age | Seconds since the last accepted transition, or initial observation if none |
 | Network Port | 1 | BACnet/IP Ethernet | Live IPv4, BACnet port, DHCP, DNS, link, and fault state |
 
 The BACnet `Database_Revision` includes a firmware object-model offset so
 clients can detect fixed objects added by a firmware upgrade as well as later
 commissioning changes.
+The nine per-input diagnostic Analog Values are appended after Boot Count;
+the original 18 `Object_List` positions and all existing object IDs remain unchanged.
+These are read-only polling points (no COV); names refer to physical GPIOs even
+when the corresponding Binary Input instance or name is commissioned differently.
+Chatter and rejected counts use `no-units`; age uses `seconds` and monotonic
+uptime, so NTP changes cannot reset it. Rejected pulses do not reset transition
+age. Counters reset at boot and saturate at `UINT32_MAX`; BACnet REAL rounds
+integers above 2^24, while HTTPS retains the exact integer count.
+The 10 ms sampled debounce diagnostics are not an oscilloscope or an edge counter
+for pulses shorter than the polling interval. Self-test weak pulls are excluded.
 Configuration rejects any configurable name that duplicates a fixed diagnostic
 or Network Port `Object_Name`, case-insensitively, so Who-Has stays unambiguous.
 

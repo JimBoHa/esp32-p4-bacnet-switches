@@ -1758,6 +1758,9 @@ static esp_err_t send_status_json(httpd_req_t *request, bool report)
                 "%s{\"gpio\":%d,\"active_low\":%s,\"debounce_ms\":%u,"
                 "\"transition_count\":%u,"
                 "\"last_transition_uptime_ms\":%" PRIu64 ","
+                "\"initialized\":%s,"
+                "\"initial_observation_uptime_ms\":%" PRIu64 ","
+                "\"transition_age_ms\":%" PRIu64 ","
                 "\"signal\":{\"raw_edge_count\":%u,"
                 "\"accepted_transition_count\":%u,"
                 "\"rejected_pulse_count\":%u,"
@@ -1779,6 +1782,9 @@ static esp_err_t send_status_json(httpd_req_t *request, bool report)
                 (unsigned)input.debounce_ms,
                 (unsigned)input.transition_count,
                 input.last_transition_uptime_ms,
+                input.initialized ? "true" : "false",
+                input.initial_observation_uptime_ms,
+                input.transition_age_ms,
                 (unsigned)input.raw_edge_count,
                 (unsigned)input.accepted_transition_count,
                 (unsigned)input.rejected_pulse_count,

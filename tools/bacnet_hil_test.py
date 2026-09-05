@@ -25,13 +25,21 @@ MAX_DEVICE_INSTANCE = 4_194_302
 PHYSICAL_INPUT_INSTANCES = (20, 21, 22)
 STATUS_INPUT_INSTANCES = (1001, 1002)
 COMPAT_ANALOG_VALUE_INSTANCES = tuple(range(1000, 1010))
-APPENDED_ANALOG_VALUE_INSTANCES = (1010,)
+APPENDED_ANALOG_VALUE_INSTANCES = tuple(range(1010, 1020))
 ANALOG_VALUE_INSTANCES = (
     *COMPAT_ANALOG_VALUE_INSTANCES,
     *APPENDED_ANALOG_VALUE_INSTANCES,
 )
 COV_CAPACITY = 8
-FIRMWARE_DATABASE_REVISION_OFFSET = 3
+FIRMWARE_DATABASE_REVISION_OFFSET = 4
+INPUT_DIAGNOSTIC_POINTS = {
+    1011 + channel * 3 + offset: (f"GPIO{20 + channel} {suffix}", units)
+    for channel in range(3)
+    for offset, (suffix, units) in enumerate((
+        ("Chatter", "no-units"), ("Rejected Pulses", "no-units"),
+        ("Transition Age", "seconds"),
+    ))
+}
 MAX_HTTP_RESPONSE_BYTES = 1024 * 1024
 EXPECTED_HARDWARE_PROFILE = {
     "board_model": "Waveshare ESP32-P4-POE-ETH",
@@ -166,6 +174,19 @@ def revision_matches(expected: str | None, reported: object) -> bool:
 def hardware_profile_valid(value: object) -> bool:
     """Require exact field wiring metadata for the tested board/profile."""
     return value == EXPECTED_HARDWARE_PROFILE
+
+
+def input_transition_age_valid(item: object, uptime_ms: object) -> bool:
+    if not isinstance(item, dict) or type(uptime_ms) is not int:
+        return False
+    fields = ("transition_age_ms", "initial_observation_uptime_ms",
+              "last_transition_uptime_ms", "transition_count")
+    if item.get("initialized") is not True or not all(
+        type(item.get(key)) is int and item[key] >= 0 for key in fields
+    ):
+        return False
+    since = item["last_transition_uptime_ms"] if item["transition_count"] else item["initial_observation_uptime_ms"]
+    return abs(item["transition_age_ms"] + since - uptime_ms) <= 2000
 
 
 def event_clock_valid(event: object) -> bool:
@@ -807,12 +828,30 @@ class HilRunner:
             value = float(await self.read(obj, "present-value"))
             reliability = str(await self.read(obj, "reliability"))
             names.append(name)
+            point_ok = True
+            if instance in INPUT_DIAGNOSTIC_POINTS:
+                expected_name, expected_units = INPUT_DIAGNOSTIC_POINTS[instance]
+                units = str(await self.read(obj, "units"))
+                point_ok = name == expected_name and units == expected_units
+                if (instance - 1011) % 3 == 0:
+                    point_ok = point_ok and value in {0.0, 1.0}
+                if self.args.expect_inputs_off and (instance - 1011) % 3 < 2:
+                    point_ok = point_ok and value == 0.0
             self.report.require(
                 f"{obj} diagnostic",
-                bool(name.strip()) and value >= 0 and reliability == "no-fault-detected",
+                bool(name.strip()) and value >= 0 and reliability == "no-fault-detected" and point_ok,
                 f"{name!r}={value:g}; {reliability}",
                 f"invalid diagnostic {name!r}={value}; {reliability}",
             )
+            if instance in (1013, 1016, 1019) and self.args.expect_inputs_off:
+                await asyncio.sleep(0.2)
+                later = float(await self.read(obj, "present-value"))
+                self.report.require(
+                    f"{obj} monotonic transition age",
+                    0.1 <= later - value <= 5.0,
+                    f"quiet-input age advanced {later - value:.3f} seconds",
+                    f"unexpected age change {value:g} -> {later:g}",
+                )
 
         network_name = str(await self.read("network-port,1", "object-name"))
         names.append(network_name)
@@ -1023,6 +1062,15 @@ class HilRunner:
         object_identifier = self.runtime["ObjectIdentifier"]
         binary_pv = self.runtime["BinaryPV"]
         await self.expect_error(
+            "Read-only input diagnostic Analog Value",
+            self.app.write_property(
+                self.destination, object_identifier("analog-value,1011"),
+                "present-value", 0.0,
+            ),
+            set(),
+            {"unrecognized-service", "write-access-denied"},
+        )
+        await self.expect_error(
             "Read-only Binary Input",
             self.app.write_property(
                 self.destination,
@@ -1082,6 +1130,7 @@ class HilRunner:
                 signal = item.get("signal", {}) if isinstance(item, dict) else {}
                 signal_diagnostics_ok = signal_diagnostics_ok and (
                     isinstance(signal, dict)
+                    and input_transition_age_valid(item, system.get("uptime_ms"))
                     and signal.get("accepted_transition_count")
                     == item.get("transition_count")
                     and all(

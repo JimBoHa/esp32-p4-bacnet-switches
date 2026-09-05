@@ -20,7 +20,8 @@ static uint64_t add_uptime_saturating(uint64_t left, uint64_t right)
     return right > UINT64_MAX - left ? UINT64_MAX : left + right;
 }
 
-void input_debounce_init(input_debounce_state_t *state, bool initial_level)
+void input_debounce_init(
+    input_debounce_state_t *state, bool initial_level, uint64_t uptime_ms)
 {
     if (state == NULL) {
         return;
@@ -30,7 +31,20 @@ void input_debounce_init(input_debounce_state_t *state, bool initial_level)
         .stable = initial_level,
         .raw = initial_level,
         .candidate_level = initial_level,
+        .initial_observation_uptime_ms = uptime_ms,
     };
+}
+
+uint64_t input_debounce_transition_age_ms(
+    const input_debounce_state_t *state, uint64_t uptime_ms)
+{
+    if (state == NULL || !state->initialized) {
+        return 0U;
+    }
+    const uint64_t since = state->accepted_transition_count != 0U
+        ? state->last_accepted_transition_uptime_ms
+        : state->initial_observation_uptime_ms;
+    return uptime_ms >= since ? uptime_ms - since : 0U;
 }
 
 bool input_debounce_is_chattering(
@@ -104,7 +118,7 @@ input_debounce_result_t input_debounce_sample(
         return result;
     }
     if (!state->initialized) {
-        input_debounce_init(state, sampled_level);
+        input_debounce_init(state, sampled_level, uptime_ms);
         result.stable = sampled_level;
         return result;
     }

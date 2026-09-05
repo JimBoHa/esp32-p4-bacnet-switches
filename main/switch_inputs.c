@@ -149,7 +149,7 @@ static void switch_poll_task(void *argument)
         const bool initial = (initial_bits & (1U << index)) != 0;
         const clock_stamp_t stamp = clock_service_stamp((uint64_t)esp_timer_get_time() / 1000U);
         portENTER_CRITICAL(&debounce_state_lock);
-        input_debounce_init(&debounce_states[index], initial);
+        input_debounce_init(&debounce_states[index], initial, stamp.uptime_ms);
         (void)input_history_record(
             &recent_input_history, (int)INPUT_GPIOS[index],
             INPUT_HISTORY_INITIAL, initial, 0U,
@@ -469,9 +469,12 @@ bool switch_input_diagnostics_get(
         .current_config = read_pad_config(INPUT_GPIOS[index]),
         .current_raw = gpio_get_level(INPUT_GPIOS[index]) != 0,
         .stable = switch_input_get(index),
+        .initialized = debounce.initialized,
         .transition_count = debounce.accepted_transition_count,
         .last_transition_uptime_ms =
             debounce.last_accepted_transition_uptime_ms,
+        .initial_observation_uptime_ms = debounce.initial_observation_uptime_ms,
+        .transition_age_ms = input_debounce_transition_age_ms(&debounce, uptime_ms),
         .raw_edge_count = debounce.raw_edge_count,
         .accepted_transition_count = debounce.accepted_transition_count,
         .rejected_pulse_count = debounce.rejected_pulse_count,

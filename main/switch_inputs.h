@@ -37,8 +37,11 @@ typedef struct {
     switch_input_pad_config_t current_config;
     bool current_raw;
     bool stable;
+    bool initialized;
     uint32_t transition_count;
     uint64_t last_transition_uptime_ms;
+    uint64_t initial_observation_uptime_ms;
+    uint64_t transition_age_ms;
     uint32_t raw_edge_count;
     uint32_t accepted_transition_count;
     uint32_t rejected_pulse_count;

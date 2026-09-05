@@ -22,6 +22,7 @@ typedef struct {
     uint8_t rejection_history_count;
     uint8_t rejection_history_next;
     uint32_t last_rejected_pulse_width_ms;
+    uint64_t initial_observation_uptime_ms;
     uint64_t last_raw_edge_uptime_ms;
     uint64_t last_accepted_transition_uptime_ms;
     uint64_t last_rejected_pulse_uptime_ms;
@@ -37,7 +38,12 @@ typedef struct {
     bool stable;
 } input_debounce_result_t;
 
-void input_debounce_init(input_debounce_state_t *state, bool initial_level);
+void input_debounce_init(
+    input_debounce_state_t *state, bool initial_level, uint64_t uptime_ms);
+
+/* Until the first accepted transition, age is measured from initial observation. */
+uint64_t input_debounce_transition_age_ms(
+    const input_debounce_state_t *state, uint64_t uptime_ms);
 
 input_debounce_result_t input_debounce_sample(
     input_debounce_state_t *state,
