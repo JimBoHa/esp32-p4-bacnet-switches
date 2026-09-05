@@ -62,7 +62,7 @@ static const bacnet_device_state_t STATE = {
     .binary_input_reliability = {7, 0, 0, 0, 0},
     .binary_input_active_low = {false, true, false, false, false},
     .analog_value_instances = {
-        1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009,
+        1000, 1001, 1002, 1003, 1004, 1005, 1006, 1007, 1008, 1009, 1010,
     },
     .analog_value_names = {
         "Chip Temperature",
@@ -75,6 +75,7 @@ static const bacnet_device_state_t STATE = {
         "BACnet Protocol Errors",
         "Last Reset Reason",
         "Active COV Subscriptions",
+        "Boot Count",
     },
     .analog_value_descriptions = {
         "Internal die temperature",
@@ -87,13 +88,14 @@ static const bacnet_device_state_t STATE = {
         "Protocol error count",
         "Reset reason code",
         "Active subscriptions",
+        "Persistent boot counter",
     },
     .analog_value_values = {
         42.5F, 123.0F, 500000.0F, 450000.0F, 1.0F,
-        2.0F, 300.0F, 4.0F, 1.0F, 2.0F,
+        2.0F, 300.0F, 4.0F, 1.0F, 2.0F, 31.0F,
     },
-    .analog_value_units = {62, 73, 95, 95, 95, 95, 95, 95, 95, 95},
-    .analog_value_reliability = {0, 0, 0, 0, 0, 0, 0, 7, 0, 0},
+    .analog_value_units = {62, 73, 95, 95, 95, 95, 95, 95, 95, 95, 95},
+    .analog_value_reliability = {0, 0, 0, 0, 0, 0, 0, 7, 0, 0, 0},
     .network_port_instance = 1U,
     .network_port_name = "BACnet/IP Ethernet",
     .network_port_description = "Primary BACnet/IPv4 Ethernet interface",
@@ -741,7 +743,7 @@ static void test_device_and_binary_input_properties(void)
         &STATE,
         response,
         sizeof(response));
-    static const uint8_t object_count_tail[] = {0x21, 0x11, 0x3F};
+    static const uint8_t object_count_tail[] = {0x21, 0x12, 0x3F};
     CHECK(result.response_length >= sizeof(object_count_tail));
     CHECK(memcmp(
         response + result.response_length - sizeof(object_count_tail),
@@ -1279,6 +1281,35 @@ static void test_network_status_inputs(void)
         normal_polarity, sizeof(normal_polarity));
 }
 
+static void test_boot_count_analog_value(void)
+{
+    static const uint8_t object_list_item[] = {
+        0xC4U, 0x00U, 0x80U, 0x03U, 0xF2U, 0x3FU,
+    };
+    static const uint8_t present_value[] = {
+        0x44U, 0x41U, 0xF8U, 0x00U, 0x00U, 0x3FU,
+    };
+    check_read_property_tail(
+        &STATE, 8U, STATE.device_instance, 76U, true, 18U,
+        object_list_item, sizeof(object_list_item));
+    check_read_property_tail(
+        &STATE, 2U, 1010U, 85U, false, 0U,
+        present_value, sizeof(present_value));
+
+    uint8_t request[BACNET_MAX_REQUEST_BYTES];
+    uint8_t response[1500];
+    const size_t length = read_property_request(
+        request, 2U, 1010U, 77U, false, 0U);
+    const bacnet_packet_result_t result = bacnet_handle_packet(
+        request, length, &STATE, response, sizeof(response));
+    CHECK(result.kind == BACNET_PACKET_READ_PROPERTY);
+    CHECK(contains_bytes(
+        response,
+        result.response_length,
+        (const uint8_t *)"Boot Count",
+        strlen("Boot Count")));
+}
+
 static void test_read_property_multiple(void)
 {
     uint8_t request[BACNET_MAX_REQUEST_BYTES];
@@ -1750,7 +1781,7 @@ static void test_errors_and_malformed_input(void)
         sizeof(unknown_property_tail)) == 0);
 
     request_length = read_property_request(
-        request, 8, STATE.device_instance, 76, true, 18);
+        request, 8, STATE.device_instance, 76, true, 19);
     result = bacnet_handle_packet(
         request,
         request_length,
@@ -2376,6 +2407,7 @@ int main(void)
     test_device_and_binary_input_properties();
     test_network_port_object();
     test_network_status_inputs();
+    test_boot_count_analog_value();
     test_read_property_multiple();
     test_subscribe_cov_and_notifications();
     test_subscribe_cov_capacity_error();

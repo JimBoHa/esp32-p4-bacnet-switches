@@ -91,6 +91,7 @@ clock GPIO50. See the [Waveshare schematic](https://files.waveshare.com/wiki/ESP
 | Analog Value | 1007 | BACnet Protocol Errors | Malformed/error transaction count |
 | Analog Value | 1008 | Last Reset Reason | Numeric ESP-IDF reset reason |
 | Analog Value | 1009 | Active COV Subscriptions | Current subscription count |
+| Analog Value | 1010 | Boot Count | Persistent successful-start count |
 | Network Port | 1 | BACnet/IP Ethernet | Live IPv4, BACnet port, DHCP, DNS, link, and fault state |
 
 The BACnet `Database_Revision` includes a firmware object-model offset so
