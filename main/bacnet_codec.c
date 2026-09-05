@@ -1017,9 +1017,11 @@ static property_result_t encode_array_item(
     if (object_list) {
         const uint32_t physical_input_end =
             1U + BACNET_PHYSICAL_BINARY_INPUT_COUNT;
-        const uint32_t analog_value_end =
-            physical_input_end + BACNET_ANALOG_VALUE_COUNT;
-        const uint32_t network_port_index = analog_value_end + 1U;
+        const uint32_t compat_analog_value_end =
+            physical_input_end + BACNET_COMPAT_ANALOG_VALUE_COUNT;
+        const uint32_t network_port_index = compat_analog_value_end + 1U;
+        const uint32_t status_input_end =
+            network_port_index + BACNET_STATUS_BINARY_INPUT_COUNT;
         if (index == 1U) {
             encode_application_object_id(
                 writer, BACNET_OBJECT_DEVICE, state->device_instance);
@@ -1029,7 +1031,7 @@ static property_result_t encode_array_item(
                 writer,
                 BACNET_OBJECT_BINARY_INPUT,
                 state->binary_input_instances[input_index]);
-        } else if (index <= analog_value_end) {
+        } else if (index <= compat_analog_value_end) {
             const size_t value_index =
                 index - 2U - BACNET_PHYSICAL_BINARY_INPUT_COUNT;
             encode_application_object_id(
@@ -1041,13 +1043,20 @@ static property_result_t encode_array_item(
                 writer,
                 BACNET_OBJECT_NETWORK_PORT,
                 state->network_port_instance);
-        } else {
+        } else if (index <= status_input_end) {
             const size_t status_index = BACNET_PHYSICAL_BINARY_INPUT_COUNT +
                 index - network_port_index - 1U;
             encode_application_object_id(
                 writer,
                 BACNET_OBJECT_BINARY_INPUT,
                 state->binary_input_instances[status_index]);
+        } else {
+            const size_t value_index = BACNET_COMPAT_ANALOG_VALUE_COUNT +
+                index - status_input_end - 1U;
+            encode_application_object_id(
+                writer,
+                BACNET_OBJECT_ANALOG_VALUE,
+                state->analog_value_instances[value_index]);
         }
         return property_ok();
     }

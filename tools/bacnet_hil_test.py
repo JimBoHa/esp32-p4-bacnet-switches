@@ -24,8 +24,14 @@ REQUIRED_BACPYPES3_VERSION = "0.0.106"
 MAX_DEVICE_INSTANCE = 4_194_302
 PHYSICAL_INPUT_INSTANCES = (20, 21, 22)
 STATUS_INPUT_INSTANCES = (1001, 1002)
-ANALOG_VALUE_INSTANCES = tuple(range(1000, 1010))
+COMPAT_ANALOG_VALUE_INSTANCES = tuple(range(1000, 1010))
+APPENDED_ANALOG_VALUE_INSTANCES = (1010,)
+ANALOG_VALUE_INSTANCES = (
+    *COMPAT_ANALOG_VALUE_INSTANCES,
+    *APPENDED_ANALOG_VALUE_INSTANCES,
+)
 COV_CAPACITY = 8
+FIRMWARE_DATABASE_REVISION_OFFSET = 3
 MAX_HTTP_RESPONSE_BYTES = 1024 * 1024
 
 
@@ -96,9 +102,10 @@ def expected_object_identifiers(device_instance: int) -> list[str]:
     return [
         f"device,{device_instance}",
         *(f"binary-input,{instance}" for instance in PHYSICAL_INPUT_INSTANCES),
-        *(f"analog-value,{instance}" for instance in ANALOG_VALUE_INSTANCES),
+        *(f"analog-value,{instance}" for instance in COMPAT_ANALOG_VALUE_INSTANCES),
         "network-port,1",
         *(f"binary-input,{instance}" for instance in STATUS_INPUT_INSTANCES),
+        *(f"analog-value,{instance}" for instance in APPENDED_ANALOG_VALUE_INSTANCES),
     ]
 
 
@@ -220,6 +227,7 @@ class HilRunner:
         self.destination = runtime["Address"](args.device_address)
         self.app: Any = None
         self.objects: list[str] = []
+        self.database_revision: int | None = None
 
     async def operation(self, name: str, awaitable: Awaitable[Any]) -> Any:
         started = time.monotonic()
@@ -388,6 +396,7 @@ class HilRunner:
                 "location",
             )
         }
+        self.database_revision = int(metadata["database-revision"])
         strings_ok = all(
             str(metadata[prop]).strip()
             for prop in (
@@ -743,6 +752,9 @@ class HilRunner:
             and configuration.get("restart_required") is False
             and configuration.get("active_database_revision")
             == configuration.get("saved_database_revision")
+            and self.database_revision
+            == configuration.get("active_database_revision")
+            + FIRMWARE_DATABASE_REVISION_OFFSET
             and isinstance(bacnet, dict)
             and bacnet.get("active_cov_subscriptions") == 0
             and bacnet.get("cov_timeouts") == 0
