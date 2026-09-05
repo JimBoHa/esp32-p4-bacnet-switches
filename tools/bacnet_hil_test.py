@@ -1077,6 +1077,81 @@ class HilRunner:
             f"five protected routes returned 401; certificate SHA-256={fingerprint}",
         )
 
+        def authenticated_request(
+            method: str,
+            path: str,
+            body: bytes | None = None,
+        ) -> tuple[int, bytes]:
+            connection = ota_client._connection(
+                self.args.device_address,
+                443,
+                self.args.certificate,
+                self.args.timeout,
+            )
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/json",
+            }
+            if body is not None:
+                headers.update(
+                    {
+                        "Content-Type": "application/json",
+                        "Content-Length": str(len(body)),
+                    }
+                )
+            try:
+                connection.request(method, path, body=body, headers=headers)
+                response = connection.getresponse()
+                payload = response.read(MAX_HTTP_RESPONSE_BYTES + 1)
+                if len(payload) > MAX_HTTP_RESPONSE_BYTES:
+                    raise HilError(f"{method} {path} response exceeds 1 MiB")
+                return response.status, payload
+            finally:
+                connection.close()
+
+        get_status, config_payload = authenticated_request("GET", "/config")
+        try:
+            original_config = json.loads(config_payload)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise HilError("authenticated GET /config returned invalid JSON") from error
+        if get_status != 200 or not isinstance(original_config, dict):
+            raise HilError(f"authenticated GET /config returned HTTP {get_status}")
+        collision = json.loads(json.dumps(original_config))
+        inputs = collision.get("inputs")
+        if not isinstance(inputs, list) or not inputs or not isinstance(inputs[0], dict):
+            raise HilError("authenticated GET /config omitted input configuration")
+        inputs[0]["name"] = "chip temperature"
+        collision_body = json.dumps(
+            collision, separators=(",", ":"), ensure_ascii=True
+        ).encode("ascii")
+        rejection_status, rejection_payload = authenticated_request(
+            "PUT", "/config", collision_body
+        )
+        if 200 <= rejection_status < 300:
+            restore_body = json.dumps(
+                original_config, separators=(",", ":"), ensure_ascii=True
+            ).encode("ascii")
+            restore_status, _ = authenticated_request("PUT", "/config", restore_body)
+            raise HilError(
+                "fixed Object_Name collision was accepted; "
+                f"restoration returned HTTP {restore_status}"
+            )
+        unchanged_status, unchanged_payload = authenticated_request("GET", "/config")
+        try:
+            unchanged_config = json.loads(unchanged_payload)
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise HilError("post-rejection GET /config returned invalid JSON") from error
+        rejection_text = rejection_payload.decode("utf-8", errors="replace").lower()
+        self.report.require(
+            "Reserved BACnet Object_Name rejection",
+            rejection_status == 400
+            and "object names must be unique" in rejection_text
+            and unchanged_status == 200
+            and unchanged_config == original_config,
+            "case-insensitive fixed-name collision rejected without changing configuration",
+            "invalid name was not rejected cleanly or saved configuration changed",
+        )
+
 
 def write_report(path: Path, report: TestReport) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
