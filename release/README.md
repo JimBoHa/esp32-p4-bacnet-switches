@@ -1,34 +1,24 @@
 # Private firmware artifacts
 
-Do not commit firmware binaries from this project. Every OTA-enabled binary
-contains that device's bearer token and TLS private key.
+Every OTA-enabled binary embeds that device's bearer token and TLS private key.
+Never commit or attach one to a public release.
 
-After generating or securely supplying credentials, build a private
-application-only OTA image with:
-
-```sh
-idf.py build
-cp build/esp32_p4_bacnet_switches.bin \
-  release/esp32_p4_bacnet_switches-1.3.2-ota.bin
-shasum -a 256 release/esp32_p4_bacnet_switches-1.3.2-ota.bin
-```
-
-Upload it with:
+After a clean production build, create a verified private package:
 
 ```sh
-python3 tools/ota_client.py upload \
-  --host DEVICE_IP \
-  release/esp32_p4_bacnet_switches-1.3.2-ota.bin
+idf.py reconfigure build
+python3 tools/package_release.py
 ```
 
-For a private merged image used during the initial USB installation:
+Output goes to ignored `release/private/vVERSION/`. The directory is mode 0700;
+files are mode 0600. It contains an OTA image, merged USB recovery image,
+individual flash inputs/offsets, manifest, checksums, pinned public certificate,
+client, commissioning/security notes, and third-party licenses. It deliberately
+omits the plaintext bearer-token and standalone private-key files, but the
+binaries remain secret because both are embedded.
 
-```sh
-cd build
-esptool.py --chip esp32p4 merge_bin -o \
-  ../release/esp32_p4_bacnet_switches-1.3.2-full.bin \
-  @flash_args
-```
-
-Keep binaries and checksums in an approved secret store. They are ignored by
-Git. The project README contains the direct `idf.py` USB procedure.
+The packager refuses to overwrite a version, package a dirty or mismatched
+build, follow symlinked paths, or write within a non-ignored repository path.
+Move the complete package to an approved secret store after verification. See
+[`docs/DEVELOPMENT.md`](../docs/DEVELOPMENT.md) and
+[`docs/COMMISSIONING.md`](../docs/COMMISSIONING.md).
