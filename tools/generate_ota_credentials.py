@@ -14,6 +14,8 @@ import sys
 import tempfile
 from pathlib import Path
 
+from validate_ota_credentials import validate_tokens
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SECRETS_DIRECTORY = PROJECT_ROOT / "secrets"
@@ -40,6 +42,8 @@ def _arguments() -> argparse.Namespace:
         action="store_true",
         help="replace existing credentials",
     )
+    parser.add_argument("--viewer-only", action="store_true",
+                        help="add/rotate only the viewer token; preserve admin token and TLS identity")
     return parser.parse_args()
 
 
@@ -61,13 +65,25 @@ def _require_replaceable(paths: list[Path], force: bool) -> None:
 
 def main() -> int:
     args = _arguments()
+    private_key = args.secrets_dir / "ota_server_key.pem"
+    token_file = args.secrets_dir / "ota_token.txt"
+    viewer_token_file = args.secrets_dir / "ota_viewer_token.txt"
+    if args.viewer_only:
+        validate_tokens(token_file)
+        _require_replaceable([viewer_token_file], args.force)
+        with tempfile.TemporaryDirectory(prefix=".viewer-token-", dir=args.secrets_dir) as temporary:
+            staged_viewer = Path(temporary) / "ota_viewer_token.txt"
+            staged_viewer.write_text(secrets.token_urlsafe(48), encoding="ascii")
+            staged_viewer.chmod(0o600)
+            validate_tokens(token_file, staged_viewer)
+            os.replace(staged_viewer, viewer_token_file)
+        print(f"Viewer token: {viewer_token_file} (mode 0600); admin/TLS unchanged")
+        return 0
     openssl = shutil.which("openssl")
     if openssl is None:
         raise RuntimeError("openssl is required")
 
-    private_key = args.secrets_dir / "ota_server_key.pem"
-    token_file = args.secrets_dir / "ota_token.txt"
-    _require_replaceable([private_key, token_file, args.certificate], args.force)
+    _require_replaceable([private_key, token_file, viewer_token_file, args.certificate], args.force)
 
     args.secrets_dir.parent.mkdir(parents=True, exist_ok=True)
     args.secrets_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -87,6 +103,7 @@ def main() -> int:
         staging.chmod(0o700)
         staged_private_key = staging / "ota_server_key.pem"
         staged_token_file = staging / "ota_token.txt"
+        staged_viewer_token_file = staging / "ota_viewer_token.txt"
         staged_certificate = staging / "ota_server_cert.pem"
         subprocess.run(
             [
@@ -128,8 +145,10 @@ def main() -> int:
             check=True,
         )
         staged_token_file.write_text(secrets.token_urlsafe(48), encoding="ascii")
+        staged_viewer_token_file.write_text(secrets.token_urlsafe(48), encoding="ascii")
         staged_private_key.chmod(0o600)
         staged_token_file.chmod(0o600)
+        staged_viewer_token_file.chmod(0o600)
         subprocess.run(
             [
                 sys.executable,
@@ -140,12 +159,15 @@ def main() -> int:
                 str(staged_private_key),
                 "--token-file",
                 str(staged_token_file),
+                "--viewer-token-file",
+                str(staged_viewer_token_file),
             ],
             check=True,
             capture_output=True,
         )
         os.replace(staged_private_key, private_key)
         os.replace(staged_token_file, token_file)
+        os.replace(staged_viewer_token_file, viewer_token_file)
         os.replace(staged_certificate, args.certificate)
 
     private_key.chmod(0o600)
@@ -156,7 +178,8 @@ def main() -> int:
     )
     fingerprint = hashlib.sha256(certificate_der).hexdigest()
     print(f"Private key: {private_key} (mode 0600)")
-    print(f"Bearer token: {token_file} (mode 0600)")
+    print(f"Admin token: {token_file} (mode 0600)")
+    print(f"Viewer token: {viewer_token_file} (mode 0600)")
     print(f"Public certificate: {args.certificate}")
     print(f"Certificate SHA-256: {fingerprint}")
     return 0

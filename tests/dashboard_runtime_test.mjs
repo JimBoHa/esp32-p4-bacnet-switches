@@ -121,6 +121,7 @@ assert.equal(element("overallHealth").textContent, "Not connected");
 
 const healthyStatus = {
   state: "valid",
+  access_role: "viewer",
   version: "1.20.0",
   system: {
     chip_temperature_c: 36.4,
@@ -158,6 +159,7 @@ await flush();
 await flush();
 assert.equal(element("dashboard").hidden, false);
 assert.equal(element("overallHealth").textContent, "Healthy");
+assert.match(element("connectionStatus").textContent, /Authenticated as viewer/);
 assert.equal(element("inputHistoryRows").children.length, 2);
 assert.equal(element("inputHistoryRows").children[0].children[0].textContent, "2");
 assert.equal(element("inputHistoryRows").children[0].children[5].textContent, "20 ms");

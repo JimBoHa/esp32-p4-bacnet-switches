@@ -102,6 +102,11 @@ class OtaToolTests(unittest.TestCase):
             private_key = secrets_directory / "ota_server_key.pem"
             token_file = secrets_directory / "ota_token.txt"
             token = token_file.read_text(encoding="ascii")
+            viewer_file = secrets_directory / "ota_viewer_token.txt"
+            viewer = viewer_file.read_text(encoding="ascii")
+            self.assertNotEqual(token, viewer)
+            self.assertEqual(stat.S_IMODE(viewer_file.stat().st_mode), 0o600)
+            self.assertNotIn(viewer, first.stdout + first.stderr)
 
             self.assertEqual(stat.S_IMODE(secrets_directory.stat().st_mode), 0o700)
             self.assertEqual(stat.S_IMODE(private_key.stat().st_mode), 0o600)
@@ -126,6 +131,8 @@ class OtaToolTests(unittest.TestCase):
                     str(private_key),
                     "--token-file",
                     str(token_file),
+                    "--viewer-token-file",
+                    str(viewer_file),
                 ],
                 check=True,
                 capture_output=True,
@@ -147,6 +154,36 @@ class OtaToolTests(unittest.TestCase):
             self.assertNotEqual(replacement_token, token)
             self.assertNotIn(replacement_token, replaced.stdout)
             self.assertNotIn(replacement_token, replaced.stderr)
+
+    def test_viewer_only_generation_preserves_admin_and_rejects_identical_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            directory = Path(temporary)
+            admin = directory / "ota_token.txt"
+            admin.write_text("A" * 64, encoding="ascii")
+            admin.chmod(0o600)
+            command = [sys.executable, str(GENERATOR), "--viewer-only",
+                       "--secrets-dir", str(directory)]
+            created = subprocess.run(command, check=True, capture_output=True, text=True)
+            viewer = directory / "ota_viewer_token.txt"
+            previous = viewer.read_text()
+            self.assertNotIn(previous, created.stdout + created.stderr)
+            self.assertEqual(admin.read_text(), "A" * 64)
+            self.assertFalse((directory / "ota_server_key.pem").exists())
+            self.assertNotEqual(subprocess.run(command, capture_output=True).returncode, 0)
+            subprocess.run([*command, "--force"], check=True, capture_output=True)
+            self.assertNotEqual(viewer.read_text(), previous)
+            self.assertEqual(admin.read_text(), "A" * 64)
+            spec = importlib.util.spec_from_file_location("validate_ota_credentials", VALIDATOR)
+            validator = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(validator)
+            validator.validate_tokens(admin, viewer)
+            viewer.write_text(admin.read_text())
+            with self.assertRaisesRegex(ValueError, "distinct"):
+                validator.validate_tokens(admin, viewer)
+            viewer.write_text("V" * 64)
+            viewer.chmod(0o644)
+            with self.assertRaisesRegex(ValueError, "permissions"):
+                validator.validate_tokens(admin, viewer)
 
     def test_generator_refuses_aliased_and_symbolic_link_outputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
