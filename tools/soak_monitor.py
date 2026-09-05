@@ -49,6 +49,32 @@ MONOTONIC_NETWORK_COUNTERS = (
     "ip_acquisition_count",
     "ip_changed_count",
 )
+EXPECTED_HARDWARE_PROFILE = {
+    "board_model": "Waveshare ESP32-P4-POE-ETH",
+    "header": "P1",
+    "supply": {"label": "3V3", "position": 36, "nominal_volts": 3.3},
+    "input_circuit": {
+        "contact_type": "dry-contact",
+        "internal_pull": "down",
+        "input_only": True,
+        "closed_to_supply": True,
+        "closed_raw_level": True,
+        "open_raw_level": False,
+        "recommended_external_pull_down_ohms": 10000,
+    },
+    "inputs": [
+        {
+            "channel": channel,
+            "gpio": gpio,
+            "bacnet_binary_input_instance": gpio,
+            "header_position": position,
+            "configured_active_low": False,
+            "open_state": "inactive",
+            "closed_state": "active",
+        }
+        for channel, gpio, position in ((1, 20, 35), (2, 21, 34), (3, 22, 32))
+    ],
+}
 
 
 class SoakError(RuntimeError):
@@ -348,6 +374,9 @@ def evaluate_sample(
             != {"advertised": True, "port": expected_bacnet_port}
         ):
             alerts.append("mdns-discovery-unhealthy")
+
+    if status.get("hardware") != EXPECTED_HARDWARE_PROFILE:
+        alerts.append("hardware-profile-unhealthy")
 
     watchdog = system.get("task_watchdog", {})
     if not isinstance(watchdog, dict) or not watchdog:

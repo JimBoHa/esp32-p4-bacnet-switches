@@ -73,6 +73,7 @@ def healthy_values() -> tuple[dict[str, object], dict[str, object], dict[str, ob
                 "bacnet": {"advertised": True, "port": 47808},
             },
         },
+        "hardware": json.loads(json.dumps(soak_monitor.EXPECTED_HARDWARE_PROFILE)),
         "bacnet": {
             "rx": 100,
             "responses": 95,
@@ -218,6 +219,28 @@ class SoakMonitorTests(unittest.TestCase):
             maximum_temperature_c=85.0,
         )
         self.assertIn("mdns-discovery-missing", alerts)
+
+    def test_hardware_profile_alert(self) -> None:
+        status, config, network_config = healthy_values()
+        baseline = soak_monitor.Baseline.from_values(status, config, network_config)
+        changed = json.loads(json.dumps(status))
+        changed["hardware"]["inputs"][2]["header_position"] = None
+        alerts = soak_monitor.evaluate_sample(
+            baseline,
+            status,
+            changed,
+            config,
+            network_config,
+            {
+                "device_instance": 599152,
+                "vendor_identifier": 999,
+                "max_apdu": 1476,
+                "segmentation": 3,
+            },
+            minimum_heap_bytes=1024,
+            maximum_temperature_c=85.0,
+        )
+        self.assertIn("hardware-profile-unhealthy", alerts)
 
     def test_reboot_config_network_and_resource_changes_alert(self) -> None:
         status, config, network_config = healthy_values()

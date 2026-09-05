@@ -71,6 +71,7 @@ idf_component_register(
         "diagnostics.c"
         "diagnostics_time.c"
         "discovery_service.c"
+        "hardware_profile.c"
         "input_debounce.c"
         "input_line_classifier.c"
         "network_config_model.c"

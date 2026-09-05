@@ -162,7 +162,7 @@ python3 tools/mdns_probe.py \
   --hostname esp32-p4-bacnet \
   --address 192.168.75.152 \
   --device-instance 599152 \
-  --firmware-version 1.14.0
+  --firmware-version 1.15.0
 ```
 
 For an endurance run after the finite suite, use the append-only soak monitor.
@@ -400,6 +400,11 @@ registration failure, and authenticated remote-reboot requests. Entries include
 sequence, boot count, boot-relative time, type, and error code.
 An mDNS initialization or service-advertisement failure is also persisted; a
 runtime hostname conflict is counted in authenticated status.
+
+Authenticated status also exposes machine-readable board, P1 header, 3.3 V
+supply, dry-contact circuit, pull-down recommendation, GPIO-to-header, and
+GPIO-to-BACnet mappings. HIL and soak tests require that profile exactly, so a
+pin-map regression fails release acceptance.
 
 The switch-input and BACnet tasks are registered with ESP-IDF's task watchdog.
 The status endpoint reports their registration, most recent heartbeat, and
