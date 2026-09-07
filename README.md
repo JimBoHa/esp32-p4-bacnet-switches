@@ -344,8 +344,9 @@ the redirect cannot remove that warning. A nondefault HTTPS port is included
 in the target. Port 80 is reserved for redirecting, not HTTPS management.
 
 The redirect listener has one client slot, a 4 KiB task stack, two-second
-receive/send timeouts, and closes each handled request. Its control port is
-separate from HTTPS. `CONFIG_LWIP_MAX_SOCKETS=16` reserves room for both
+receive/send timeouts, and closes each handled request. Both redirect handlers
+reject request bodies without draining them. Its control port is separate
+from HTTPS. `CONFIG_LWIP_MAX_SOCKETS=16` reserves room for both
 listeners, BACnet, mDNS and time synchronization; existing local `sdkconfig`
 files must be updated to at least 16 before building. IPv4 and unscoped/global
 IPv6 destinations are formatted from the actual accepted socket address;

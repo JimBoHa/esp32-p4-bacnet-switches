@@ -22,8 +22,9 @@ application descriptor's `image_sha256`, not the whole `.bin` file SHA-256.
   tests**, no skips. Native redirect implementation tests run with ASan/UBSan;
   cases cover GET/HEAD, unchanged write authorization, destination isolation,
   custom TLS ports, IPv4/mapped/global IPv6, invalid addresses, startup failure
-  cleanup, connection closure and resource limits. Node, security/history and
-  staged/unstaged whitespace checks passed. Runner totals overlap.
+  cleanup, rejected request bodies, connection closure and resource limits.
+  Node, security/history and staged/unstaged whitespace checks passed. Runner
+  totals overlap.
 - An OTA-enabled ESP-IDF 5.5.4 target build succeeded with the existing private
   credentials/signing key. No key generation or credential changes. Socket
   allowance increased from 10 to 16 for the additional bounded listener;
@@ -31,6 +32,12 @@ application descriptor's `image_sha256`, not the whole `.bin` file SHA-256.
 - SDK inspection caught that its error-code enum has no 503 constant; the
   implementation uses an explicit 503 status instead, and the native stubs
   were corrected to match the real API before the target build.
+- Final source review identified ESP-IDF's automatic unread-body drain after
+  successful handlers. Both redirect handlers now reject declared request
+  bodies with an empty 400 response and immediate socket closure; native
+  tests cover GET/HEAD and small/large lengths. Unsupported methods use the
+  SDK's default close-on-error behavior. Receive/send timeouts are per I/O,
+  not an absolute deadline for slowly arriving headers.
 - Repeatable live acceptance is now committed as
   `tools/verify_dashboard_redirects.py`: seven HTTP redirect cases, two HTTPS
   root cases and the pinned dashboard. It uses GET/HEAD only, sends no tokens,
