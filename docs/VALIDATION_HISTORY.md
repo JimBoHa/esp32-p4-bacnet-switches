@@ -11,6 +11,75 @@ Counts belong to their named runner/options. CTest and Python discovery overlap;
 do not sum them as unique test cases. Live image hashes below are the
 application descriptor's `image_sha256`, not the whole `.bin` file SHA-256.
 
+## 2026-09-07 — v1.29.0 authorized deployment and live redirects (passed)
+
+- Implemented by [PR #37](https://github.com/JimBoHa/esp32-p4-bacnet-switches/pull/37).
+  Deployed clean main source `3792c05fb1d16154835456c7719cdf35a1e21df4`
+  (device reports `3792c05fb1d1`). Both jobs passed on the final PR head
+  `2bd9a4a7fc212d3e921555528fabaace76cc0fbb` and on
+  [merged main](https://github.com/JimBoHa/esp32-p4-bacnet-switches/actions/runs/34129711155).
+  Local main host checks passed: **6/6 CTests**, **90 Python tests**, no skips,
+  Node, ASan/UBSan, security/history and whitespace checks included.
+- Explicit user approval covered installing the signed update, its brief
+  reboot and live verification. No target soak was active; an unrelated
+  controller's existing monitor was left untouched. Before deployment the
+  target was valid v1.28.0, source `00bebb7ad59c`, `ota_0`, boot 73,
+  approximately 39.8 hours uptime, with healthy runtime/watchdogs and BACnet.
+- ESP-IDF 5.5.4 OTA-enabled build from clean main passed, with no compiler
+  warnings/errors. Candidate v1.29.0 was 921,600 bytes; app image SHA-256
+  `ba997417199e11d117f5445252877b24a02dcd2c1d186a4709acd604e5c88cf5`,
+  file SHA-256
+  `ef2af2654a31110467cc45c2578e15e4271350fc40790b940544dd57a652a127`.
+  Signature and existing signing-key/TLS pins matched. Existing embedded
+  credentials were preserved; the signing private key remains host-only.
+- Private v1.28 recovery hashes and its app placement at `0x20000` passed
+  before upload. Created private v1.29 package using `tools/package_release.py`;
+  all `SHA256SUMS`, exact candidate identity, merged app placement, and directory
+  0700/file 0600 permissions passed. No public binaries or raw reports were
+  uploaded. USB flashing, erase and physical recovery were not exercised.
+- `tools/ota_client.py upload`, existing certificate/admin-token/public-key
+  file paths, `--timeout 30 --reboot-timeout 120 --poll-interval 2`: exit 0,
+  HTTP 202 acceptance for `ota_1`, exact accepted image hash, reboot and valid
+  state verified. Observed boot count **73 to 74** and software reset;
+  persistent log recorded OTA acceptance, boot and validation. The old valid
+  image in `ota_0` was not overwritten. No second upload or reboot was needed.
+- `tools/verify_live_readonly.py`, expected v1.29/source/image above,
+  `--samples 5 --interval 2`: exit 0. Anonymous reads, all 40 P1 positions/
+  25 readable GPIOs, report structure, byte-identical HTML/JS/CSS, and stable
+  boot/image/pad/configuration state passed.
+- `tools/verify_dashboard_redirects.py`: exit 0; **seven HTTP redirect cases,
+  two HTTPS root cases, and pinned dashboard byte match** passed. Host/query
+  isolation, empty 302 responses, canonical destinations, no-store/no-referrer,
+  no authentication/cookies, and declared plaintext connection closure passed.
+  This verifier sends no tokens and never follows Location.
+- A separate raw HTTP/1.1 `GET /` with only Host (no client `Connection: close`)
+  received the expected empty 302 and **server-initiated TCP EOF in 5.623 ms**.
+  The workstation read until EOF with a five-second overall deadline and
+  8 KiB response cap; no body, mutation, or stress request was sent.
+- Native Safari: entered `http://DEVICE_IP/`, `https://DEVICE_IP/`, and bare
+  `DEVICE_IP` in the address bar. All landed at HTTPS `/diagnostics`, displayed
+  v1.29/source above, boot 74, Healthy and no-login read-only access. Existing
+  self-signed-certificate "Not Secure" annotation remains; no browser warning
+  was bypassed or trust setting changed. Report-download/narrow-layout tests
+  were not repeated for this redirect-only change.
+- Private before/after/final pinned anonymous report snapshots compared all
+  five active/saved/confirmed configuration sections, MAC/address and all
+  P1 pad settings: unchanged across update. Reports passed the existing
+  validator with both actual token values supplied locally (neither appeared).
+  This is report-specific secret exclusion, not full negative-auth HIL.
+- Three directed `soak_monitor.probe_bacnet` Who-Is/I-Am probes passed per
+  snapshot: three before, six after deployment, all from the expected device;
+  post-update round trips 0.626–1.073 ms. Firmware/runtime validators and both
+  subscribed task watchdogs passed. Last sampled UTC `2026-09-07T14:07:05Z`:
+  valid `ota_1`, boot 74, uptime 218.713 s, 36.4 C, free heap 33,016,828 bytes,
+  100 Mb/s full duplex, zero link-down/reconnect counters since boot.
+- This is finite deployment acceptance, **not a new soak or endurance pass**.
+  No live negative writes, OTA rejection, COV-capacity, weak-pull/electrical,
+  power interruption, credential rotation or eFuse changes were performed.
+  Site NTP remained unsynchronized. The previous v1.28 endurance failures
+  below remain unresolved. This follow-up evidence change is docs-only and
+  does not require reflashing to match its newer GitHub SHA.
+
 ## 2026-09-07 — v1.29.0 IP-entry redirect implementation
 
 - Change tree based on `b371ff71d23b33fff1bb2b08ce139fc9127772b5`: HTTPS root
