@@ -107,7 +107,7 @@ class DashboardAssetTests(unittest.TestCase):
             server,
         )
         mutations = [(path, method, handler) for path, method, handler in routes
-                     if method != "HTTP_GET"]
+                     if method not in {"HTTP_GET", "HTTP_HEAD"}]
         self.assertEqual({(path, method) for path, method, _ in mutations}, {
             ("/ota", "HTTP_POST"), ("/config", "HTTP_PUT"),
             ("/network/config", "HTTP_PUT"), ("/network/config/confirm", "HTTP_POST"),
