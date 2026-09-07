@@ -11,6 +11,42 @@ Counts belong to their named runner/options. CTest and Python discovery overlap;
 do not sum them as unique test cases. Live image hashes below are the
 application descriptor's `image_sha256`, not the whole `.bin` file SHA-256.
 
+## 2026-09-06 — v1.28.0 24-hour soak completed (failed)
+
+This is the completed outcome of the run described as in progress in the
+2026-09-05 entries below. It finished naturally while the coding session was
+paused; it was not stopped or restarted to prepare this record.
+
+- Firmware: v1.28.0, source `00bebb7ad59c`, app image SHA-256
+  `a2c9e24700e0b61ff7929002c5426974fec13c462bdb1173ca14c5beb052ecfd`.
+- Procedure: `tools/soak_monitor.py`, requested duration 86,400 seconds,
+  interval 60 seconds, timeout 5 seconds, pinned certificate and viewer-token
+  file; raw JSONL kept private. UTC start `2026-09-05T22:15:30.640Z`, finish
+  `2026-09-06T22:15:31.542Z`; actual elapsed **86,400.470 seconds**.
+- Final summary: **success=false**, interrupted=false; **1,441 samples**,
+  **1,439 successful requests**, **2 request failures**, **6 alerting samples**.
+  A successful request means data was collected, not that its health checks
+  passed. The completed duration does not override these failures.
+- Both request failures were `/ota/status` connection timeouts, at UTC
+  `2026-09-06T01:22:30.666Z` and `2026-09-06T11:54:30.909Z`.
+- Counter alerts: one BACnet protocol-error increase (5 to 69), four malformed
+  counter increases (0 to 3, 3 to 4, 4 to 5, 5 to 7), and two rate-limit
+  increases (2 to 3, 3 to 15). One sample had two counter alerts, hence seven
+  counter alerts across six samples. The traffic source and timeout root
+  cause have **not been established**; do not dismiss these as expected noise.
+- All 1,439 successful snapshots retained the same source/image, valid
+  `ota_0` state and boot count 73. Lowest sampled free heap: 33,023,936 bytes;
+  final-minus-initial heap: -8 bytes; maximum die temperature: 38.4 C.
+  HTTPS latency median/max: 459.079/3,465.401 ms; BACnet median/max:
+  1.613/2.390 ms.
+- Independently reconciled the JSONL: 1,441 sample rows, one final summary,
+  two error rows, six alerting rows, last scheduled sample at 86,400 seconds,
+  and one unique successful-snapshot firmware/boot identity.
+- No new firmware, configuration change or soak was initiated in response.
+  Timeout/traffic investigation and a later clean endurance run remain open
+  work, separate from the host-only documentation/test-handoff PR. Physical
+  switch, PoE/cable/power and production BAS acceptance remain unclaimed.
+
 ## 2026-09-05 — reproducible testing handoff (host-only)
 
 - [PR #36](https://github.com/JimBoHa/esp32-p4-bacnet-switches/pull/36), change
