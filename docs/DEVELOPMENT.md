@@ -30,13 +30,11 @@ admin token and TLS identity. Rebuild and upload using the admin credential.
 
 ## Tests
 
+Read [TESTING.md](TESTING.md) for prerequisites, coverage, risk gates and PR
+evidence. The required host-only command is:
+
 ```sh
-cmake -S tests -B build-tests
-cmake --build build-tests --parallel
-ctest --test-dir build-tests --output-on-failure
-python3 -m unittest discover -s tests -p 'test_*.py'
-python3 tools/security_audit.py --history
-git diff --check
+python3 tools/run_host_tests.py
 ```
 
 The GitHub workflow has read-only repository permission, pins its action and
@@ -44,8 +42,10 @@ ESP-IDF image by immutable digest, disables persisted checkout credentials, and
 builds with `tests/sdkconfig.no_ota.defaults`. It deliberately publishes no
 binary because a production image embeds credentials.
 
-Run the independent live suite in [Hardware testing](HARDWARE_TESTING.md), then
-the monitor in [Soak testing](SOAK_TESTING.md). Save reports outside the repo;
+When authorized, run the independent live suite in
+[Hardware testing](HARDWARE_TESTING.md), then the monitor in
+[Soak testing](SOAK_TESTING.md). Do not run the negative HIL probes during an
+existing soak. Save reports outside the repo;
 they may contain site addressing and configuration even though they never
 contain the bearer token.
 
@@ -74,13 +74,13 @@ approved secret store; do not attach it to a public GitHub release.
 Increment `PROJECT_VER` for every distributable firmware behavior change. Keep
 the ESP-IDF project name stable because the device rejects another project.
 
-## Current validation boundary
+## Validation boundary
 
-Version 1.19.0 was tested on the local target at `192.168.75.152`: two complete
-53-check non-actuating HIL runs passed, an injected switch-task hang caused a
-task-watchdog reset and bootloader rollback, the explicit rollback diagnostic
-was verified, the healthy image was restored to both OTA slots, and an 8-sample
-post-test soak completed with no failure or alert.
+[VALIDATION_HISTORY.md](VALIDATION_HISTORY.md) records dated host, CI, HIL,
+browser, OTA and endurance results, including the historical v1.19 watchdog
+rollback test and later releases. Read its limitations before claiming a test
+passed. New host-only/docs commits do not require a firmware flash: distinguish
+repository HEAD from the last verified deployed source/image.
 
 Still field-only:
 
