@@ -142,7 +142,8 @@ root cases. Expect empty 302 responses, exact safe Location, no-store and
 no-referrer headers, no authentication/cookies, and HTTP connection closure.
 It never follows an untrusted redirect. Supply `--https-port` for a configured
 nondefault TLS port. This check is not compatible with firmware before v1.29.
-Native regression tests cover rejected mutation methods, IPv4/mapped IPv6/
+Native regression tests cover rejected mutation methods and request bodies
+(immediate closure, not an unread-body drain), IPv4/mapped IPv6/
 global IPv6, custom TLS ports, malformed/unavailable local addresses, startup
 failure cleanup, and the one-client/short-timeout resource limits.
 

@@ -42,8 +42,10 @@ esp_err_t httpd_register_uri_handler(httpd_handle_t handle, const httpd_uri_t *r
 esp_err_t httpd_resp_set_status(httpd_req_t *request, const char *status)
 {
     (void)request;
-    assert(strcmp(status, "302 Found") == 0 || strcmp(status, "503 Service Unavailable") == 0);
-    status_code = strcmp(status, "302 Found") == 0 ? 302 : 503;
+    if (strcmp(status, "302 Found") == 0) { status_code = 302; }
+    else if (strcmp(status, "400 Bad Request") == 0) { status_code = 400; }
+    else if (strcmp(status, "405 Method Not Allowed") == 0) { status_code = 405; }
+    else { assert(strcmp(status, "503 Service Unavailable") == 0); status_code = 503; }
     return ESP_OK;
 }
 esp_err_t httpd_resp_set_type(httpd_req_t *request, const char *type)
@@ -66,13 +68,6 @@ esp_err_t httpd_resp_send(httpd_req_t *request, const char *body, ssize_t length
     (void)request;
     assert(body == NULL && length == 0);
     send_count++;
-    return ESP_OK;
-}
-esp_err_t httpd_resp_send_err(httpd_req_t *request, httpd_err_code_t code, const char *message)
-{
-    (void)request;
-    assert(strstr(message, "device") != NULL || strstr(message, "HTTPS") != NULL);
-    status_code = code;
     return ESP_OK;
 }
 int httpd_req_to_sockfd(httpd_req_t *request) { (void)request; return 42; }
@@ -184,8 +179,27 @@ int main(void)
 
     reset_response();
     request.method = HTTP_POST;
-    assert(routes[0].handler(&request) == ESP_OK);
-    assert(status_code == 405 && send_count == 0 && close_count == 1 && header("Location")[0] == '\0');
+    assert(routes[0].handler(&request) == ESP_FAIL);
+    assert(status_code == 405 && send_count == 1 && close_count == 0 && header("Location")[0] == '\0');
+    assert(strcmp(header("Connection"), "close") == 0);
+    const size_t body_lengths[] = {1, 4096, SIZE_MAX};
+    for (int method = HTTP_GET; method <= HTTP_HEAD; ++method) {
+        request.method = (httpd_method_t)method;
+        for (size_t index = 0; index < sizeof(body_lengths) / sizeof(body_lengths[0]); ++index) {
+            request.content_len = body_lengths[index];
+            for (int secure = 0; secure < 2; ++secure) {
+                reset_response();
+                const esp_err_t result = secure ? dashboard_root_redirect_handler(&request)
+                                               : routes[0].handler(&request);
+                /* No queued close: failure tells ESP-IDF to skip body draining. */
+                assert(result == ESP_FAIL && status_code == 400 && send_count == 1 && close_count == 0);
+                assert(header("Location")[0] == '\0' && strcmp(header("Connection"), "close") == 0);
+            }
+        }
+    }
+    reset_response(); fail_header = "Connection";
+    assert(routes[0].handler(&request) == ESP_FAIL && send_count == 0 && close_count == 0);
+    request.content_len = 0;
     request.method = HTTP_GET;
     for (int bad = 0; bad < 6; ++bad) {
         reset_response();
@@ -211,7 +225,8 @@ int main(void)
         assert(strcmp(header("Location"), "/diagnostics") == 0);
     }
     reset_response(); request.method = HTTP_PUT;
-    assert(dashboard_root_redirect_handler(&request) == ESP_OK && status_code == 405 && send_count == 0);
+    assert(dashboard_root_redirect_handler(&request) == ESP_FAIL && status_code == 405 && send_count == 1);
+    assert(strcmp(header("Connection"), "close") == 0);
     dashboard_redirect_stop();
     const int stops = stop_count;
     dashboard_redirect_stop();

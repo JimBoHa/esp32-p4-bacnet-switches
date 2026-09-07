@@ -9,6 +9,19 @@
 static httpd_handle_t redirect_server;
 static uint16_t redirect_https_port;
 
+static esp_err_t reject_and_close(httpd_req_t *request, const char *status)
+{
+    esp_err_t result = httpd_resp_set_status(request, status);
+    if (result == ESP_OK) {
+        result = httpd_resp_set_hdr(request, "Connection", "close");
+    }
+    if (result == ESP_OK) {
+        (void)httpd_resp_send(request, NULL, 0);
+    }
+    /* ESP_FAIL closes immediately, skipping ESP-IDF's unread-body drain. */
+    return ESP_FAIL;
+}
+
 static esp_err_t send_redirect(httpd_req_t *request, const char *location)
 {
     esp_err_t result = httpd_resp_set_status(request, "302 Found");
@@ -31,7 +44,10 @@ static esp_err_t send_redirect(httpd_req_t *request, const char *location)
 esp_err_t dashboard_root_redirect_handler(httpd_req_t *request)
 {
     if (request->method != HTTP_GET && request->method != HTTP_HEAD) {
-        return httpd_resp_send_err(request, HTTPD_405_METHOD_NOT_ALLOWED, "Use HTTPS GET or HEAD");
+        return reject_and_close(request, "405 Method Not Allowed");
+    }
+    if (request->content_len != 0U) {
+        return reject_and_close(request, "400 Bad Request");
     }
     return send_redirect(request, "/diagnostics");
 }
@@ -92,12 +108,16 @@ static bool local_https_location(httpd_req_t *request, char *location, size_t ca
 
 static esp_err_t plaintext_redirect_handler(httpd_req_t *request)
 {
+    if (request->method != HTTP_GET && request->method != HTTP_HEAD) {
+        return reject_and_close(request, "405 Method Not Allowed");
+    }
+    if (request->content_len != 0U) {
+        return reject_and_close(request, "400 Bad Request");
+    }
     char location[96];
     esp_err_t result = httpd_resp_set_hdr(request, "Connection", "close");
     if (result == ESP_OK) {
-        if (request->method != HTTP_GET && request->method != HTTP_HEAD) {
-            result = httpd_resp_send_err(request, HTTPD_405_METHOD_NOT_ALLOWED, "Use HTTPS");
-        } else if (!local_https_location(request, location, sizeof(location))) {
+        if (!local_https_location(request, location, sizeof(location))) {
             result = httpd_resp_set_status(request, "503 Service Unavailable");
             if (result == ESP_OK) {
                 result = httpd_resp_send(request, NULL, 0);

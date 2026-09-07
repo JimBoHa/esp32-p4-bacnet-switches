@@ -11,8 +11,12 @@ typedef int esp_err_t;
 #define ESP_ERR_INVALID_STATE 0x103
 typedef void *httpd_handle_t;
 typedef enum { HTTP_GET, HTTP_HEAD, HTTP_POST, HTTP_PUT } httpd_method_t;
-typedef enum { HTTPD_405_METHOD_NOT_ALLOWED = 405 } httpd_err_code_t;
-typedef struct { httpd_handle_t handle; httpd_method_t method; const char *uri; } httpd_req_t;
+typedef struct {
+    httpd_handle_t handle;
+    httpd_method_t method;
+    const char *uri;
+    size_t content_len;
+} httpd_req_t;
 typedef struct {
     const char *uri;
     httpd_method_t method;
@@ -33,7 +37,6 @@ esp_err_t httpd_resp_set_status(httpd_req_t *, const char *);
 esp_err_t httpd_resp_set_type(httpd_req_t *, const char *);
 esp_err_t httpd_resp_set_hdr(httpd_req_t *, const char *, const char *);
 esp_err_t httpd_resp_send(httpd_req_t *, const char *, ssize_t);
-esp_err_t httpd_resp_send_err(httpd_req_t *, httpd_err_code_t, const char *);
 int httpd_req_to_sockfd(httpd_req_t *);
 esp_err_t httpd_sess_trigger_close(httpd_handle_t, int);
 bool httpd_uri_match_wildcard(const char *, const char *, size_t);
