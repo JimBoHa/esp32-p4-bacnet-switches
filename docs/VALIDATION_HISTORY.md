@@ -11,6 +11,44 @@ Counts belong to their named runner/options. CTest and Python discovery overlap;
 do not sum them as unique test cases. Live image hashes below are the
 application descriptor's `image_sha256`, not the whole `.bin` file SHA-256.
 
+## 2026-09-07 — v1.29.0 IP-entry redirect implementation
+
+- Change tree based on `b371ff71d23b33fff1bb2b08ce139fc9127772b5`: HTTPS root
+  GET/HEAD redirects to `/diagnostics`; port 80 is a bounded redirect-only
+  listener with no management data or mutation handlers. It derives its
+  destination from the accepted socket, not Host/path/query. Exact clean
+  tested commits, final builds and CI links are recorded in the associated PR.
+- `python3 tools/run_host_tests.py`: exit 0, **6/6 CTests**, **90 Python
+  tests**, no skips. Native redirect implementation tests run with ASan/UBSan;
+  cases cover GET/HEAD, unchanged write authorization, destination isolation,
+  custom TLS ports, IPv4/mapped/global IPv6, invalid addresses, startup failure
+  cleanup, rejected request bodies, connection closure and resource limits.
+  Node, security/history and staged/unstaged whitespace checks passed. Runner
+  totals overlap.
+- An OTA-enabled ESP-IDF 5.5.4 target build succeeded with the existing private
+  credentials/signing key. No key generation or credential changes. Socket
+  allowance increased from 10 to 16 for the additional bounded listener;
+  existing local `sdkconfig` values must be updated as documented.
+- SDK inspection caught that its error-code enum has no 503 constant; the
+  implementation uses an explicit 503 status instead, and the native stubs
+  were corrected to match the real API before the target build.
+- Final source review identified ESP-IDF's automatic unread-body drain after
+  successful handlers. Both redirect handlers now reject declared request
+  bodies with an empty 400 response and immediate socket closure; native
+  tests cover GET/HEAD and small/large lengths. Unsupported methods use the
+  SDK's default close-on-error behavior. Receive/send timeouts are per I/O,
+  not an absolute deadline for slowly arriving headers.
+- Repeatable live acceptance is now committed as
+  `tools/verify_dashboard_redirects.py`: seven HTTP redirect cases, two HTTPS
+  root cases and the pinned dashboard. It uses GET/HEAD only, sends no tokens,
+  and never follows Location. Combine with the existing identity/P1 verifier
+  and manual browser navigation after an authorized deployment.
+- At preparation of this entry, **no firmware was installed**. Device reboot,
+  live redirect tests and browser acceptance await deployment approval; do
+  not interpret host/compile passes as a deployed feature. No new soak or
+  weak-pull/physical test was run. The v1.28 endurance failures below remain
+  unresolved and are not erased by these implementation tests.
+
 ## 2026-09-06 — v1.28.0 24-hour soak completed (failed)
 
 This is the completed outcome of the run described as in progress in the

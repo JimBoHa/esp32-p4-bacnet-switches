@@ -68,6 +68,7 @@ HTTPS or hardware behavior. It publishes no firmware artifact. See
 |---|---|
 | BACnet encoding/services, configuration validation, COV retries, debounce/history, clock/log models, OTA authorization/health | `tests/test_bacnet_codec.c` (native ASan/UBSan executable; many internal cases) |
 | Actual P1 diagnostics C implementation, board map, preservation/error paths, complete JSON | `tests/test_header_diagnostics.c`, `tests/check_header_json.py`, GPIO stubs |
+| Actual IP-entry redirect handlers/lifecycle, bounded HTTP listener, numeric destinations, failure paths | `tests/test_dashboard_redirect.c`, HTTP/socket stubs; `tests/test_dashboard_redirects.py` |
 | Dashboard static/security rules and simulated browser behavior | `tests/test_dashboard_assets.py`, `tests/dashboard_runtime_test.mjs` (Node) |
 | OTA clients, signing and key/signature failures, private packaging, credential/security audit | `tests/test_ota_tools.py`, `tests/test_firmware_signing.py`, `tests/test_package_release.py`, `tests/test_security_audit.py` |
 | Independent BACnet HIL validators, mDNS parser/probe, soak alerts | `tests/test_bacnet_hil.py`, `tests/test_mdns_probe.py`, `tests/test_soak_monitor.py` |
@@ -75,6 +76,7 @@ HTTPS or hardware behavior. It publishes no firmware artifact. See
 | Agent entry point, documentation links, CI test command, host/build separation | `tests/test_testing_workflow.py` |
 | Real BACnet/HTTPS/authentication/COV integration | `tools/bacnet_hil_test.py`; approved lab window required |
 | Real public P1/status/report reads and exact served assets | `tools/verify_live_readonly.py`; no token or BACnet traffic |
+| Real HTTP/HTTPS IP-entry redirects, Host/query isolation and HTTPS dashboard | `tools/verify_dashboard_redirects.py`; GET/HEAD only, no tokens or automatic redirect following |
 | OTA rejection and endurance | `tools/ota_rejection_test.py`, `tools/soak_monitor.py`; separate risk gates below |
 | Real browser layout/download, trusted NTP, physical input/power and watchdog rollback | Manual protocols below; not replaced by mocks or CI |
 
@@ -127,6 +129,31 @@ concurrent browser/poller. A connection reset is a failed attempt: record it,
 investigate concurrency, and record a separate retest rather than discarding
 the failure. Ordinary public reads need not restart a soak, but do not add
 unnecessary load to an endurance experiment.
+
+For v1.29+ IP-entry redirect acceptance, also run:
+
+```sh
+python3 tools/verify_dashboard_redirects.py --host DEVICE_IP --cert main/ota_server_cert.pem
+```
+
+It first pins HTTPS and byte-checks the dashboard, then checks seven HTTP
+GET/HEAD cases (including API paths and an untrusted Host/query) and two HTTPS
+root cases. Expect empty 302 responses, exact safe Location, no-store and
+no-referrer headers, no authentication/cookies, and HTTP connection closure.
+It never follows an untrusted redirect. Supply `--https-port` for a configured
+nondefault TLS port. This check is not compatible with firmware before v1.29.
+Native regression tests cover rejected mutation methods and request bodies
+(immediate closure, not an unread-body drain), IPv4/mapped IPv6/
+global IPv6, custom TLS ports, malformed/unavailable local addresses, startup
+failure cleanup, and the one-client/short-timeout resource limits.
+
+With deployment approval, also use a real browser to enter both
+`http://DEVICE_IP/` and `https://DEVICE_IP/` and confirm navigation to the
+no-login dashboard. Certificate trust is a separate browser prerequisite;
+do not bypass an unexpected certificate or claim a redirect fixes trust.
+Check unchanged configuration, healthy BACnet/watchdogs, and memory after
+deployment. No credential rotation, pin testing or destructive OTA rejection
+is needed for this feature's acceptance.
 
 ### Full hardware acceptance (approved lab window)
 

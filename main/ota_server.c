@@ -15,6 +15,7 @@
 #include "cJSON.h"
 #include "clock_service.h"
 #include "config_store.h"
+#include "dashboard_redirect.h"
 #include "diagnostics.h"
 #include "diagnostics_time.h"
 #include "discovery_service.h"
@@ -2446,7 +2447,8 @@ esp_err_t ota_server_start(void)
 
     httpd_ssl_config_t config = HTTPD_SSL_CONFIG_DEFAULT();
     config.port_secure = CONFIG_OTA_HTTPS_PORT;
-    config.httpd.max_uri_handlers = 13;
+    config.httpd.max_uri_handlers = 15;
+    config.httpd.ctrl_port = 32768;
     config.httpd.max_resp_headers = 8;
     config.httpd.max_open_sockets = 2;
     config.httpd.lru_purge_enable = true;
@@ -2529,6 +2531,16 @@ esp_err_t ota_server_start(void)
         .method = HTTP_GET,
         .handler = diagnostics_asset_get_handler,
     };
+    const httpd_uri_t dashboard_root_uri = {
+        .uri = "/",
+        .method = HTTP_GET,
+        .handler = dashboard_root_redirect_handler,
+    };
+    const httpd_uri_t dashboard_root_head_uri = {
+        .uri = "/",
+        .method = HTTP_HEAD,
+        .handler = dashboard_root_redirect_handler,
+    };
     esp_err_t result =
         httpd_register_uri_handler(created_server, &status_uri);
     if (result == ESP_OK) {
@@ -2577,7 +2589,17 @@ esp_err_t ota_server_start(void)
         result = httpd_register_uri_handler(
             created_server, &diagnostics_js_uri);
     }
+    if (result == ESP_OK) {
+        result = httpd_register_uri_handler(created_server, &dashboard_root_uri);
+    }
+    if (result == ESP_OK) {
+        result = httpd_register_uri_handler(created_server, &dashboard_root_head_uri);
+    }
+    if (result == ESP_OK) {
+        result = dashboard_redirect_start(CONFIG_OTA_HTTPS_PORT);
+    }
     if (result != ESP_OK) {
+        dashboard_redirect_stop();
         (void)httpd_ssl_stop(created_server);
         return result;
     }

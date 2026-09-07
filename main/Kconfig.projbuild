@@ -124,7 +124,9 @@ menu "Authenticated HTTPS OTA configuration"
         default y
         select BOOTLOADER_APP_ROLLBACK_ENABLE
         help
-            Starts a TLS-only HTTP server before Ethernet is brought up.
+            Starts the HTTPS management server and a redirect-only HTTP listener
+            on port 80 before Ethernet is brought up. Plain HTTP never serves
+            management data or accepts mutations.
             POST /ota accepts an ESP-IDF application image after bearer-token
             authentication. GET /ota/status reports the running version.
 
@@ -134,6 +136,8 @@ menu "Authenticated HTTPS OTA configuration"
             int "HTTPS OTA port"
             range 1 65535
             default 443
+            help
+                Port 80 is reserved for HTTP-to-HTTPS dashboard redirects.
 
     endif
 

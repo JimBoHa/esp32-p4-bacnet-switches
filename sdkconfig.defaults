@@ -61,7 +61,7 @@ CONFIG_SECURE_BOOT_SIGNING_KEY="secrets/firmware_signing_key.pem"
 CONFIG_SECURE_INSECURE_ALLOW_DL_MODE=y
 
 # BACnet/IP owns one UDP socket and needs directed-broadcast transmission.
-CONFIG_LWIP_MAX_SOCKETS=10
+CONFIG_LWIP_MAX_SOCKETS=16
 CONFIG_LWIP_SO_REUSE=y
 
 # Advertise only this Ethernet controller and its two implemented services.
