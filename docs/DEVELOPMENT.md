@@ -12,6 +12,12 @@
 `partitions.csv`, `main/idf_component.yml`, and `dependencies.lock` are the
 committed inputs.
 
+For v1.29+ builds, existing ignored `sdkconfig` files also need
+`CONFIG_LWIP_MAX_SOCKETS` at least 16; changing `sdkconfig.defaults` alone does
+not override a saved value. Port 80 is reserved for the redirect-only listener.
+The build fails explicitly if an enabled HTTPS configuration conflicts with
+either requirement.
+
 ```sh
 . /path/to/esp-idf/export.sh
 idf.py reconfigure
