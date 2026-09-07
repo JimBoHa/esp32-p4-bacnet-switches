@@ -40,6 +40,9 @@ if(NOT CMAKE_BUILD_EARLY_EXPANSION AND
 endif()
 set(ota_embed_files)
 if(CONFIG_OTA_HTTPS_ENABLED)
+    if(CONFIG_OTA_HTTPS_PORT EQUAL 80 OR CONFIG_LWIP_MAX_SOCKETS LESS 16)
+        message(FATAL_ERROR "HTTP redirect reserves port 80 and requires CONFIG_LWIP_MAX_SOCKETS >= 16")
+    endif()
     get_filename_component(signing_private_key "${CONFIG_SECURE_BOOT_SIGNING_KEY}"
                            ABSOLUTE BASE_DIR "${project_root}")
     add_custom_target(validate_signing_key ALL
@@ -102,6 +105,7 @@ idf_component_register(
         "config_model.c"
         "config_store.c"
         "cov_retry_cache.c"
+        "dashboard_redirect.c"
         "diagnostics.c"
         "diagnostics_log_model.c"
         "diagnostics_metrics.c"

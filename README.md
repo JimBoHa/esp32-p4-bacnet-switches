@@ -333,7 +333,25 @@ to the HIL command; it requires fresh device UTC within ten seconds of the host.
 
 ### Dashboard and API
 
-Open `https://DEVICE-IP/diagnostics` for the read-only field dashboard. Its
+Enter the device IP, `http://DEVICE-IP/`, or `https://DEVICE-IP/`; firmware
+v1.29+ redirects to `https://DEVICE-IP/diagnostics`. HTTPS root GET/HEAD uses
+a relative redirect; plain HTTP port 80 redirects GET/HEAD requests to the
+canonical HTTPS dashboard, never to a caller-supplied Host/path/query. It
+serves no status/configuration/assets and registers no mutation handlers.
+Redirects are temporary (302), not cached, and require no login. The existing
+self-signed HTTPS certificate still needs to be verified/trusted by the browser;
+the redirect cannot remove that warning. A nondefault HTTPS port is included
+in the target. Port 80 is reserved for redirecting, not HTTPS management.
+
+The redirect listener has one client slot, a 4 KiB task stack, two-second
+receive/send timeouts, and closes each handled request. Its control port is
+separate from HTTPS. `CONFIG_LWIP_MAX_SOCKETS=16` reserves room for both
+listeners, BACnet, mDNS and time synchronization; existing local `sdkconfig`
+files must be updated to at least 16 before building. IPv4 and unscoped/global
+IPv6 destinations are formatted from the actual accepted socket address;
+use the device IPv4 address instead of scoped link-local IPv6.
+
+You can also open `https://DEVICE-IP/diagnostics` directly. Its
 live status loads automatically, without a login or token. Refresh and report
 downloads also work without credentials. The page never requests, stores, or
 sends a bearer token or cookie, and it cannot perform administrative actions.

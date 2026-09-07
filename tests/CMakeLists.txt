@@ -4,6 +4,14 @@ project(bacnet_codec_tests C)
 enable_testing()
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
 
+add_executable(dashboard_redirect_tests test_dashboard_redirect.c ../main/dashboard_redirect.c)
+target_include_directories(dashboard_redirect_tests PRIVATE redirect_stubs ../main)
+target_compile_features(dashboard_redirect_tests PRIVATE c_std_11)
+target_compile_options(dashboard_redirect_tests PRIVATE -Wall -Wextra -Werror
+    -pedantic -fsanitize=address,undefined -fno-omit-frame-pointer)
+target_link_options(dashboard_redirect_tests PRIVATE -fsanitize=address,undefined)
+add_test(NAME dashboard_redirect_tests COMMAND dashboard_redirect_tests)
+
 add_executable(header_diagnostics_tests test_header_diagnostics.c
     ../main/header_diagnostics.c ../main/hardware_profile.c)
 target_include_directories(header_diagnostics_tests PRIVATE stubs ../main)
