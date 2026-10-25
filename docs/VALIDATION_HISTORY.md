@@ -11,6 +11,18 @@ Counts belong to their named runner/options. CTest and Python discovery overlap;
 do not sum them as unique test cases. Live image hashes below are the
 application descriptor's `image_sha256`, not the whole `.bin` file SHA-256.
 
+## 2026-10-25 — publication address anonymization (no deployment)
+
+- Replaced field-network literals in documentation, static fallback defaults and
+  authored fixtures with documentation addresses. DHCP remains the default.
+- Private publication check found no configured site-address or credential
+  matches in the tracked checkout.
+- The full host runner in the forensic mirror correctly stopped on pre-existing
+  private-key material reachable only from two old pull-request refs. No audit
+  suppression, credential rotation, history rewrite or hardware action occurred.
+- A separate ordinary branch clone is used for host validation; GitHub-managed
+  historical PR refs remain a separate unresolved cleanup requirement.
+
 ## 2026-09-07 — v1.29.0 authorized deployment and live redirects (passed)
 
 - Implemented by [PR #37](https://github.com/JimBoHa/esp32-p4-bacnet-switches/pull/37).
