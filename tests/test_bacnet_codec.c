@@ -2774,7 +2774,7 @@ static void test_clock_model(void)
     CHECK(strcmp(clock_quality_name(CLOCK_STALE), "stale") == 0);
     CHECK(clock_server_name_valid(""));
     CHECK(clock_server_name_valid("ntp.site.example"));
-    CHECK(clock_server_name_valid("192.168.75.1"));
+    CHECK(clock_server_name_valid("192.0.2.1"));
     CHECK(!clock_server_name_valid(NULL));
     CHECK(!clock_server_name_valid("-ntp.site"));
     CHECK(!clock_server_name_valid("ntp-.site"));

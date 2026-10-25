@@ -44,7 +44,7 @@ class MdnsProbeTests(unittest.TestCase):
         https_target = f"{instance}._https._tcp.local."
         bacnet_target = f"{instance}._bacnet._udp.local."
         records = [
-            record(host_fqdn, mdns_probe.DNS_TYPE_A, socket.inet_aton("192.168.75.152")),
+            record(host_fqdn, mdns_probe.DNS_TYPE_A, socket.inet_aton("192.0.2.152")),
             record("_https._tcp.local.", mdns_probe.DNS_TYPE_PTR, name_value(https_target)),
             record(
                 https_target,
@@ -90,7 +90,7 @@ class MdnsProbeTests(unittest.TestCase):
             mdns_probe.validate_discovery(
                 parsed,
                 hostname,
-                "192.168.75.152",
+                "192.0.2.152",
                 instance,
                 443,
                 47808,

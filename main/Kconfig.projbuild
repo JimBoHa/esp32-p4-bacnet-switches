@@ -8,7 +8,7 @@ menu "BACnet toggle input configuration"
         default 599152
         help
             Must be unique across the BACnet internetwork. Device instance
-            599152 was unused on 192.168.75.0/24 when this project was made.
+            599152 was unused on 192.0.2.0/24 when this project was made.
 
     config BACNET_VENDOR_IDENTIFIER
         int "BACnet vendor identifier"

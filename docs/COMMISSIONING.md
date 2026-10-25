@@ -1,5 +1,8 @@
 # Commissioning and recovery
 
+> Privacy note: network addresses in this publication copy are anonymized examples. Original site records are kept outside this repository.
+
+
 ## 1. Confirm the hardware
 
 Use only the Waveshare `ESP32-P4-POE-ETH` with the 32 MB ESP32-P4 revision 0.x/
@@ -50,7 +53,7 @@ commissioning and rollback tests finish.
 
 Default networking is DHCP. Find the lease by serial log, switch/DHCP lease
 table, BACnet Who-Is, or local mDNS name `esp32-p4-bacnet.local`. The current
-lab reservation is `192.168.75.152`; do not assume it at another site.
+lab reservation is `192.0.2.152`; do not assume it at another site.
 
 ```sh
 python3 management/ota_client.py status \

@@ -1,5 +1,8 @@
 # ESP32-P4 PoE BACnet toggle inputs
 
+> Privacy note: network addresses in this publication copy are anonymized examples. Original site records are kept outside this repository.
+
+
 Standalone ESP-IDF firmware for the Waveshare **ESP32-P4-POE-ETH**. It reads
 maintained-contact switches on GPIO20, GPIO21, and GPIO22; exposes them as
 read-only BACnet/IP Binary Input objects; publishes device-health diagnostics;
@@ -10,7 +13,7 @@ The target definition matches the board's 32 MB onboard NOR flash.
 The firmware uses DHCP by default and supports guarded persistent static IPv4
 commissioning. Its BACnet identity does not depend on its IP address: Device
 instance **599152**, UDP port **47808** (`0xBAC0`). The device has most recently
-used `192.168.75.152`; a DHCP reservation remains the simplest way to keep its
+used `192.0.2.152`; a DHCP reservation remains the simplest way to keep its
 management address stable.
 
 The configured hostname is also advertised with mDNS. On the local subnet,
@@ -170,8 +173,8 @@ configuration state, COV cleanup, and HTTPS authentication boundary:
 ```sh
 python3 -m pip install -r requirements-hil.txt
 python3 tools/bacnet_hil_test.py \
-  --local-address 192.168.75.191/24 \
-  --device-address 192.168.75.152 \
+  --local-address 192.0.2.191/24 \
+  --device-address 192.0.2.152 \
   --device-instance 599152 \
   --mdns-hostname esp32-p4-bacnet \
   --token-file secrets/ota_token.txt \
@@ -192,9 +195,9 @@ To test only multicast hostname and service discovery without BACpypes, run:
 
 ```sh
 python3 tools/mdns_probe.py \
-  --interface 192.168.75.191 \
+  --interface 192.0.2.191 \
   --hostname esp32-p4-bacnet \
-  --address 192.168.75.152 \
+  --address 192.0.2.152 \
   --device-instance 599152 \
   --firmware-version VERSION
 ```
@@ -206,7 +209,7 @@ heap or temperature limits, protocol errors, and counter regressions:
 
 ```sh
 python3 tools/soak_monitor.py \
-  --device-address 192.168.75.152 \
+  --device-address 192.0.2.152 \
   --device-instance 599152 \
   --duration 86400 \
   --interval 60 \
@@ -450,11 +453,11 @@ change count; `address_age_ms` is not lease time remaining.
 Check status or classify the connected input lines:
 
 ```sh
-python3 tools/ota_client.py status --host 192.168.75.152
-python3 tools/ota_client.py input-self-test --host 192.168.75.152
-python3 tools/ota_client.py reboot --host 192.168.75.152
+python3 tools/ota_client.py status --host 192.0.2.152
+python3 tools/ota_client.py input-self-test --host 192.0.2.152
+python3 tools/ota_client.py reboot --host 192.0.2.152
 python3 tools/ota_client.py config-get \
-  --host 192.168.75.152 --output device-config.json
+  --host 192.0.2.152 --output device-config.json
 ```
 
 If a staged static configuration changes the address, pass its new address as
@@ -467,7 +470,7 @@ such as `database_revision`, `active_database_revision`, and
 `restart_required` may remain in the file and are ignored on input:
 
 ```sh
-python3 tools/ota_client.py config-put --host 192.168.75.152 device-config.json
+python3 tools/ota_client.py config-put --host 192.0.2.152 device-config.json
 ```
 
 The accepted response reports `restart_required: true`. A normal OTA update or
@@ -482,9 +485,9 @@ To export the network settings, edit them, and stage a change:
 
 ```sh
 python3 tools/ota_client.py network-get \
-  --host 192.168.75.152 --output network-config.json
+  --host 192.0.2.152 --output network-config.json
 python3 tools/ota_client.py network-put \
-  --host 192.168.75.152 network-config.json
+  --host 192.0.2.152 network-config.json
 ```
 
 The exported DHCP form uses `"mode": "dhcp"` and `"static": null`. Static
@@ -497,10 +500,10 @@ address, for example:
   "mode": "static",
   "hostname": "esp32-p4-bacnet",
   "static": {
-    "ipv4": "192.168.75.152",
+    "ipv4": "192.0.2.152",
     "netmask": "255.255.255.0",
-    "gateway": "192.168.75.1",
-    "dns": "192.168.75.1"
+    "gateway": "192.0.2.1",
+    "dns": "192.0.2.1"
   }
 }
 ```
@@ -509,7 +512,7 @@ After reboot, connect to the staged address and confirm it before its countdown
 expires:
 
 ```sh
-python3 tools/ota_client.py network-confirm --host 192.168.75.152
+python3 tools/ota_client.py network-confirm --host 192.0.2.152
 ```
 
 The confirmation must arrive through the running trial address. If the address,
@@ -524,7 +527,7 @@ Build and upload an application:
 ```sh
 idf.py build
 python3 tools/ota_client.py upload \
-  --host 192.168.75.152 \
+  --host 192.0.2.152 \
   build/esp32_p4_bacnet_switches.bin
 ```
 
@@ -560,7 +563,7 @@ and a structurally valid image with a foreign project identity:
 
 ```sh
 python3 tools/ota_rejection_test.py \
-  --host 192.168.75.152 \
+  --host 192.0.2.152 \
   --firmware build/esp32_p4_bacnet_switches.bin \
   --confirm-inactive-slot-overwrite
 ```

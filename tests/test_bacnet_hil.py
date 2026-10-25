@@ -16,8 +16,8 @@ from tools import bacnet_hil_test
 
 def args(**overrides: object) -> argparse.Namespace:
     values = {
-        "local_address": "192.168.75.191/24",
-        "device_address": "192.168.75.152",
+        "local_address": "192.0.2.191/24",
+        "device_address": "192.0.2.152",
         "device_instance": 599152,
         "client_instance": 4194001,
         "bacnet_port": 47808,

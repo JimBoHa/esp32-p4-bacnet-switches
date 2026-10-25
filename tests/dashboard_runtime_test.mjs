@@ -150,7 +150,7 @@ const healthyStatus = {
       switch_inputs: {healthy: true, subscribed: true},
     },
   },
-  network: {ipv4: "192.168.75.152", link_up: true},
+  network: {ipv4: "192.0.2.152", link_up: true},
   configuration: {restart_required: false},
   network_configuration: {restart_required: false, trial_active: false},
   gpio_diagnostics: [20, 21, 22].map((gpio) => ({

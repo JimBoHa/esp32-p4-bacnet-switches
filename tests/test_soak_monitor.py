@@ -51,7 +51,7 @@ def healthy_values() -> tuple[dict[str, object], dict[str, object], dict[str, ob
             },
         },
         "network": {
-            "ipv4": "192.168.75.152",
+            "ipv4": "192.0.2.152",
             "mac": "E8:F6:0A:E4:45:8F",
             "link_up": True,
             "full_duplex": True,
@@ -380,7 +380,7 @@ class SoakMonitorTests(unittest.TestCase):
             certificate.touch()
             token.touch()
             args = argparse.Namespace(
-                device_address="192.168.75.152",
+                device_address="192.0.2.152",
                 device_instance=599152,
                 bacnet_port=47808,
                 duration=60.0,

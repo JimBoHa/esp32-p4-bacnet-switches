@@ -520,7 +520,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--local-address",
         required=True,
-        help="host IPv4 interface in address/prefix form, for example 192.168.75.191/24",
+        help="host IPv4 interface in address/prefix form, for example 192.0.2.191/24",
     )
     parser.add_argument("--device-address", required=True, help="controller IPv4 address")
     parser.add_argument("--device-instance", required=True, type=int)
