@@ -1,5 +1,8 @@
 # ESP32-P4 PoE BACnet toggle inputs
 
+> Privacy note: network addresses in this publication copy are anonymized examples. Original site records are kept outside this repository.
+
+
 Standalone ESP-IDF firmware for the Waveshare **ESP32-P4-POE-ETH**. It reads
 maintained-contact switches on GPIO20, GPIO21, and GPIO22; exposes them as
 read-only BACnet/IP Binary Input objects; publishes device-health diagnostics;

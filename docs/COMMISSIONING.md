@@ -1,5 +1,8 @@
 # Commissioning and recovery
 
+> Privacy note: network addresses in this publication copy are anonymized examples. Original site records are kept outside this repository.
+
+
 ## 1. Confirm the hardware
 
 Use only the Waveshare `ESP32-P4-POE-ETH` with the 32 MB ESP32-P4 revision 0.x/
